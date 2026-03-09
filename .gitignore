@@ -1,0 +1,14 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.log
+data/quant.db
+*.db
+logs/
+.DS_Store
+.claude/
+.idea/
+*.html
+*.png
+notebooks/.ipynb_checkpoints/

@@ -1,0 +1,39 @@
+# 핵심
+pandas==2.3.3
+numpy==2.4.3
+scipy==1.17.1
+
+# 한국 주식 데이터
+pykrx==1.2.4
+finance-datareader==0.9.102
+
+# 시각화
+matplotlib==3.10.8
+seaborn==0.13.2
+plotly==6.6.0
+
+# 성과 분석
+quantstats==0.0.81
+
+# HTTP 요청 (키움 REST API)
+requests==2.32.5
+websocket-client==1.9.0
+
+# 스케줄링
+APScheduler==3.11.2
+
+# 알림 (async 버전)
+python-telegram-bot==22.6
+
+# 데이터베이스
+sqlalchemy==2.0.48
+
+# 환경 변수
+python-dotenv==1.2.2
+
+# 대시보드
+streamlit==1.55.0
+
+# 개발/테스트
+pytest==9.0.2
+black==26.3.0
