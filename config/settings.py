@@ -14,12 +14,14 @@ class FactorWeights:
 
     def __post_init__(self):
         total = self.value + self.momentum + self.quality
-        assert abs(total - 1.0) < 1e-9, f"팩터 가중치 합이 1이 아닙니다: {total}"
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(f"팩터 가중치 합이 1이 아닙니다: {total}")
 
 
 @dataclass
 class ValueWeights:
     """밸류 팩터 내 세부 지표 가중치"""
+
     pbr: float = 0.50
     per: float = 0.30
     div: float = 0.20
@@ -28,22 +30,22 @@ class ValueWeights:
 @dataclass
 class UniverseConfig:
     market: str = "KOSPI"
-    min_market_cap_percentile: float = 10.0   # 시가총액 하위 10% 제외
-    exclude_finance: bool = True               # 금융주 제외
-    min_listing_days: int = 365               # 상장 1년 미만 제외
+    min_market_cap_percentile: float = 10.0  # 시가총액 하위 10% 제외
+    exclude_finance: bool = True  # 금융주 제외
+    min_listing_days: int = 365  # 상장 1년 미만 제외
 
 
 @dataclass
 class PortfolioConfig:
     n_stocks: int = 30
-    weight_method: str = "equal"             # equal / value_weighted
+    weight_method: str = "equal"  # equal / value_weighted
 
 
 @dataclass
 class TradingConfig:
-    commission_rate: float = 0.00015         # 수수료 0.015%
-    tax_rate: float = 0.0018                 # 거래세 0.18% (매도만)
-    slippage: float = 0.001                  # 슬리피지 0.1%
+    commission_rate: float = 0.00015  # 수수료 0.015%
+    tax_rate: float = 0.0018  # 거래세 0.18% (매도만)
+    slippage: float = 0.001  # 슬리피지 0.1%
 
 
 @dataclass
@@ -55,26 +57,36 @@ class Settings:
     trading: TradingConfig = field(default_factory=TradingConfig)
 
     # 키움 REST API
-    kiwoom_app_key: str = field(
-        default_factory=lambda: os.getenv("KIWOOM_APP_KEY", ""))
+    kiwoom_app_key: str = field(default_factory=lambda: os.getenv("KIWOOM_APP_KEY", ""))
     kiwoom_app_secret: str = field(
-        default_factory=lambda: os.getenv("KIWOOM_APP_SECRET", ""))
+        default_factory=lambda: os.getenv("KIWOOM_APP_SECRET", "")
+    )
     kiwoom_account_no: str = field(
-        default_factory=lambda: os.getenv("KIWOOM_ACCOUNT_NO", ""))
+        default_factory=lambda: os.getenv("KIWOOM_ACCOUNT_NO", "")
+    )
     is_paper_trading: bool = field(
-        default_factory=lambda: os.getenv("IS_PAPER_TRADING", "True").strip() == "True")
+        default_factory=lambda: os.getenv("IS_PAPER_TRADING", "true").strip().lower()
+        not in ("false", "0", "no")
+    )
 
     # 텔레그램
     telegram_bot_token: str = field(
-        default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", ""))
+        default_factory=lambda: os.getenv("TELEGRAM_BOT_TOKEN", "")
+    )
     telegram_chat_id: str = field(
-        default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", ""))
+        default_factory=lambda: os.getenv("TELEGRAM_CHAT_ID", "")
+    )
+
+    # KRX Open API
+    krx_openapi_key: str = field(
+        default_factory=lambda: os.getenv("KRX_OPENAPI_KEY", "")
+    )
 
     # 내부 경로
-    db_path: str = field(
-        default_factory=lambda: os.getenv("DB_PATH", "data/quant.db"))
+    db_path: str = field(default_factory=lambda: os.getenv("DB_PATH", "data/quant.db"))
     log_path: str = field(
-        default_factory=lambda: os.getenv("LOG_PATH", "logs/quant.log"))
+        default_factory=lambda: os.getenv("LOG_PATH", "logs/quant.log")
+    )
 
 
 # 전역 싱글톤

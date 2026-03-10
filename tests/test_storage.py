@@ -1,12 +1,11 @@
 # tests/test_storage.py
 import pandas as pd
-import numpy as np
 import pytest
-import os
-import tempfile
 from datetime import date
 
-from data.storage import DataStorage, Base, DailyPrice, Fundamental, FactorScore, Portfolio, Trade
+from data.storage import (
+    DataStorage,
+)
 
 
 @pytest.fixture
@@ -19,6 +18,7 @@ def storage(tmp_path) -> DataStorage:
 # ───────────────────────────────────────────────
 # DailyPrice 테스트
 # ───────────────────────────────────────────────
+
 
 class TestDailyPrice:
     def test_save_and_load(self, storage: DataStorage) -> None:
@@ -44,11 +44,23 @@ class TestDailyPrice:
     def test_upsert(self, storage: DataStorage) -> None:
         """같은 ticker+date로 저장하면 업데이트"""
         df1 = pd.DataFrame(
-            {"open": [70000.0], "high": [72000.0], "low": [69000.0], "close": [71000.0], "volume": [1000000]},
+            {
+                "open": [70000.0],
+                "high": [72000.0],
+                "low": [69000.0],
+                "close": [71000.0],
+                "volume": [1000000],
+            },
             index=pd.to_datetime(["2024-01-02"]),
         )
         df2 = pd.DataFrame(
-            {"open": [70000.0], "high": [72000.0], "low": [69000.0], "close": [99999.0], "volume": [1000000]},
+            {
+                "open": [70000.0],
+                "high": [72000.0],
+                "low": [69000.0],
+                "close": [99999.0],
+                "volume": [1000000],
+            },
             index=pd.to_datetime(["2024-01-02"]),
         )
 
@@ -89,6 +101,7 @@ class TestDailyPrice:
 # Fundamental 테스트
 # ───────────────────────────────────────────────
 
+
 class TestFundamental:
     def test_save_and_load(self, storage: DataStorage) -> None:
         df = pd.DataFrame(
@@ -112,11 +125,23 @@ class TestFundamental:
 
     def test_upsert(self, storage: DataStorage) -> None:
         df1 = pd.DataFrame(
-            {"BPS": [50000.0], "PER": [12.5], "PBR": [1.4], "EPS": [5600.0], "DIV": [1.8]},
+            {
+                "BPS": [50000.0],
+                "PER": [12.5],
+                "PBR": [1.4],
+                "EPS": [5600.0],
+                "DIV": [1.8],
+            },
             index=["005930"],
         )
         df2 = pd.DataFrame(
-            {"BPS": [55000.0], "PER": [13.0], "PBR": [1.5], "EPS": [6000.0], "DIV": [2.0]},
+            {
+                "BPS": [55000.0],
+                "PER": [13.0],
+                "PBR": [1.5],
+                "EPS": [6000.0],
+                "DIV": [2.0],
+            },
             index=["005930"],
         )
 
@@ -131,6 +156,7 @@ class TestFundamental:
 # ───────────────────────────────────────────────
 # FactorScore 테스트
 # ───────────────────────────────────────────────
+
 
 class TestFactorScore:
     def test_save(self, storage: DataStorage) -> None:
@@ -151,6 +177,7 @@ class TestFactorScore:
 # Portfolio 테스트
 # ───────────────────────────────────────────────
 
+
 class TestPortfolio:
     def test_save(self, storage: DataStorage) -> None:
         df = pd.DataFrame(
@@ -168,6 +195,7 @@ class TestPortfolio:
 # ───────────────────────────────────────────────
 # Trade 테스트
 # ───────────────────────────────────────────────
+
 
 class TestTrade:
     def test_save_and_load(self, storage: DataStorage) -> None:
@@ -187,7 +215,7 @@ class TestTrade:
         assert len(trades) == 1
         assert trades.iloc[0]["ticker"] == "005930"
         assert trades.iloc[0]["side"] == "BUY"
-        assert trades.iloc[0]["is_paper"] == True
+        assert trades.iloc[0]["is_paper"]
 
     def test_load_with_date_range(self, storage: DataStorage) -> None:
         storage.save_trade(date(2024, 1, 1), "A", "BUY", 10, 100.0, 1000.0)

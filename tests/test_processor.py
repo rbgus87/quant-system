@@ -1,7 +1,6 @@
 # tests/test_processor.py
 import pandas as pd
 import numpy as np
-import pytest
 
 from data.processor import DataProcessor
 
@@ -95,7 +94,9 @@ class TestFilterUniverse:
         )
 
         result = DataProcessor.filter_universe(
-            tickers, market_cap, fundamentals,
+            tickers,
+            market_cap,
+            fundamentals,
             finance_tickers=["B"],
         )
 
@@ -114,9 +115,7 @@ class TestFilterUniverse:
             index=["A", "B", "C"],
         )
 
-        result = DataProcessor.filter_universe(
-            tickers, market_cap, fundamentals
-        )
+        result = DataProcessor.filter_universe(tickers, market_cap, fundamentals)
 
         # B는 PBR만 있고 NaN → dropna(how='all')에선 남을 수 있음
         # 실제로는 NaN 하나만 있어도 행 자체가 NaN이 아님

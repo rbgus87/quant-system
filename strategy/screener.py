@@ -80,7 +80,9 @@ class MultiFactorScreener:
 
             # 3. 팩터 계산
             # 밸류
-            value_score = self.value_factor.calculate(cleaned.loc[cleaned.index.isin(tickers)])
+            value_score = self.value_factor.calculate(
+                cleaned.loc[cleaned.index.isin(tickers)]
+            )
 
             # 모멘텀
             returns_12m = self.return_calc.get_returns_for_universe(
@@ -89,7 +91,9 @@ class MultiFactorScreener:
             momentum_score = self.momentum_factor.calculate(returns_12m)
 
             # 퀄리티
-            quality_score = self.quality_factor.calculate(cleaned.loc[cleaned.index.isin(tickers)])
+            quality_score = self.quality_factor.calculate(
+                cleaned.loc[cleaned.index.isin(tickers)]
+            )
 
             # 4. 복합 스코어 + 상위 N개
             composite_df = self.composite.calculate(
@@ -104,15 +108,17 @@ class MultiFactorScreener:
             if not market_cap.empty:
                 composite_df = self.composite.apply_universe_filter(
                     composite_df,
-                    market_cap["market_cap"] if "market_cap" in market_cap.columns else market_cap,
+                    (
+                        market_cap["market_cap"]
+                        if "market_cap" in market_cap.columns
+                        else market_cap
+                    ),
                     finance_tickers=finance_tickers,
                 )
 
             portfolio = self.composite.select_top(composite_df, n=n_stocks)
 
-            logger.info(
-                f"[{date}] 스크리닝 완료: {len(portfolio)}개 종목 선정"
-            )
+            logger.info(f"[{date}] 스크리닝 완료: {len(portfolio)}개 종목 선정")
             return portfolio
 
         except Exception as e:

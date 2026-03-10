@@ -1,8 +1,7 @@
 # tests/test_screener.py
 import pandas as pd
 import numpy as np
-import pytest
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
 from strategy.screener import MultiFactorScreener
 
@@ -60,7 +59,9 @@ class TestMultiFactorScreener:
         mock_collector.get_market_cap.return_value = market_cap
 
         mock_return_calc = MockReturnCalc.return_value
-        mock_return_calc.get_returns_for_universe.return_value = self._make_returns(tickers)
+        mock_return_calc.get_returns_for_universe.return_value = self._make_returns(
+            tickers
+        )
 
         screener = MultiFactorScreener()
         result = screener.screen("20240102", n_stocks=10)
@@ -98,7 +99,9 @@ class TestMultiFactorScreener:
         mock_collector.get_market_cap.return_value = market_cap
 
         mock_return_calc = MockReturnCalc.return_value
-        mock_return_calc.get_returns_for_universe.return_value = self._make_returns(tickers)
+        mock_return_calc.get_returns_for_universe.return_value = self._make_returns(
+            tickers
+        )
 
         screener = MultiFactorScreener()
         finance = tickers[:5]

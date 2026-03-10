@@ -1,6 +1,5 @@
 # factors/composite.py
 import pandas as pd
-import numpy as np
 import logging
 from typing import Optional
 from config.settings import settings
@@ -51,7 +50,12 @@ class MultiFactorComposite:
         if not common:
             logger.warning("공통 종목 없음 — 빈 결과 반환")
             return pd.DataFrame(
-                columns=["value_score", "momentum_score", "quality_score", "composite_score"]
+                columns=[
+                    "value_score",
+                    "momentum_score",
+                    "quality_score",
+                    "composite_score",
+                ]
             )
 
         common_list = sorted(common)

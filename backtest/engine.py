@@ -1,6 +1,5 @@
 # backtest/engine.py
 import pandas as pd
-import numpy as np
 from typing import Optional
 import logging
 
@@ -10,7 +9,6 @@ from factors.momentum import MomentumFactor
 from factors.quality import QualityFactor
 from factors.composite import MultiFactorComposite
 from strategy.rebalancer import Rebalancer
-from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +71,9 @@ class MultiFactorBacktest:
                 trade_dt = self._next_business_day(rebal_dt)
                 trade_date_str = trade_dt.strftime("%Y%m%d")
 
+                # T+1일 전체 OHLCV 프리페치 (개별 조회 대신 배치)
+                self.krx.prefetch_daily_trade(trade_date_str, market)
+
                 # 매도/매수 주문 계산
                 sell_tickers, buy_tickers = self.rebalancer.compute_orders(
                     holdings, new_tickers
@@ -96,9 +97,10 @@ class MultiFactorBacktest:
                     if price:
                         total_value += price * shares
 
-                # 매수 실행
+                # 매수 실행 (전체 목표 종목 기준 균등 비중)
                 if buy_tickers:
-                    target_per_stock = total_value / len(new_tickers)
+                    n_total = len(new_tickers)  # 전체 목표 종목 수
+                    target_per_stock = total_value / n_total if n_total > 0 else 0
                     for ticker in buy_tickers:
                         price = self._get_open_price(ticker, trade_date_str)
                         if price is None:
@@ -113,28 +115,51 @@ class MultiFactorBacktest:
                             cash -= cost
                             holdings[ticker] = holdings.get(ticker, 0) + shares_to_buy
 
-                # 일별 포트폴리오 가치 기록
+                # 보유 종목 OHLCV 기간 일괄 프리페치 (개별 일자 조회 방지)
                 period_end = (
-                    rebal_dates[i + 1] if i + 1 < len(rebal_dates)
+                    rebal_dates[i + 1]
+                    if i + 1 < len(rebal_dates)
                     else pd.Timestamp(end_date)
                 )
+                period_end_str = period_end.strftime("%Y%m%d")
+                trade_dt_str_for_range = trade_dt.strftime("%Y%m%d")
+
+                # 보유 종목 종가 일괄 로드 → {(ticker, date_str): close_price}
+                close_price_cache: dict[tuple[str, str], float] = {}
+                for ticker in holdings:
+                    try:
+                        ohlcv = self.krx.get_ohlcv(
+                            ticker, trade_dt_str_for_range, period_end_str
+                        )
+                        if ohlcv is not None and not ohlcv.empty and "close" in ohlcv.columns:
+                            for dt_idx, row in ohlcv.iterrows():
+                                dt_key = dt_idx.strftime("%Y%m%d") if hasattr(dt_idx, "strftime") else str(dt_idx)
+                                val = row["close"]
+                                if val and val > 0:
+                                    close_price_cache[(ticker, dt_key)] = float(val)
+                    except Exception as e:
+                        logger.warning(f"기간 OHLCV 프리페치 실패 ({ticker}): {e}")
+
+                # 일별 포트폴리오 가치 기록
                 dates = pd.bdate_range(trade_dt, period_end)
                 for dt in dates:
-                    dt_str = dt.strftime("%Y%m%d")
+                    dt_str_val = dt.strftime("%Y%m%d")
                     total = cash
                     for ticker, shares in holdings.items():
                         if shares <= 0:
                             continue
-                        price = self._get_open_price(ticker, dt_str)
+                        price = close_price_cache.get((ticker, dt_str_val))
                         if price:
                             total += price * shares
 
-                    history.append({
-                        "date": dt,
-                        "portfolio_value": total,
-                        "cash": cash,
-                        "n_holdings": len(holdings),
-                    })
+                    history.append(
+                        {
+                            "date": dt,
+                            "portfolio_value": total,
+                            "cash": cash,
+                            "n_holdings": len(holdings),
+                        }
+                    )
 
             except Exception as e:
                 logger.error(f"리밸런싱 실패 ({date_str}): {e}", exc_info=True)
@@ -184,14 +209,16 @@ class MultiFactorBacktest:
         quality_score = self.quality_f.calculate(fundamentals)
 
         # 합산 → 필터 → 선정
-        composite_df = self.composite.calculate(value_score, momentum_score, quality_score)
+        composite_df = self.composite.calculate(
+            value_score, momentum_score, quality_score
+        )
         filtered_df = self.composite.apply_universe_filter(composite_df, market_cap)
         selected = self.composite.select_top(filtered_df)
 
         return selected.index.tolist()
 
     def _get_open_price(self, ticker: str, date_str: str) -> Optional[float]:
-        """특정 날짜 시가 조회
+        """특정 날짜 시가 조회 (매매 체결용)
 
         Args:
             ticker: 종목코드
@@ -209,7 +236,9 @@ class MultiFactorBacktest:
             logger.warning(f"시가 조회 실패 ({ticker}, {date_str}): {e}")
         return None
 
-    def _get_rebalance_dates(self, start_date: str, end_date: str) -> list[pd.Timestamp]:
+    def _get_rebalance_dates(
+        self, start_date: str, end_date: str
+    ) -> list[pd.Timestamp]:
         """매월 마지막 영업일 목록 생성
 
         pd.offsets.BMonthEnd() 사용 (deprecated freq 문자열 미사용)

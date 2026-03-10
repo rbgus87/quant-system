@@ -3,21 +3,18 @@ import pandas as pd
 import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
-from datetime import datetime
 
 from data.collector import (
     KRXDataCollector,
     ReturnCalculator,
-    OHLCV_COLUMNS,
-    FUNDAMENTAL_COLUMNS,
-    MARKET_CAP_COLUMNS,
     retry_on_failure,
 )
-
+from data.storage import DataStorage
 
 # ───────────────────────────────────────────────
 # retry_on_failure 데코레이터 테스트
 # ───────────────────────────────────────────────
+
 
 class TestRetryOnFailure:
     def test_success_on_first_try(self) -> None:
@@ -59,9 +56,12 @@ class TestRetryOnFailure:
 # KRXDataCollector 테스트
 # ───────────────────────────────────────────────
 
+
 class TestKRXDataCollector:
     def setup_method(self) -> None:
         self.collector = KRXDataCollector(request_delay=0.0)
+        # 테스트마다 독립적인 in-memory DB 사용
+        self.collector.storage = DataStorage(db_path=":memory:")
 
     @patch("data.collector.stock")
     def test_get_universe(self, mock_stock: MagicMock) -> None:
@@ -109,6 +109,31 @@ class TestKRXDataCollector:
         assert df.empty
 
     @patch("data.collector.stock")
+    def test_get_ohlcv_cache_hit(self, mock_stock: MagicMock) -> None:
+        """캐시에 데이터가 있으면 pykrx 호출 없이 캐시에서 반환"""
+        mock_data = pd.DataFrame(
+            {
+                "시가": [70000],
+                "고가": [72000],
+                "저가": [69000],
+                "종가": [71000],
+                "거래량": [1000000],
+                "거래대금": [71000000000],
+            },
+            index=pd.to_datetime(["2024-01-02"]),
+        )
+        mock_stock.get_market_ohlcv.return_value = mock_data
+
+        # 첫 번째 호출: API → 캐시 저장
+        self.collector.get_ohlcv("005930", "20240102", "20240102")
+        # 두 번째 호출: 캐시 히트
+        df = self.collector.get_ohlcv("005930", "20240102", "20240102")
+
+        assert not df.empty
+        # pykrx는 첫 호출에서만 호출됨
+        assert mock_stock.get_market_ohlcv.call_count == 1
+
+    @patch("data.collector.stock")
     def test_get_fundamentals_all(self, mock_stock: MagicMock) -> None:
         mock_data = pd.DataFrame(
             {
@@ -127,6 +152,27 @@ class TestKRXDataCollector:
         assert list(df.columns) == ["BPS", "PER", "PBR", "EPS", "DIV"]
         assert df.index.name == "ticker"
         assert len(df) == 2
+
+    @patch("data.collector.stock")
+    def test_get_fundamentals_cache_hit(self, mock_stock: MagicMock) -> None:
+        """두 번째 호출은 캐시에서 반환"""
+        mock_data = pd.DataFrame(
+            {
+                "BPS": [50000],
+                "PER": [12.5],
+                "PBR": [1.4],
+                "EPS": [5600],
+                "DIV": [1.8],
+            },
+            index=["005930"],
+        )
+        mock_stock.get_market_fundamental.return_value = mock_data
+
+        self.collector.get_fundamentals_all("20240102", "KOSPI")
+        df = self.collector.get_fundamentals_all("20240102", "KOSPI")
+
+        assert len(df) == 1
+        assert mock_stock.get_market_fundamental.call_count == 1
 
     @patch("data.collector.stock")
     def test_get_market_cap(self, mock_stock: MagicMock) -> None:
@@ -152,6 +198,7 @@ class TestKRXDataCollector:
 # ReturnCalculator 테스트
 # ───────────────────────────────────────────────
 
+
 class TestReturnCalculator:
     @patch("data.collector.stock")
     def test_get_momentum_return(self, mock_stock: MagicMock) -> None:
@@ -172,7 +219,10 @@ class TestReturnCalculator:
         mock_stock.get_market_ohlcv.return_value = mock_data
 
         calc = ReturnCalculator(request_delay=0.0)
-        ret = calc.get_momentum_return("005930", "20240102", lookback_months=12, skip_months=1)
+        calc.collector.storage = DataStorage(db_path=":memory:")
+        ret = calc.get_momentum_return(
+            "005930", "20240102", lookback_months=12, skip_months=1
+        )
 
         assert ret is not None
         assert abs(ret - 0.2) < 0.01
@@ -182,6 +232,7 @@ class TestReturnCalculator:
         mock_stock.get_market_ohlcv.return_value = pd.DataFrame()
 
         calc = ReturnCalculator(request_delay=0.0)
+        calc.collector.storage = DataStorage(db_path=":memory:")
         ret = calc.get_momentum_return("005930", "20240102")
 
         assert ret is None
@@ -204,9 +255,8 @@ class TestReturnCalculator:
         mock_stock.get_market_ohlcv.return_value = mock_data
 
         calc = ReturnCalculator(request_delay=0.0)
-        series = calc.get_returns_for_universe(
-            ["005930", "000660"], "20240102"
-        )
+        calc.collector.storage = DataStorage(db_path=":memory:")
+        series = calc.get_returns_for_universe(["005930", "000660"], "20240102")
 
         assert len(series) == 2
         assert all(v > 0 for v in series.values)

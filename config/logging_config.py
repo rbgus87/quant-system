@@ -7,7 +7,9 @@ from config.settings import settings
 
 def setup_logging():
     """프로젝트 전역 로깅 설정"""
-    os.makedirs(os.path.dirname(settings.log_path), exist_ok=True)
+    log_dir = os.path.dirname(settings.log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -21,9 +23,9 @@ def setup_logging():
                 settings.log_path,
                 maxBytes=10 * 1024 * 1024,
                 backupCount=5,
-                encoding="utf-8"
+                encoding="utf-8",
             ),
-        ]
+        ],
     )
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("pykrx").setLevel(logging.WARNING)

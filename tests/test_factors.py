@@ -1,17 +1,16 @@
 # tests/test_factors.py
 import pandas as pd
 import numpy as np
-import pytest
 
 from factors.value import ValueFactor
 from factors.momentum import MomentumFactor
 from factors.quality import QualityFactor
 from factors.composite import MultiFactorComposite
 
-
 # ───────────────────────────────────────────────
 # ValueFactor 테스트
 # ───────────────────────────────────────────────
+
 
 class TestValueFactor:
     def setup_method(self) -> None:
@@ -88,14 +87,13 @@ class TestValueFactor:
 # MomentumFactor 테스트
 # ───────────────────────────────────────────────
 
+
 class TestMomentumFactor:
     def setup_method(self) -> None:
         self.factor = MomentumFactor()
 
     def test_basic_calculation(self) -> None:
-        returns = pd.Series(
-            {"A": 0.30, "B": 0.10, "C": -0.05, "D": 0.50, "E": 0.20}
-        )
+        returns = pd.Series({"A": 0.30, "B": 0.10, "C": -0.05, "D": 0.50, "E": 0.20})
         result = self.factor.calculate(returns)
 
         assert result.name == "momentum_score"
@@ -138,6 +136,7 @@ class TestMomentumFactor:
 # ───────────────────────────────────────────────
 # QualityFactor 테스트
 # ───────────────────────────────────────────────
+
 
 class TestQualityFactor:
     def setup_method(self) -> None:
@@ -210,6 +209,7 @@ class TestQualityFactor:
 # ───────────────────────────────────────────────
 # MultiFactorComposite 테스트
 # ───────────────────────────────────────────────
+
 
 class TestMultiFactorComposite:
     def setup_method(self) -> None:

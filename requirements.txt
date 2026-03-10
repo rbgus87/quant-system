@@ -5,6 +5,7 @@ scipy==1.17.1
 
 # 한국 주식 데이터
 pykrx==1.2.4
+pykrx-openapi==0.1.1
 finance-datareader==0.9.102
 
 # 시각화
@@ -36,4 +37,5 @@ streamlit==1.55.0
 
 # 개발/테스트
 pytest==9.0.2
+requests-mock==1.12.1
 black==26.3.0

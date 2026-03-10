@@ -41,7 +41,7 @@ docs/01_environment.md와 docs/02_architecture.md를 참고해서:
 7. config/logging_config.py — docs/02_architecture.md의 코드 그대로 구현
 8. git init 및 첫 커밋
 9. 환경 검증: python -c 'import pandas, pykrx, requests, sqlalchemy; print(\"OK\")'
-" --mode step
+" --mode auto
 ```
 
 **`/team:team`을 쓰는 이유**: 파일 생성만 하는 단순 작업. Bootstrapper + Security(의존성 감사)가 자동 활성화.
@@ -75,7 +75,7 @@ docs/03_data_pipeline.md를 참고하고, docs/CLAUDE.md의 알려진 이슈도 
    - 단위 테스트 작성 및 통과 확인
 
 모든 함수에 타입 힌트, logging.getLogger(__name__) 사용, print() 금지.
-" --mode step
+" --mode auto
 ```
 
 **`/team:team`을 쓰는 이유**: docs/03에 메서드 시그니처, 컬럼 매핑, 버그 수정 사항까지 문서화됨. Backend + QA + Security 역할이 자동 개입.
@@ -116,7 +116,7 @@ docs/04_factors.md를 참고해서:
 
 config/settings.py의 FactorWeights, ValueWeights, UniverseConfig, PortfolioConfig 참조.
 모든 함수에 타입 힌트 필수.
-" --mode step
+" --mode auto
 ```
 
 **`/team:team`을 쓰는 이유**: 수학 공식이 명확하고 엣지 케이스도 문서에 정리됨. 1회 실행으로 충분.
@@ -230,7 +230,7 @@ docs/06_kiwoom_api.md를 참고해서:
    - 토큰 갱신, 주문 순서, 에러 핸들링 검증
 
 에러 핸들링 + 재시도 로직(3회) 포함. 모든 함수 타입 힌트 필수.
-" --mode step --with backend,security,qa
+" --mode auto --with backend,security,qa
 ```
 
 **`/team:team`을 쓰는 이유**: API 스펙이 docs/06에 상세히 정의됨. Security가 API 키 관리, 주문 보안을 자동 검토.
@@ -270,7 +270,7 @@ docs/07_automation.md를 참고해서:
    - 스케줄러 월말 판정 테스트
 
 리밸런싱 실패 시 텔레그램 에러 알림 필수.
-" --mode step --with backend,qa
+" --mode auto --with backend,qa
 ```
 
 **`/team:team`을 쓰는 이유**: 텔레그램(HTTP POST), APScheduler(패턴 코드), Streamlit(기본 구조) 모두 정형화된 작업.
@@ -309,9 +309,9 @@ docs/07_automation.md를 참고해서:
 
 | Phase | 명령 | 방식 | 이유 |
 |-------|------|------|------|
-| 1. 환경 구축 | `/team:team --mode step` | 1회 실행 | 파일 생성만, 반복 불필요 |
-| 2. 데이터 파이프라인 | `/team:team --mode step` | 1회 실행 | docs/03에 스펙 상세 |
-| 3. 팩터 구현 | `/team:team --mode step` | 1회 실행 | 수학 공식 명확 |
+| 1. 환경 구축 | `/team:team --mode auto` | 1회 실행 | 파일 생성만, 반복 불필요 |
+| 2. 데이터 파이프라인 | `/team:team --mode auto` | 1회 실행 | docs/03에 스펙 상세 |
+| 3. 팩터 구현 | `/team:team --mode auto` | 1회 실행 | 수학 공식 명확 |
 | **4. 백테스트** | **`/team:ralph-loop`** | **반복 교정** | **런타임 버그 가능성 높음** |
 | 5. 키움 API | `/team:team --with backend,security,qa` | 1회 실행 | API 스펙 명확 |
 | 6. 자동화 | `/team:team --with backend,qa` | 1회 실행 | 정형화된 패턴 |
@@ -322,7 +322,7 @@ docs/07_automation.md를 참고해서:
 ## 팁
 
 - 각 Phase 완료 후 `git commit`으로 진행 상황 저장
-- `/team:team --mode step`은 매 단계에서 확인을 요청하므로 중간 수정 가능
+- `/team:team --mode auto`은 매 단계에서 확인을 요청하므로 중간 수정 가능
 - Phase 4의 `/team:ralph-loop`이 max-iterations에 도달해도 미완이면, 프롬프트를 구체화하여 재실행
 - Phase 2~3에서 예상외로 테스트 실패가 반복되면, 해당 모듈만 `/team:ralph-loop`으로 전환 가능
 - `/team:cancel-ralph`로 언제든 루프 중단 가능
