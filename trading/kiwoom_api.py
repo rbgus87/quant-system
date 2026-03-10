@@ -37,6 +37,8 @@ class KiwoomRestClient:
 
         self._token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
+        self._last_request_at: float = 0.0
+        self._min_request_interval: float = 0.2  # 최소 요청 간격 (초)
 
         mode = (
             "모의투자 (mockapi.kiwoom.com)"
@@ -44,6 +46,14 @@ class KiwoomRestClient:
             else "실전투자 (api.kiwoom.com)"
         )
         logger.info(f"KiwoomRestClient 초기화 [{mode}]")
+
+    def _throttle(self) -> None:
+        """API 요청 간 최소 간격 유지 (Rate Limiting)"""
+        now = time.time()
+        elapsed = now - self._last_request_at
+        if elapsed < self._min_request_interval:
+            time.sleep(self._min_request_interval - elapsed)
+        self._last_request_at = time.time()
 
     # ────────────────────────────────────────────
     # 인증
@@ -76,6 +86,7 @@ class KiwoomRestClient:
             "secretkey": self.app_secret,
         }
         try:
+            self._throttle()
             resp = requests.post(url, json=body, timeout=10)
             resp.raise_for_status()
             data = resp.json()
@@ -161,6 +172,7 @@ class KiwoomRestClient:
         last_exc = None
         for attempt in range(MAX_RETRIES):
             try:
+                self._throttle()
                 resp = requests.get(
                     url,
                     headers=self._headers(api_id),
@@ -191,6 +203,7 @@ class KiwoomRestClient:
         last_exc = None
         for attempt in range(MAX_RETRIES):
             try:
+                self._throttle()
                 resp = requests.post(
                     url,
                     headers=self._headers(api_id),

@@ -205,6 +205,46 @@ class TestQualityFactor:
         result = self.factor.calculate(df)
         assert result.empty
 
+    def test_earnings_yield_component(self) -> None:
+        """이익수익률(1/PER) 지표 포함 확인"""
+        df = pd.DataFrame(
+            {
+                "EPS": [5000, 3000, 8000],
+                "BPS": [50000, 30000, 40000],
+                "PER": [5.0, 15.0, 10.0],
+                "DIV": [2.0, 1.0, 3.0],
+            },
+            index=["A", "B", "C"],
+        )
+        result = self.factor.calculate(df)
+        assert len(result) == 3
+        # A: PER=5 → EY=0.2 (최고), C: PER=10, B: PER=15 (최저)
+
+    def test_dividend_component(self) -> None:
+        """배당수익률 지표 포함 확인"""
+        df = pd.DataFrame(
+            {
+                "EPS": [5000, 5000, 5000],
+                "BPS": [50000, 50000, 50000],
+                "PER": [10.0, 10.0, 10.0],
+                "DIV": [0.0, 2.0, 5.0],
+            },
+            index=["A", "B", "C"],
+        )
+        result = self.factor.calculate(df)
+        assert len(result) == 3
+        # C가 배당 가장 높으므로 퀄리티 스코어 최고
+        assert result["C"] > result["A"]
+
+    def test_quality_without_per_div(self) -> None:
+        """PER/DIV 없이도 ROE만으로 계산 가능"""
+        df = pd.DataFrame(
+            {"EPS": [5000, 3000], "BPS": [50000, 30000]},
+            index=["A", "B"],
+        )
+        result = self.factor.calculate(df)
+        assert len(result) == 2  # ROE만으로 작동
+
 
 # ───────────────────────────────────────────────
 # MultiFactorComposite 테스트
@@ -228,24 +268,27 @@ class TestMultiFactorComposite:
         scores = result["composite_score"].tolist()
         assert scores == sorted(scores, reverse=True)
 
-    def test_intersection_only(self) -> None:
-        """3개 팩터 교집합만 포함"""
+    def test_partial_factor_included(self) -> None:
+        """2/3 이상 팩터가 있으면 포함 (가중치 재분배)"""
         value = pd.Series({"A": 90, "B": 70, "C": 50})
         momentum = pd.Series({"A": 80, "B": 60, "D": 40})
         quality = pd.Series({"A": 70, "C": 30, "D": 10})
 
         result = self.composite.calculate(value, momentum, quality)
-        # 교집합: A만
-        assert len(result) == 1
+        # A: 3/3 팩터, B: 2/3, C: 2/3, D: 2/3 → 모두 포함
+        assert len(result) == 4
         assert "A" in result.index
+        # A는 3팩터 모두 있으므로 가장 높은 스코어
+        assert result.loc["A", "composite_score"] == result["composite_score"].max()
 
-    def test_empty_intersection(self) -> None:
+    def test_single_factor_excluded(self) -> None:
+        """1/3 팩터만 있으면 제외"""
         value = pd.Series({"A": 90})
         momentum = pd.Series({"B": 80})
         quality = pd.Series({"C": 70})
 
         result = self.composite.calculate(value, momentum, quality)
-        assert result.empty
+        assert result.empty  # 각각 1개 팩터만 → 최소 2개 미충족
 
     def test_weights_applied(self) -> None:
         """가중치 적용 검증: V=0.4, M=0.4, Q=0.2"""

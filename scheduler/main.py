@@ -19,9 +19,8 @@ from datetime import datetime
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pandas as pd
-
 from config.settings import settings
+from config.calendar import is_krx_business_day, is_last_krx_business_day_of_month
 from trading.kiwoom_api import KiwoomRestClient
 from trading.order import OrderExecutor
 from notify.telegram import TelegramNotifier
@@ -30,30 +29,26 @@ logger = logging.getLogger(__name__)
 
 
 # ────────────────────────────────────────────
-# 유틸리티
+# 유틸리티 (KRX 캘린더 기반 — 한국 공휴일 인식)
 # ────────────────────────────────────────────
 
 
 def is_business_day() -> bool:
-    """오늘이 주중 영업일인지 확인
+    """오늘이 KRX 거래일인지 확인 (한국 공휴일 인식)
 
     Returns:
-        True=월~금, False=토/일
+        True=거래일, False=휴장일(공휴일/주말)
     """
-    return datetime.now().weekday() < 5
+    return is_krx_business_day()
 
 
 def is_last_business_day_of_month() -> bool:
-    """오늘이 이번 달 마지막 영업일인지 확인
-
-    pd.offsets.BMonthEnd(0): 현재 날짜 기준 이번 달 마지막 영업일 반환
+    """오늘이 이번 달 마지막 KRX 거래일인지 확인 (한국 공휴일 인식)
 
     Returns:
-        True=마지막 영업일, False=아님
+        True=마지막 거래일, False=아님
     """
-    today = pd.Timestamp.today().normalize()
-    last_bday = today + pd.offsets.BMonthEnd(0)
-    return today == last_bday
+    return is_last_krx_business_day_of_month()
 
 
 # ────────────────────────────────────────────

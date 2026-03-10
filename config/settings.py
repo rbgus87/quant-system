@@ -29,10 +29,11 @@ class ValueWeights:
 
 @dataclass
 class UniverseConfig:
-    market: str = "KOSPI"
+    market: str = "KOSPI"  # "KOSPI", "KOSDAQ", "ALL" (KOSPI+KOSDAQ)
     min_market_cap_percentile: float = 10.0  # 시가총액 하위 10% 제외
     exclude_finance: bool = True  # 금융주 제외
     min_listing_days: int = 365  # 상장 1년 미만 제외
+    min_avg_trading_value: int = 100_000_000  # 20일 평균 거래대금 하한 (1억원)
 
 
 @dataclass
@@ -46,6 +47,9 @@ class TradingConfig:
     commission_rate: float = 0.00015  # 수수료 0.015%
     tax_rate: float = 0.0018  # 거래세 0.18% (매도만)
     slippage: float = 0.001  # 슬리피지 0.1%
+    max_position_pct: float = 0.10  # 단일 종목 최대 비중 10%
+    max_turnover_pct: float = 0.50  # 월간 최대 교체율 50%
+    max_drawdown_pct: float = 0.30  # MDD 서킷 브레이커 (-30% 이하 시 리밸런싱 중단)
 
 
 @dataclass
@@ -80,6 +84,11 @@ class Settings:
     # KRX Open API
     krx_openapi_key: str = field(
         default_factory=lambda: os.getenv("KRX_OPENAPI_KEY", "")
+    )
+
+    # DART OpenAPI
+    dart_api_key: str = field(
+        default_factory=lambda: os.getenv("DART_API_KEY", "")
     )
 
     # 내부 경로

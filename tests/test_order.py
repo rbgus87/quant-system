@@ -2,7 +2,12 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from trading.order import OrderExecutor
+from trading.order import (
+    OrderExecutor,
+    BalanceValidationError,
+    TurnoverLimitExceeded,
+    DrawdownCircuitBreaker,
+)
 
 
 @pytest.fixture
@@ -19,6 +24,10 @@ def executor(mock_api):
     with patch("trading.order.settings") as mock_settings:
         mock_settings.is_paper_trading = True
         mock_settings.trading.commission_rate = 0.00015
+        mock_settings.trading.slippage = 0.001
+        mock_settings.trading.max_position_pct = 0.10
+        mock_settings.trading.max_turnover_pct = 0.50
+        mock_settings.trading.max_drawdown_pct = 0.30
         with patch("trading.order.KiwoomRestClient", return_value=mock_api):
             ex = OrderExecutor()
     return ex
@@ -64,6 +73,86 @@ class TestCalculateOrders:
         assert buy == []
 
 
+class TestBalanceValidation:
+    """잔고 검증 안전장치 테스트"""
+
+    def test_valid_balance_passes(self, executor) -> None:
+        """정상 잔고 → 검증 통과"""
+        balance = {
+            "holdings": [{"ticker": "005930", "qty": 100}],
+            "cash": 5000000,
+            "total_eval_amount": 10000000,
+        }
+        executor._validate_balance(balance, "테스트")  # 에러 없이 통과
+
+    def test_holdings_with_zero_total_fails(self, executor) -> None:
+        """보유 종목이 있는데 총평가 0 → API 실패로 abort"""
+        balance = {
+            "holdings": [{"ticker": "005930", "qty": 100}],
+            "cash": 0,
+            "total_eval_amount": 0,
+        }
+        with pytest.raises(BalanceValidationError, match="총평가.*0원"):
+            executor._validate_balance(balance, "테스트")
+
+    def test_empty_account_warning(self, executor) -> None:
+        """빈 계좌 → 경고만 (에러 아님)"""
+        balance = {
+            "holdings": [],
+            "cash": 0,
+            "total_eval_amount": 0,
+        }
+        executor._validate_balance(balance, "테스트")  # 경고만, 에러 아님
+
+    def test_balance_validation_in_rebalancing(self, executor, mock_api) -> None:
+        """리밸런싱 중 잔고 검증 실패 시 BalanceValidationError 발생"""
+        mock_api.get_balance.return_value = {
+            "holdings": [{"ticker": "005930", "qty": 100}, {"ticker": "000660", "qty": 50}],
+            "cash": 0,
+            "total_eval_amount": 0,
+            "total_profit": 0,
+        }
+        with pytest.raises(BalanceValidationError):
+            # 매도 1/2 = 50% → 턴오버 통과, 잔고 검증에서 실패
+            executor.execute_rebalancing(
+                current_holdings=["005930", "000660"],
+                target_portfolio=["000660", "035720"],
+            )
+
+
+class TestTurnoverLimit:
+    """턴오버 제한 테스트"""
+
+    def test_within_limit(self, executor) -> None:
+        """교체율 50% 이하 → 통과"""
+        executor._check_turnover_limit(sell_count=5, current_count=20)
+
+    def test_exceeds_limit(self, executor) -> None:
+        """교체율 50% 초과 → TurnoverLimitExceeded"""
+        with pytest.raises(TurnoverLimitExceeded, match="턴오버 제한 초과"):
+            executor._check_turnover_limit(sell_count=15, current_count=20)
+
+    def test_no_current_holdings_ok(self, executor) -> None:
+        """현재 보유 0개 → 검증 스킵"""
+        executor._check_turnover_limit(sell_count=0, current_count=0)
+
+    def test_full_turnover_blocked(self, executor, mock_api) -> None:
+        """100% 교체 시 리밸런싱 차단"""
+        mock_api.get_balance.return_value = {
+            "holdings": [
+                {"ticker": f"T{i:04d}", "qty": 100} for i in range(10)
+            ],
+            "cash": 1000000,
+            "total_eval_amount": 50000000,
+            "total_profit": 0,
+        }
+        with pytest.raises(TurnoverLimitExceeded):
+            executor.execute_rebalancing(
+                current_holdings=[f"T{i:04d}" for i in range(10)],
+                target_portfolio=[f"N{i:04d}" for i in range(10)],
+            )
+
+
 class TestExecuteRebalancing:
     """리밸런싱 실행 테스트"""
 
@@ -71,35 +160,32 @@ class TestExecuteRebalancing:
     def test_sell_before_buy(self, mock_sleep, executor, mock_api) -> None:
         """매도가 매수보다 먼저 실행"""
         mock_api.get_balance.side_effect = [
-            # ① 매도 전 잔고 확인
+            # ① 매도 전 잔고 확인 (2종목 보유, 1개 매도 = 50%)
             {
-                "holdings": [{"ticker": "005930", "qty": 100}],
+                "holdings": [
+                    {"ticker": "005930", "qty": 100},
+                    {"ticker": "035720", "qty": 50},
+                ],
                 "cash": 1000000,
                 "total_eval_amount": 8000000,
                 "total_profit": 0,
             },
-            # ② 매도 체결 대기 (005930 체결 완료)
+            # ② 매수 전 잔고 재확인
             {
-                "holdings": [],
-                "cash": 8000000,
-                "total_eval_amount": 8000000,
-                "total_profit": 0,
-            },
-            # ③ 매수 전 예수금 재확인
-            {
-                "holdings": [],
+                "holdings": [{"ticker": "035720", "qty": 50}],
                 "cash": 8000000,
                 "total_eval_amount": 8000000,
                 "total_profit": 0,
             },
         ]
         mock_api.sell_stock.return_value = {"return_code": 0, "ord_no": "S001"}
+        mock_api.get_unfilled_orders.return_value = []
         mock_api.get_current_price.return_value = {"current_price": 50000}
         mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
 
         sell_done, buy_done = executor.execute_rebalancing(
-            current_holdings=["005930"],
-            target_portfolio=["000660"],
+            current_holdings=["005930", "035720"],
+            target_portfolio=["035720", "000660"],
         )
 
         assert "005930" in sell_done
@@ -160,26 +246,18 @@ class TestExecuteRebalancing:
     def test_empty_target_liquidates_all(
         self, mock_sleep, executor, mock_api
     ) -> None:
-        """목표 포트폴리오 비어있으면 전량 매도"""
+        """목표 포트폴리오 비어있으면 전량 매도 (턴오버 50% 이내인 경우)"""
         mock_api.get_balance.side_effect = [
             # ① 매도 전
             {
                 "holdings": [
                     {"ticker": "005930", "qty": 100},
-                    {"ticker": "000660", "qty": 50},
                 ],
                 "cash": 1000000,
                 "total_eval_amount": 10000000,
                 "total_profit": 0,
             },
-            # ② 매도 체결 대기 (전부 체결)
-            {
-                "holdings": [],
-                "cash": 10000000,
-                "total_eval_amount": 10000000,
-                "total_profit": 0,
-            },
-            # ③ 예수금 재확인
+            # ② 매수 전 잔고 재확인
             {
                 "holdings": [],
                 "cash": 10000000,
@@ -187,63 +265,124 @@ class TestExecuteRebalancing:
                 "total_profit": 0,
             },
         ]
-        mock_api.sell_stock.return_value = {"return_code": 0}
+        mock_api.sell_stock.return_value = {"return_code": 0, "ord_no": "S001"}
+        mock_api.get_unfilled_orders.return_value = []
 
         sell_done, buy_done = executor.execute_rebalancing(
-            current_holdings=["005930", "000660"],
+            current_holdings=["005930"],
             target_portfolio=[],
         )
-        assert set(sell_done) == {"005930", "000660"}
+        assert "005930" in sell_done
         assert buy_done == []
 
     @patch("time.sleep")
     def test_sell_failure_continues(self, mock_sleep, executor, mock_api) -> None:
-        """매도 실패해도 나머지 계속 실행"""
+        """매도 실패해도 나머지 계속 실행 (턴오버 50% 이내)"""
         mock_api.get_balance.side_effect = [
-            # ① 매도 전
+            # ① 매도 전 (4종목 보유, 2개 매도 = 50%)
             {
                 "holdings": [
                     {"ticker": "005930", "qty": 100},
                     {"ticker": "000660", "qty": 50},
+                    {"ticker": "035720", "qty": 80},
+                    {"ticker": "051910", "qty": 60},
                 ],
                 "cash": 1000000,
+                "total_eval_amount": 20000000,
+                "total_profit": 0,
+            },
+            # ② 매수 전 잔고 재확인
+            {
+                "holdings": [
+                    {"ticker": "035720", "qty": 80},
+                    {"ticker": "051910", "qty": 60},
+                ],
+                "cash": 10000000,
                 "total_eval_amount": 10000000,
                 "total_profit": 0,
             },
-            # ② 매도 체결 대기 (005930만 체결)
-            {
-                "holdings": [{"ticker": "000660", "qty": 50}],
-                "cash": 5000000,
-                "total_eval_amount": 5000000,
-                "total_profit": 0,
-            },
-            # ③ 타임아웃 후 예수금 재확인
-            {
-                "holdings": [{"ticker": "000660", "qty": 50}],
-                "cash": 5000000,
-                "total_eval_amount": 5000000,
-                "total_profit": 0,
-            },
-            # ④ 추가 폴링 (타임아웃까지)
-            {
-                "holdings": [{"ticker": "000660", "qty": 50}],
-                "cash": 5000000,
-                "total_eval_amount": 5000000,
-                "total_profit": 0,
-            },
-        ] * 5  # 충분한 poll 횟수
+        ]
         # sorted 순서: 000660 먼저, 005930 나중
         mock_api.sell_stock.side_effect = [
             {"return_code": -1, "return_msg": "실패"},  # 000660 실패
             {"return_code": 0, "ord_no": "S002"},  # 005930 성공
         ]
+        mock_api.get_unfilled_orders.return_value = []
+        mock_api.get_current_price.return_value = {"current_price": 50000}
+        mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
 
         sell_done, buy_done = executor.execute_rebalancing(
-            current_holdings=["005930", "000660"],
-            target_portfolio=[],
+            current_holdings=["005930", "000660", "035720", "051910"],
+            target_portfolio=["035720", "051910", "066570", "068270"],
         )
         assert "005930" in sell_done
         assert "000660" not in sell_done
+
+
+class TestPositionSizeLimit:
+    """단일 종목 최대 비중 제한 테스트"""
+
+    def test_position_limited_to_max_pct(self, executor, mock_api) -> None:
+        """총평가 1억 + max_position_pct=10% → 종목당 최대 1000만원"""
+        mock_api.get_balance.side_effect = [
+            {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
+            {
+                "holdings": [],
+                "cash": 100000000,  # 1억
+                "total_eval_amount": 100000000,
+                "total_profit": 0,
+            },
+        ]
+        mock_api.get_current_price.return_value = {"current_price": 50000}
+        mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
+
+        executor.execute_rebalancing(
+            current_holdings=[],
+            target_portfolio=["005930"],  # 1종목 → 현금 100% 쓸 수 있지만
+        )
+
+        buy_call = mock_api.buy_stock.call_args
+        qty = buy_call.kwargs.get("qty") or buy_call[1].get("qty")
+        # max_position = 1억 * 10% = 1000만 / 50000 ≈ 199주
+        assert qty <= 200
+        # 전체 현금으로 사면 약 1980주 → 확실히 제한됨
+        assert qty < 1000
+
+
+class TestSettleWithOrderNos:
+    """주문번호 기반 체결 확인 테스트"""
+
+    @patch("time.sleep")
+    def test_settle_by_order_number(self, mock_sleep, executor, mock_api) -> None:
+        """get_unfilled_orders() 기반 체결 확인"""
+        mock_api.get_unfilled_orders.side_effect = [
+            [{"ord_no": "S001"}],  # 첫 폴링: 미체결
+            [],  # 두 번째 폴링: 체결 완료
+        ]
+
+        executor._wait_for_sells_to_settle(
+            sold_tickers=["005930"],
+            order_nos=["S001"],
+        )
+
+        assert mock_api.get_unfilled_orders.call_count == 2
+
+    @patch("time.sleep")
+    def test_settle_fallback_to_balance(self, mock_sleep, executor, mock_api) -> None:
+        """주문번호 없으면 잔고 폴백"""
+        mock_api.get_balance.return_value = {
+            "holdings": [],
+            "cash": 10000000,
+            "total_eval_amount": 10000000,
+            "total_profit": 0,
+        }
+
+        executor._wait_for_sells_to_settle(
+            sold_tickers=["005930"],
+            order_nos=[],
+        )
+
+        mock_api.get_balance.assert_called()
 
 
 class TestPaperTradingGuard:
@@ -277,6 +416,9 @@ class TestPaperTradingGuard:
         with patch("trading.order.settings") as mock_settings:
             mock_settings.is_paper_trading = False
             mock_settings.trading.commission_rate = 0.00015
+            mock_settings.trading.max_position_pct = 0.10
+            mock_settings.trading.max_turnover_pct = 0.50
+            mock_settings.trading.max_drawdown_pct = 0.30
             mock_api = MagicMock()
             mock_api.is_paper = False
             with patch("trading.order.KiwoomRestClient", return_value=mock_api):
@@ -325,3 +467,39 @@ class TestEdgeCases:
             target_portfolio=["005930"],
         )
         assert buy_done == []
+
+
+class TestDrawdownCircuitBreaker:
+    """MDD 서킷 브레이커 테스트"""
+
+    def test_drawdown_within_limit(self, executor) -> None:
+        """고점 대비 20% 하락 → 30% 한도 내 → 통과"""
+        executor._peak_value = 10_000_000
+        executor._check_drawdown(8_000_000)  # -20% → 통과
+
+    def test_drawdown_exceeds_limit(self, executor) -> None:
+        """고점 대비 35% 하락 → 30% 한도 초과 → 차단"""
+        executor._peak_value = 10_000_000
+        with pytest.raises(DrawdownCircuitBreaker, match="서킷 브레이커"):
+            executor._check_drawdown(6_500_000)  # -35%
+
+    def test_drawdown_updates_peak(self, executor) -> None:
+        """신고점 갱신"""
+        executor._peak_value = 10_000_000
+        executor._check_drawdown(12_000_000)
+        assert executor._peak_value == 12_000_000
+
+    def test_drawdown_in_rebalancing(self, executor, mock_api) -> None:
+        """리밸런싱 중 MDD 초과 시 DrawdownCircuitBreaker 발생"""
+        executor._peak_value = 50_000_000  # 고점 5000만
+        mock_api.get_balance.return_value = {
+            "holdings": [{"ticker": "005930", "qty": 100}],
+            "cash": 1000000,
+            "total_eval_amount": 30_000_000,  # -40% 하락
+            "total_profit": -20_000_000,
+        }
+        with pytest.raises(DrawdownCircuitBreaker):
+            executor.execute_rebalancing(
+                current_holdings=["005930"],
+                target_portfolio=["005930", "000660"],
+            )

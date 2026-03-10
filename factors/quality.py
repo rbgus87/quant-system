@@ -9,7 +9,10 @@ logger = logging.getLogger(__name__)
 class QualityFactor:
     """퀄리티 팩터 계산
 
-    - ROE = EPS / BPS * 100 (pykrx는 ROE 미제공 → 직접 계산)
+    구성 지표:
+    - ROE = EPS / BPS * 100 (수익성)
+    - Earnings Yield = 1 / PER (이익수익률, 수익 안정성)
+    - 배당 지급 여부 (기업 질 신호)
     - 부채비율 역수 (선택, 외부 데이터 필요)
     """
 
@@ -21,7 +24,7 @@ class QualityFactor:
         """복합 퀄리티 스코어 계산
 
         Args:
-            fundamentals: DataFrame (index=ticker, EPS·BPS 컬럼 필요)
+            fundamentals: DataFrame (index=ticker, EPS·BPS·PER·DIV 컬럼 필요)
             debt_ratio: 부채비율 Series (선택, index=ticker)
 
         Returns:
@@ -29,33 +32,54 @@ class QualityFactor:
         """
         score_parts: dict[str, tuple[pd.Series, float]] = {}
 
-        # ROE 스코어 (60% 가중)
+        # ROE 스코어 (40% 가중)
         roe_score = self._calc_roe_score(fundamentals)
         if not roe_score.empty:
-            score_parts["roe"] = (roe_score, 0.60)
+            score_parts["roe"] = (roe_score, 0.40)
 
-        # 부채비율 역수 스코어 (40% 가중, 데이터 있을 때만)
+        # Earnings Yield 스코어 (30% 가중)
+        ey_score = self._calc_earnings_yield_score(fundamentals)
+        if not ey_score.empty:
+            score_parts["earnings_yield"] = (ey_score, 0.30)
+
+        # 배당 지급 스코어 (30% 가중)
+        div_score = self._calc_dividend_score(fundamentals)
+        if not div_score.empty:
+            score_parts["dividend"] = (div_score, 0.30)
+
+        # 부채비율 역수 스코어 (데이터 있을 때만, 가중치 재분배)
         if debt_ratio is not None and not debt_ratio.empty:
             d = debt_ratio[debt_ratio >= 0]
             d = d.clip(upper=d.quantile(0.99))
             debt_score = (1 / (d + 1)).rank(pct=True) * 100
-            score_parts["debt"] = (debt_score, 0.40)
+            score_parts["debt"] = (debt_score, 0.20)
 
         if not score_parts:
             logger.warning("퀄리티 팩터: 유효한 지표 없음")
             return pd.Series(dtype=float, name="quality_score")
 
-        # 가중 합산 (ROE만 있으면 100% ROE로)
-        composite: Optional[pd.Series] = None
-        total_w = 0.0
+        # 가중 합산 (NaN-aware: 종목별 가용 가중치 정규화)
+        all_tickers = sorted(
+            set().union(*(s.index for s, _ in score_parts.values()))
+        )
+        df = pd.DataFrame(index=all_tickers)
+        weights: dict[str, float] = {}
         for name, (score, weight) in score_parts.items():
-            if composite is None:
-                composite = score * weight
-            else:
-                composite = composite.add(score * weight, fill_value=0)
-            total_w += weight
+            df[name] = score.reindex(all_tickers)
+            weights[name] = weight
 
-        result = composite / total_w  # type: ignore[operator]
+        weighted_sum = pd.Series(0.0, index=all_tickers)
+        weight_sum = pd.Series(0.0, index=all_tickers)
+        for col, w in weights.items():
+            mask = df[col].notna()
+            weighted_sum[mask] += df.loc[mask, col] * w
+            weight_sum[mask] += w
+
+        # 최소 1개 지표 필요
+        valid_mask = weight_sum > 0
+        result = pd.Series(dtype=float, index=all_tickers)
+        result[valid_mask] = weighted_sum[valid_mask] / weight_sum[valid_mask]
+        result = result.dropna()
         result.name = "quality_score"
         logger.info(f"퀄리티 스코어 계산 완료: {len(result)}개 종목")
         return result
@@ -88,3 +112,52 @@ class QualityFactor:
         roe = roe.clip(lower=-50, upper=100)
 
         return roe.rank(pct=True) * 100
+
+    @staticmethod
+    def _calc_earnings_yield_score(fundamentals: pd.DataFrame) -> pd.Series:
+        """Earnings Yield (1/PER) 순위 스코어
+
+        PER가 양수인 종목만 대상 (적자 기업 제외)
+        높은 이익수익률 = 높은 스코어
+
+        Args:
+            fundamentals: DataFrame (PER 컬럼 필요)
+
+        Returns:
+            0~100 범위의 순위 스코어 Series
+        """
+        if "PER" not in fundamentals.columns:
+            return pd.Series(dtype=float)
+
+        per = fundamentals["PER"]
+        valid = per[per > 0]
+        if valid.empty:
+            return pd.Series(dtype=float)
+
+        ey = 1 / valid  # Earnings Yield
+        ey = ey.clip(upper=ey.quantile(0.99))
+        return ey.rank(pct=True) * 100
+
+    @staticmethod
+    def _calc_dividend_score(fundamentals: pd.DataFrame) -> pd.Series:
+        """배당수익률 기반 퀄리티 스코어
+
+        배당을 지급하는 기업일수록 높은 스코어.
+        배당 미지급(DIV=0 or NaN) 종목도 포함하되 낮은 스코어 부여.
+
+        Args:
+            fundamentals: DataFrame (DIV 컬럼 필요)
+
+        Returns:
+            0~100 범위의 순위 스코어 Series
+        """
+        if "DIV" not in fundamentals.columns:
+            return pd.Series(dtype=float)
+
+        div = fundamentals["DIV"].fillna(0)
+        valid = div[div >= 0]
+        if valid.empty:
+            return pd.Series(dtype=float)
+
+        valid = valid.clip(upper=valid.quantile(0.99))
+        return valid.rank(pct=True) * 100

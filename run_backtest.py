@@ -60,9 +60,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="멀티팩터 퀀트 백테스트")
     parser.add_argument(
         "--mode",
-        choices=["insample", "outsample", "both"],
+        choices=["insample", "outsample", "both", "custom"],
         default="both",
         help="백테스트 모드 (기본: both)",
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        default=None,
+        help="시작일 YYYY-MM-DD (--mode custom 시 필수)",
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        default=None,
+        help="종료일 YYYY-MM-DD (--mode custom 시 필수)",
     )
     parser.add_argument(
         "--cash",
@@ -73,6 +85,18 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging()
+
+    if args.mode == "custom":
+        if not args.start or not args.end:
+            parser.error("--mode custom 사용 시 --start, --end 필수")
+        run(
+            start_date=args.start,
+            end_date=args.end,
+            initial_cash=args.cash,
+            label=f"Custom ({args.start}~{args.end})",
+            report_path="reports/custom_report.html",
+        )
+        return
 
     if args.mode in ("insample", "both"):
         run(

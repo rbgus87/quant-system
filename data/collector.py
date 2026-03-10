@@ -114,12 +114,13 @@ def retry_on_failure(
 
 
 class KRXDataCollector:
-    """KRX 데이터 수집 (KRX Open API + pykrx + SQLite 캐시)
+    """KRX 데이터 수집 (KRX Open API + DART + pykrx + SQLite 캐시)
 
     데이터 조회 우선순위:
       1. SQLite 캐시 (이전에 저장된 데이터)
       2. KRX Open API (pykrx-openapi, 인증키 필요)
-      3. pykrx 폴백 (개별 종목 OHLCV만 가능)
+      3. DART OpenAPI (재무제표 기반 EPS/BPS → PER/PBR 계산)
+      4. pykrx 폴백 (개별 종목 OHLCV만 가능)
     """
 
     def __init__(self, request_delay: float = 0.5) -> None:
@@ -131,6 +132,8 @@ class KRXDataCollector:
         self.storage = DataStorage()
         self._krx_api = None
         self._krx_api_checked = False
+        self._dart_client = None
+        self._dart_client_checked = False
 
     @property
     def krx_api(self) -> Optional[object]:
@@ -157,6 +160,23 @@ class KRXDataCollector:
                 )
         return self._krx_api
 
+    @property
+    def dart_client(self) -> Optional[object]:
+        """DART OpenAPI 클라이언트 (lazy init)"""
+        if not self._dart_client_checked:
+            self._dart_client_checked = True
+            if settings.dart_api_key:
+                try:
+                    from data.dart_client import DartClient
+
+                    self._dart_client = DartClient()
+                    logger.info("DART OpenAPI 클라이언트 초기화 완료")
+                except Exception as e:
+                    logger.error(f"DART OpenAPI 초기화 실패: {e}")
+            else:
+                logger.info("DART_API_KEY 미설정. DART 폴백 비활성화.")
+        return self._dart_client
+
     # ───────────────────────────────────────────────
     # 유니버스
     # ───────────────────────────────────────────────
@@ -182,8 +202,8 @@ class KRXDataCollector:
                 if records:
                     rows = []
                     for r in records:
-                        ticker = r.get("ISU_SRT_CD", "")
-                        name = r.get("ISU_ABBRV", "")
+                        ticker = self._normalize_ticker(r.get("ISU_CD", ""))
+                        name = r.get("ISU_NM", "")
                         if ticker:
                             rows.append(
                                 {"ticker": ticker, "name": name, "market": market}
@@ -233,15 +253,23 @@ class KRXDataCollector:
         sd = _parse_date(start_date)
         ed = _parse_date(end_date)
 
-        # 1. 캐시 확인
+        # 1. 캐시 확인 (요청 기간 대비 충분한 데이터가 있는지 검증)
         cached = self.storage.load_daily_prices(ticker, sd, ed)
         if not cached.empty:
-            return cached
+            # 요청 기간이 1일이면 캐시 히트로 충분
+            request_days = (ed - sd).days
+            if request_days <= 1 or len(cached) >= max(request_days * 0.5, 3):
+                return cached
+            # 캐시 데이터가 부족하면 pykrx로 보충 시도
+            logger.debug(
+                f"[{ticker}] 캐시 부분 히트 ({len(cached)}건), "
+                f"pykrx로 전체 기간 조회 시도"
+            )
 
         # 2. pykrx (개별 OHLCV는 여전히 작동)
         df = stock.get_market_ohlcv(start_date, end_date, ticker)
         if df.empty:
-            return pd.DataFrame()
+            return cached if not cached.empty else pd.DataFrame()
 
         df = df.rename(columns=OHLCV_COLUMNS)
         df.index.name = "date"
@@ -285,15 +313,36 @@ class KRXDataCollector:
                 if records:
                     df = self._parse_base_info(records)
                     if not df.empty:
-                        self.storage.save_fundamentals(dt, df)
-                        logger.info(
-                            f"[{date}] 기본 지표: {len(df)}건 (KRX API → 캐시 저장)"
-                        )
-                        return df
+                        # KRX API에 PER/PBR 필드가 없을 수 있음 → 유효 데이터 확인
+                        has_valid = False
+                        for col in ["PER", "PBR", "EPS", "BPS"]:
+                            if col in df.columns and df[col].notna().any():
+                                has_valid = True
+                                break
+                        if has_valid:
+                            self.storage.save_fundamentals(dt, df)
+                            logger.info(
+                                f"[{date}] 기본 지표: {len(df)}건 (KRX API)"
+                            )
+                            return df
+                        else:
+                            logger.info(
+                                f"[{date}] KRX API 기본 지표: {len(df)}건이나 "
+                                "PER/PBR 모두 NaN → DART 폴백 시도"
+                            )
             except Exception as e:
                 logger.warning(f"[{date}] KRX API 기본 지표 실패: {e}")
 
-        # 3. pykrx 폴백
+        # 3. DART OpenAPI 폴백 (재무제표 기반 PER/PBR 계산)
+        dart_df = self._get_fundamentals_via_dart(date, market)
+        if not dart_df.empty:
+            self.storage.save_fundamentals(dt, dart_df)
+            logger.info(
+                f"[{date}] 기본 지표: {len(dart_df)}건 (DART → 캐시 저장)"
+            )
+            return dart_df
+
+        # 4. pykrx 폴백
         try:
             df = stock.get_market_fundamental(date, market=market)
             if not df.empty:
@@ -400,7 +449,7 @@ class KRXDataCollector:
 
             rows = []
             for r in records:
-                ticker = r.get("ISU_SRT_CD", "")
+                ticker = self._normalize_ticker(r.get("ISU_CD", ""))
                 if not ticker:
                     continue
                 rows.append(
@@ -439,8 +488,120 @@ class KRXDataCollector:
             return pd.DataFrame()
 
     # ───────────────────────────────────────────────
+    # 유동성 (평균 거래대금)
+    # ───────────────────────────────────────────────
+
+    def get_avg_trading_value(
+        self,
+        tickers: list[str],
+        date: str,
+        lookback_days: int = 20,
+    ) -> pd.Series:
+        """종목별 N일 평균 거래대금 계산 (close × volume)
+
+        Args:
+            tickers: 종목 코드 리스트
+            date: 기준 날짜 (YYYYMMDD)
+            lookback_days: 평균 계산 기간 (영업일 기준, 기본 20일)
+
+        Returns:
+            Series(index=ticker, values=평균 거래대금)
+        """
+        base_dt = datetime.strptime(date.replace("-", ""), "%Y%m%d")
+        start_dt = base_dt - relativedelta(days=lookback_days * 2)  # 영업일 마진
+        start_str = start_dt.strftime("%Y%m%d")
+
+        result: dict[str, float] = {}
+        for ticker in tickers:
+            try:
+                ohlcv = self.get_ohlcv(ticker, start_str, date)
+                if ohlcv.empty:
+                    continue
+                recent = ohlcv.tail(lookback_days)
+                trading_value = (recent["close"] * recent["volume"]).mean()
+                if trading_value > 0:
+                    result[ticker] = trading_value
+            except Exception as e:
+                logger.debug(f"[{ticker}] 거래대금 조회 실패: {e}")
+                continue
+
+        series = pd.Series(result, dtype=float)
+        series.index.name = "ticker"
+        logger.info(
+            f"[{date}] 평균 거래대금 계산: {len(series)}건 "
+            f"(>{lookback_days}일 평균)"
+        )
+        return series
+
+    def get_suspended_tickers(
+        self,
+        tickers: list[str],
+        date: str,
+    ) -> set[str]:
+        """거래정지 종목 감지 (당일 거래량 0)
+
+        Args:
+            tickers: 종목 코드 리스트
+            date: 기준 날짜 (YYYYMMDD)
+
+        Returns:
+            거래정지 종목 코드 집합
+        """
+        suspended: set[str] = set()
+        for ticker in tickers:
+            try:
+                ohlcv = self.get_ohlcv(ticker, date, date)
+                if ohlcv.empty:
+                    suspended.add(ticker)
+                    continue
+                vol = ohlcv["volume"].iloc[0] if "volume" in ohlcv.columns else 0
+                if vol == 0:
+                    suspended.add(ticker)
+            except Exception:
+                suspended.add(ticker)
+
+        if suspended:
+            logger.info(f"[{date}] 거래정지 종목: {len(suspended)}개")
+        return suspended
+
+    # ───────────────────────────────────────────────
     # 내부 헬퍼
     # ───────────────────────────────────────────────
+
+    def _get_fundamentals_via_dart(
+        self, date: str, market: str = "KOSPI"
+    ) -> pd.DataFrame:
+        """DART 재무제표 + KRX 시세로 펀더멘털 계산
+
+        1. KRX 일별 거래 데이터에서 종가, 발행주식수 추출
+        2. DART에서 EPS, 자본총계 조회
+        3. PER = 종가/EPS, PBR = 종가/BPS(=자본총계/주식수) 계산
+
+        Args:
+            date: 기준 날짜 (YYYYMMDD)
+            market: KOSPI / KOSDAQ
+
+        Returns:
+            DataFrame(index=ticker, columns=[BPS, PER, PBR, EPS, DIV])
+        """
+        if not self.dart_client:
+            return pd.DataFrame()
+
+        # KRX 일별 거래 데이터에서 종가 + 주식수 확보
+        trade_data = self.prefetch_daily_trade(date, market)
+        if trade_data.empty:
+            logger.warning(f"[{date}] DART 폴백: KRX 거래 데이터 없음")
+            return pd.DataFrame()
+
+        # 종가와 주식수 추출 (숫자 변환)
+        close_prices = pd.to_numeric(trade_data["close"], errors="coerce")
+        shares_data = pd.to_numeric(trade_data["shares"], errors="coerce")
+        tickers = trade_data.index.tolist()
+
+        # DART에서 재무제표 조회 + PER/PBR 계산
+        return self.dart_client.get_fundamentals_for_date(
+            tickers, date, close_prices, shares_data
+        )
 
     def _get_daily_trade_method(self, market: str) -> Callable:
         """시장에 따른 KRX API 일별 거래 메서드 반환"""
@@ -449,10 +610,14 @@ class KRXDataCollector:
         return self.krx_api.get_stock_daily_trade
 
     def _parse_base_info(self, records: list[dict]) -> pd.DataFrame:
-        """KRX API get_stock_base_info 응답을 Fundamental DataFrame으로 변환"""
+        """KRX API get_stock_base_info 응답을 Fundamental DataFrame으로 변환
+
+        주의: 유가증권 종목기본정보 API에는 PER/PBR/EPS/BPS/DIV 필드가
+        포함되어 있지 않을 수 있습니다. 해당 필드가 없으면 None으로 채워집니다.
+        """
         rows = []
         for r in records:
-            ticker = r.get("ISU_SRT_CD", "")
+            ticker = self._normalize_ticker(r.get("ISU_SRT_CD", ""))
             if not ticker:
                 continue
             rows.append(
@@ -475,7 +640,7 @@ class KRXDataCollector:
         """KRX API get_stock_daily_trade 응답에서 시가총액 추출"""
         rows = []
         for r in records:
-            ticker = r.get("ISU_SRT_CD", "")
+            ticker = self._normalize_ticker(r.get("ISU_CD", ""))
             if not ticker:
                 continue
             rows.append(
@@ -493,12 +658,16 @@ class KRXDataCollector:
 
     @staticmethod
     def _safe_float(val: object) -> Optional[float]:
-        """안전한 float 변환"""
+        """안전한 float 변환
+
+        빈 문자열이나 None은 None 반환. 0은 유효한 값으로 간주.
+        """
         if val is None:
             return None
+        if isinstance(val, str) and val.strip() == "":
+            return None
         try:
-            result = float(val)
-            return result if result != 0 else None
+            return float(val)
         except (ValueError, TypeError):
             return None
 
@@ -511,6 +680,19 @@ class KRXDataCollector:
             return int(float(val))
         except (ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _normalize_ticker(raw: object) -> str:
+        """KRX API 응답의 ticker를 6자리 zero-padded 문자열로 정규화
+
+        API에 따라 ISU_CD='095570'(str) 또는 ISU_SRT_CD=95570.0(float)으로
+        반환되므로 통일된 형식으로 변환합니다.
+        """
+        if raw is None:
+            return ""
+        if isinstance(raw, float):
+            raw = int(raw)
+        return str(raw).strip().zfill(6)
 
 
 class ReturnCalculator:

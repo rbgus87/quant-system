@@ -5,6 +5,7 @@ python-telegram-bot v21은 완전 async 기반이지만
 스케줄러 내에서 간단히 쓰려면 requests 직접 호출이 더 단순.
 """
 
+import time
 import requests
 import logging
 from config.settings import settings
@@ -41,12 +42,18 @@ class TelegramNotifier:
 
         return self._send_single(message, parse_mode)
 
-    def _send_single(self, message: str, parse_mode: str) -> bool:
-        """단일 메시지 발송
+    def _send_single(
+        self,
+        message: str,
+        parse_mode: str,
+        max_retries: int = 3,
+    ) -> bool:
+        """단일 메시지 발송 (재시도 포함)
 
         Args:
             message: 발송할 텍스트
             parse_mode: 파싱 모드
+            max_retries: 최대 재시도 횟수
 
         Returns:
             True=성공, False=실패
@@ -57,18 +64,41 @@ class TelegramNotifier:
             "text": message,
             "parse_mode": parse_mode,
         }
-        try:
-            resp = requests.post(url, json=payload, timeout=10)
-            if resp.status_code == 200:
-                logger.debug("텔레그램 발송 성공")
-                return True
-            else:
-                logger.error(f"텔레그램 발송 실패 ({resp.status_code}): {resp.text}")
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(url, json=payload, timeout=10)
+                if resp.status_code == 200:
+                    logger.debug("텔레그램 발송 성공")
+                    return True
+                elif resp.status_code == 429:
+                    # Rate limit — Retry-After 헤더 존재 시 대기
+                    retry_after = int(resp.headers.get("Retry-After", 5))
+                    logger.warning(
+                        f"텔레그램 Rate Limit, {retry_after}초 대기 "
+                        f"(시도 {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(retry_after)
+                    continue
+                else:
+                    logger.error(
+                        f"텔레그램 발송 실패 ({resp.status_code}): {resp.text}"
+                    )
+                    return False
+            except requests.exceptions.Timeout:
+                logger.warning(
+                    f"텔레그램 타임아웃 (시도 {attempt + 1}/{max_retries})"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
                 return False
-        except Exception as e:
-            err_msg = str(e).replace(self.token, "***") if self.token else str(e)
-            logger.error(f"텔레그램 오류: {err_msg}")
-            return False
+            except Exception as e:
+                err_msg = (
+                    str(e).replace(self.token, "***") if self.token else str(e)
+                )
+                logger.error(f"텔레그램 오류: {err_msg}")
+                return False
+        return False
 
     def _send_chunked(self, message: str, parse_mode: str) -> bool:
         """4096자 초과 메시지를 분할 발송

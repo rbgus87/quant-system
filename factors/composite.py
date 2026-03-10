@@ -27,28 +27,32 @@ class MultiFactorComposite:
         value_score: pd.Series,
         momentum_score: pd.Series,
         quality_score: pd.Series,
+        min_factor_count: int = 2,
     ) -> pd.DataFrame:
         """3개 팩터 가중 합산
+
+        2/3 이상 팩터가 있는 종목은 가용 가중치 정규화로 포함.
+        결측 팩터가 있는 종목은 나머지 팩터 가중치를 재분배합니다.
 
         Args:
             value_score: 밸류 스코어 (0~100)
             momentum_score: 모멘텀 스코어 (0~100)
             quality_score: 퀄리티 스코어 (0~100)
+            min_factor_count: 최소 필요 팩터 수 (기본 2)
 
         Returns:
             DataFrame(index=ticker, columns=[value_score, momentum_score, quality_score, composite_score])
             composite_score 내림차순 정렬
         """
-        # 세 팩터 공통 종목만 사용 (교집합)
-        common = (
+        # 유니온 기반 — 1개 이상 팩터가 있는 모든 종목
+        all_tickers = sorted(
             set(value_score.index)
-            & set(momentum_score.index)
-            & set(quality_score.index)
+            | set(momentum_score.index)
+            | set(quality_score.index)
         )
-        logger.info(f"팩터 공통 종목: {len(common)}개")
 
-        if not common:
-            logger.warning("공통 종목 없음 — 빈 결과 반환")
+        if not all_tickers:
+            logger.warning("유효 종목 없음 — 빈 결과 반환")
             return pd.DataFrame(
                 columns=[
                     "value_score",
@@ -58,19 +62,47 @@ class MultiFactorComposite:
                 ]
             )
 
-        common_list = sorted(common)
         df = pd.DataFrame(
             {
-                "value_score": value_score.reindex(common_list),
-                "momentum_score": momentum_score.reindex(common_list),
-                "quality_score": quality_score.reindex(common_list),
+                "value_score": value_score.reindex(all_tickers),
+                "momentum_score": momentum_score.reindex(all_tickers),
+                "quality_score": quality_score.reindex(all_tickers),
             }
         )
-        df["composite_score"] = (
-            df["value_score"] * self.w.value
-            + df["momentum_score"] * self.w.momentum
-            + df["quality_score"] * self.w.quality
+
+        # 최소 팩터 수 필터
+        factor_cols = ["value_score", "momentum_score", "quality_score"]
+        factor_count = df[factor_cols].notna().sum(axis=1)
+        df = df[factor_count >= min_factor_count].copy()
+
+        if df.empty:
+            logger.warning(f"최소 {min_factor_count}개 팩터 충족 종목 없음")
+            return pd.DataFrame(
+                columns=factor_cols + ["composite_score"]
+            )
+
+        n_full = (factor_count.reindex(df.index) == 3).sum()
+        n_partial = len(df) - n_full
+        logger.info(
+            f"팩터 종목: {len(df)}개 (완전 {n_full}개, 부분 {n_partial}개)"
         )
+
+        # 가중 합산 (NaN 팩터 가중치 재분배)
+        weights = {
+            "value_score": self.w.value,
+            "momentum_score": self.w.momentum,
+            "quality_score": self.w.quality,
+        }
+        weighted_sum = pd.Series(0.0, index=df.index)
+        weight_sum = pd.Series(0.0, index=df.index)
+
+        for col, w in weights.items():
+            mask = df[col].notna()
+            weighted_sum[mask] += df.loc[mask, col] * w
+            weight_sum[mask] += w
+
+        df["composite_score"] = weighted_sum / weight_sum
+        df = df.dropna(subset=["composite_score"])
         return df.sort_values("composite_score", ascending=False)
 
     def apply_universe_filter(

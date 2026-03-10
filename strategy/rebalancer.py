@@ -42,6 +42,54 @@ class Rebalancer:
 
         return sell_tickers, buy_tickers
 
+    def compute_weight_rebalance(
+        self,
+        current_holdings: dict[str, int],
+        target_tickers: list[str],
+        prices: dict[str, float],
+        total_value: float,
+    ) -> dict[str, int]:
+        """전체 목표 포트폴리오에 대한 비중 리밸런싱 주문 계산
+
+        기존 보유종목 포함 모든 목표 종목을 균등 비중으로 조정합니다.
+
+        Args:
+            current_holdings: 현재 보유 {ticker: shares}
+            target_tickers: 목표 종목 코드 리스트
+            prices: 종목별 체결 가격 {ticker: price}
+            total_value: 총 포트폴리오 가치
+
+        Returns:
+            {ticker: delta_shares} 양수=매수, 음수=매도, 0=변경없음
+            포트폴리오에서 빠지는 종목은 -current_shares
+        """
+        target_set = set(target_tickers)
+        n_target = len(target_set)
+        if n_target == 0:
+            # 전량 청산
+            return {t: -s for t, s in current_holdings.items() if s > 0}
+
+        target_per_stock = total_value / n_target
+        orders: dict[str, int] = {}
+
+        # 포트폴리오에서 빠지는 종목: 전량 매도
+        for ticker, shares in current_holdings.items():
+            if ticker not in target_set and shares > 0:
+                orders[ticker] = -shares
+
+        # 목표 종목: 균등 비중으로 조정
+        for ticker in target_tickers:
+            price = prices.get(ticker, 0)
+            if price <= 0:
+                continue
+            target_shares = self.calc_buy_shares(target_per_stock, price)
+            current_shares = current_holdings.get(ticker, 0)
+            delta = target_shares - current_shares
+            if delta != 0:
+                orders[ticker] = delta
+
+        return orders
+
     def calc_sell_proceed(self, price: float, shares: int) -> float:
         """매도 수익금 계산 (수수료 + 세금 + 슬리피지 차감)
 
@@ -69,6 +117,33 @@ class Rebalancer:
         gross = price * shares
         cost_rate = self.cfg.commission_rate + self.cfg.slippage
         return gross * (1 + cost_rate)
+
+    def estimate_market_impact(
+        self,
+        order_qty: int,
+        avg_daily_volume: float,
+        participation_rate: float = 0.1,
+    ) -> float:
+        """시장 충격 추정 (Square-Root Model)
+
+        Impact ≈ sigma * sqrt(order_qty / (avg_volume * participation_rate))
+        간소화: sigma를 1%로 가정
+
+        Args:
+            order_qty: 주문 수량
+            avg_daily_volume: 20일 평균 거래량
+            participation_rate: 참여율 (기본 10%)
+
+        Returns:
+            추정 시장 충격 비율 (예: 0.005 = 0.5%)
+        """
+        if avg_daily_volume <= 0 or order_qty <= 0:
+            return 0.0
+
+        sigma = 0.01  # 일일 변동성 1% 가정
+        volume_fraction = order_qty / (avg_daily_volume * participation_rate)
+        impact = sigma * (volume_fraction ** 0.5)
+        return min(float(impact), 0.05)  # 최대 5% 캡
 
     def calc_buy_shares(self, target_amount: float, price: float) -> int:
         """목표 금액으로 매수 가능한 주식 수 계산

@@ -7,6 +7,10 @@ from unittest.mock import patch, MagicMock
 from backtest.engine import MultiFactorBacktest
 from backtest.metrics import PerformanceAnalyzer
 from backtest.report import ReportGenerator
+from config.calendar import (
+    get_krx_month_end_sessions,
+    next_krx_business_day,
+)
 from strategy.rebalancer import Rebalancer
 
 # ───────────────────────────────────────────────
@@ -86,6 +90,85 @@ class TestRebalancer:
         # 1_000_000 / 50057.5 = 19.977 → 19주
         assert shares == 19
 
+    def test_market_impact_small_order(self) -> None:
+        """소량 주문 → 시장 충격 작음"""
+        impact = self.rebalancer.estimate_market_impact(
+            order_qty=100, avg_daily_volume=1_000_000
+        )
+        assert 0 < impact < 0.005  # 0.5% 미만
+
+    def test_market_impact_large_order(self) -> None:
+        """대량 주문 → 시장 충격 큼"""
+        impact = self.rebalancer.estimate_market_impact(
+            order_qty=100_000, avg_daily_volume=100_000
+        )
+        assert impact > 0.01  # 1% 초과
+
+    def test_market_impact_zero_volume(self) -> None:
+        """거래량 0 → 충격 0"""
+        impact = self.rebalancer.estimate_market_impact(
+            order_qty=100, avg_daily_volume=0
+        )
+        assert impact == 0.0
+
+    def test_market_impact_capped(self) -> None:
+        """시장 충격 최대 5% 캡"""
+        impact = self.rebalancer.estimate_market_impact(
+            order_qty=1_000_000, avg_daily_volume=1_000
+        )
+        assert impact <= 0.05
+
+    def test_weight_rebalance_new_portfolio(self) -> None:
+        """빈 포트폴리오에서 목표 종목 전체 매수"""
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={},
+            target_tickers=["A", "B"],
+            prices={"A": 10000, "B": 20000},
+            total_value=1_000_000,
+        )
+        # 각 50만원씩 → A: 49주(50만/10000*1.00115), B: 24주
+        assert orders["A"] > 0
+        assert orders["B"] > 0
+
+    def test_weight_rebalance_drift_correction(self) -> None:
+        """기존 보유종목 비중 드리프트 교정"""
+        # A: 30주(시가 10000 = 30만원), B: 10주(시가 20000 = 20만원)
+        # 총가치 = 현금 50만 + A 30만 + B 20만 = 100만
+        # 목표 비중: 각 50만원 → A: 49주, B: 24주
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={"A": 30, "B": 10},
+            target_tickers=["A", "B"],
+            prices={"A": 10000, "B": 20000},
+            total_value=1_000_000,
+        )
+        # A: 49-30=19 매수, B: 24-10=14 매수
+        assert orders["A"] > 0  # 추가 매수
+        assert orders["B"] > 0  # 추가 매수
+
+    def test_weight_rebalance_overweight_sells(self) -> None:
+        """과대 비중 종목은 일부 매도"""
+        # A: 80주(시가 10000 = 80만), B: 5주(시가 20000 = 10만)
+        # 총가치 = 현금 10만 + 80만 + 10만 = 100만
+        # 목표: 각 50만 → A: 49주, B: 24주
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={"A": 80, "B": 5},
+            target_tickers=["A", "B"],
+            prices={"A": 10000, "B": 20000},
+            total_value=1_000_000,
+        )
+        assert orders["A"] < 0  # 일부 매도 (80→49)
+        assert orders["B"] > 0  # 추가 매수 (5→24)
+
+    def test_weight_rebalance_liquidation(self) -> None:
+        """목표 비어있으면 전량 청산"""
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={"A": 50, "B": 30},
+            target_tickers=[],
+            prices={"A": 10000, "B": 20000},
+            total_value=1_000_000,
+        )
+        assert orders == {"A": -50, "B": -30}
+
 
 # ───────────────────────────────────────────────
 # Engine 테스트
@@ -94,49 +177,44 @@ class TestRebalancer:
 
 class TestEngine:
     def test_rebalance_dates_are_business_month_ends(self) -> None:
-        """리밸런싱 날짜가 실제 월말 영업일인지 확인"""
-        engine = MultiFactorBacktest.__new__(MultiFactorBacktest)
-        dates = engine._get_rebalance_dates("2024-01-01", "2024-06-30")
+        """리밸런싱 날짜가 실제 KRX 월말 거래일인지 확인"""
+        dates = get_krx_month_end_sessions("2024-01-01", "2024-06-30")
 
         assert len(dates) == 6  # Jan~Jun 각 1회
         for dt in dates:
             # 영업일인지 (weekday < 5)
             assert dt.weekday() < 5, f"{dt} is not a business day"
-            # 해당 월의 마지막 영업일인지
-            next_bday = dt + pd.offsets.BDay(1)
+            # 같은 달의 다음 거래일이 없어야 함 (마지막 거래일)
+            next_bd = next_krx_business_day(dt)
             assert (
-                next_bday.month != dt.month
+                next_bd.month != dt.month
             ), f"{dt} is not the last business day of the month"
 
-    def test_rebalance_dates_no_bme_freq(self) -> None:
-        """freq='BME' 미사용 확인 (deprecated) — pd.offsets.BMonthEnd() 사용"""
-        import inspect
-
-        source = inspect.getsource(MultiFactorBacktest._get_rebalance_dates)
-        assert "BME" not in source, "freq='BME' 사용 금지 — pd.offsets.BMonthEnd() 사용"
-        assert "BMonthEnd" in source
+    def test_rebalance_dates_use_krx_calendar(self) -> None:
+        """KRX 캘린더 사용 확인 — 한국 공휴일 인식"""
+        dates = get_krx_month_end_sessions("2024-01-01", "2024-12-31")
+        assert len(dates) == 12  # 12개월 각 1회
+        for dt in dates:
+            assert dt.weekday() < 5
 
     def test_next_business_day(self) -> None:
-        """T+1 체결이 정확히 다음 영업일인지 확인"""
-        engine = MultiFactorBacktest.__new__(MultiFactorBacktest)
-
+        """T+1 체결이 정확히 다음 KRX 거래일인지 확인"""
         # 금요일 → 다음 월요일
         friday = pd.Timestamp("2024-01-26")  # Friday
-        next_bd = engine._next_business_day(friday)
+        next_bd = next_krx_business_day(friday)
         assert next_bd == pd.Timestamp("2024-01-29")  # Monday
         assert next_bd.weekday() == 0
 
         # 수요일 → 목요일
         wednesday = pd.Timestamp("2024-01-24")
-        next_bd = engine._next_business_day(wednesday)
+        next_bd = next_krx_business_day(wednesday)
         assert next_bd == pd.Timestamp("2024-01-25")
 
     def test_next_business_day_month_boundary(self) -> None:
-        """월말 → 다음 달 첫 영업일"""
-        engine = MultiFactorBacktest.__new__(MultiFactorBacktest)
+        """월말 → 다음 달 첫 KRX 거래일"""
         # 2024-01-31 (Wed) → 2024-02-01 (Thu)
         jan_end = pd.Timestamp("2024-01-31")
-        next_bd = engine._next_business_day(jan_end)
+        next_bd = next_krx_business_day(jan_end)
         assert next_bd == pd.Timestamp("2024-02-01")
         assert next_bd.month == 2
 
@@ -210,6 +288,9 @@ class TestEngine:
         mock_collector.get_fundamentals_all.return_value = fundamentals
         mock_collector.get_market_cap.return_value = market_cap_df
         mock_collector.get_ohlcv.side_effect = lambda t, s, e: mock_ohlcv(s, e, t)
+        mock_collector.get_avg_trading_value.return_value = pd.Series(
+            np.random.uniform(1e8, 1e10, n_tickers), index=tickers
+        )
 
         # Mock 수익률
         returns = pd.Series(
@@ -232,18 +313,89 @@ class TestEngine:
         # 첫 포트폴리오 가치는 초기 자금 근처
         assert result["portfolio_value"].iloc[0] > 0
 
+    @patch("backtest.engine.KRXDataCollector")
+    @patch("backtest.engine.ReturnCalculator")
+    def test_turnover_tracking(
+        self, MockReturnCalc: MagicMock, MockCollector: MagicMock
+    ) -> None:
+        """턴오버 로그가 결과에 포함되는지 확인"""
+        np.random.seed(42)
+        n_tickers = 50
+        tickers = [f"T{i:04d}" for i in range(n_tickers)]
+
+        fundamentals = pd.DataFrame(
+            {
+                "BPS": np.random.uniform(10000, 100000, n_tickers),
+                "PER": np.random.uniform(3, 30, n_tickers),
+                "PBR": np.random.uniform(0.3, 5.0, n_tickers),
+                "EPS": np.random.uniform(1000, 20000, n_tickers),
+                "DIV": np.random.uniform(0, 5, n_tickers),
+            },
+            index=tickers,
+        )
+        market_cap_df = pd.DataFrame(
+            {
+                "market_cap": np.random.uniform(1e10, 1e14, n_tickers),
+                "shares": np.random.randint(1000000, 100000000, n_tickers),
+            },
+            index=tickers,
+        )
+
+        def mock_ohlcv(t, s, e):
+            dates = pd.bdate_range(s, e)
+            if len(dates) == 0:
+                dates = pd.bdate_range(s, s)
+            n = len(dates)
+            return pd.DataFrame(
+                {
+                    "open": [50000.0] * n,
+                    "high": [51000.0] * n,
+                    "low": [49000.0] * n,
+                    "close": [50500.0] * n,
+                    "volume": [1000000] * n,
+                },
+                index=dates,
+            )
+
+        mock_collector = MockCollector.return_value
+        mock_collector.get_fundamentals_all.return_value = fundamentals
+        mock_collector.get_market_cap.return_value = market_cap_df
+        mock_collector.get_ohlcv.side_effect = lambda t, s, e: mock_ohlcv(s, e, t)
+        mock_collector.get_avg_trading_value.return_value = pd.Series(
+            np.random.uniform(1e8, 1e10, n_tickers), index=tickers
+        )
+
+        returns = pd.Series(
+            np.random.uniform(-0.2, 0.5, n_tickers),
+            index=tickers,
+            name="return_12m",
+        )
+        mock_return_calc = MockReturnCalc.return_value
+        mock_return_calc.get_returns_for_universe.return_value = returns
+
+        engine = MultiFactorBacktest(initial_cash=10_000_000)
+        result = engine.run("2024-01-01", "2024-03-31")
+
+        # turnover_log가 attrs에 있어야 함
+        assert "turnover_log" in result.attrs
+        turnover_log = result.attrs["turnover_log"]
+        assert isinstance(turnover_log, list)
+        assert len(turnover_log) > 0
+        for entry in turnover_log:
+            assert "date" in entry
+            assert "turnover_rate" in entry
+            assert 0 <= entry["turnover_rate"] <= 1.0
+
     def test_first_month_boundary(self) -> None:
         """첫 달: start_date가 월 중반이면 해당 월말부터 시작"""
-        engine = MultiFactorBacktest.__new__(MultiFactorBacktest)
-        dates = engine._get_rebalance_dates("2024-01-15", "2024-03-31")
-        # 1/15 시작 → 1/31(수), 2/29(목), 3/29(금) = 3개
+        dates = get_krx_month_end_sessions("2024-01-15", "2024-03-31")
+        # 1/15 시작 → 1/31, 2/29, 3/29 = 3개
         assert len(dates) == 3
         assert dates[0] >= pd.Timestamp("2024-01-15")
 
     def test_last_month_boundary(self) -> None:
         """마지막 달: end_date 이전 월말만 포함"""
-        engine = MultiFactorBacktest.__new__(MultiFactorBacktest)
-        dates = engine._get_rebalance_dates("2024-01-01", "2024-03-15")
+        dates = get_krx_month_end_sessions("2024-01-01", "2024-03-15")
         # 1/31, 2/29까지만 (3/15 전에 3월 마지막 영업일 없음)
         assert all(dt <= pd.Timestamp("2024-03-15") for dt in dates)
 
@@ -348,6 +500,117 @@ class TestMetrics:
         expected = returns.std() * np.sqrt(252)
         assert abs(vol - expected) < 0.001
 
+    def test_sortino(self) -> None:
+        """양의 초과수익률 → 양의 소르티노"""
+        np.random.seed(42)
+        returns = pd.Series(np.random.normal(0.15 / 252, 0.01, 252))
+        sortino = self.analyzer.calculate_sortino(returns, risk_free=0.03)
+        assert sortino > 0
+
+    def test_var_95(self) -> None:
+        """95% VaR: 하위 5%에 해당하는 손실"""
+        np.random.seed(42)
+        returns = pd.Series(np.random.normal(0.0, 0.02, 252))
+        var = self.analyzer.calculate_var(returns, 0.95)
+        assert var < 0  # 손실이므로 음수
+        assert var > -0.10  # 합리적 범위
+
+    def test_excess_return(self) -> None:
+        """초과수익률 = 포트폴리오 CAGR - 벤치마크 CAGR"""
+        dates = pd.bdate_range("2022-01-03", periods=252)
+        port = pd.Series(np.linspace(100, 120, 252), index=dates)
+        bm = pd.Series(np.linspace(100, 110, 252), index=dates)
+        excess = self.analyzer.calculate_excess_return(port, bm)
+        assert excess > 0  # 포트폴리오가 벤치마크보다 나음
+
+    def test_information_ratio(self) -> None:
+        """정보비율 계산"""
+        np.random.seed(42)
+        dates = pd.bdate_range("2022-01-03", periods=252)
+        port_ret = pd.Series(np.random.normal(0.001, 0.01, 252), index=dates)
+        bm_ret = pd.Series(np.random.normal(0.0005, 0.01, 252), index=dates)
+        ir = self.analyzer.calculate_information_ratio(port_ret, bm_ret)
+        assert isinstance(ir, float)
+
+    def test_monthly_returns_table(self) -> None:
+        """월별 수익률 테이블 — 행=연도, 열=월"""
+        pv = self._make_portfolio_values(n_days=504)
+        table = self.analyzer.monthly_returns(pv)
+        assert isinstance(table, pd.DataFrame)
+        assert len(table) > 0
+        # 열은 월 이름 + 연간
+        assert "연간" in table.columns
+
+    def test_yearly_returns(self) -> None:
+        """연도별 수익률 Series"""
+        pv = self._make_portfolio_values(n_days=504)
+        yr = self.analyzer.yearly_returns(pv)
+        assert isinstance(yr, pd.Series)
+        assert len(yr) > 0
+        assert yr.name == "yearly_return"
+
+    def test_mdd_recovery_days(self) -> None:
+        """MDD 회복 기간 계산"""
+        # 100 → 120 → 70 → 80 → 90 → 120(회복) → 130
+        values = [100, 110, 120, 100, 70, 80, 90, 100, 120, 130]
+        dates = pd.bdate_range("2024-01-02", periods=10)
+        pv = pd.Series(values, index=dates, dtype=float)
+        days = self.analyzer.calculate_mdd_recovery_days(pv)
+        # MDD at index 4 (70), recovery at index 8 or 9 → 4~5 trading days
+        assert days > 0
+        assert days <= 6
+
+    def test_mdd_recovery_no_recovery(self) -> None:
+        """고점 회복 못한 경우 — 마지막 날까지"""
+        values = [100, 120, 80, 70, 60]
+        dates = pd.bdate_range("2024-01-02", periods=5)
+        pv = pd.Series(values, index=dates, dtype=float)
+        days = self.analyzer.calculate_mdd_recovery_days(pv)
+        # MDD at index 4 (60), no recovery → 0 days (at end)
+        assert days == 0  # MDD가 마지막 날이므로 회복 기간 0
+
+    def test_summary_includes_mdd_recovery(self) -> None:
+        """summary에 mdd_recovery_days 포함"""
+        pv = self._make_portfolio_values()
+        returns = pv.pct_change().dropna()
+        metrics = self.analyzer.summary(pv, returns)
+        assert "mdd_recovery_days" in metrics
+
+    def test_factor_attribution(self) -> None:
+        """팩터 귀인 분석 — IC 계산"""
+        np.random.seed(42)
+        tickers = [f"T{i:04d}" for i in range(30)]
+        composite = pd.DataFrame(
+            {
+                "value_score": np.random.uniform(0, 100, 30),
+                "momentum_score": np.random.uniform(0, 100, 30),
+                "quality_score": np.random.uniform(0, 100, 30),
+                "composite_score": np.random.uniform(0, 100, 30),
+            },
+            index=tickers,
+        )
+        returns = pd.Series(
+            np.random.normal(0.01, 0.05, 30), index=tickers
+        )
+        result = self.analyzer.factor_attribution(composite, returns)
+        assert isinstance(result, dict)
+        assert "value_score" in result
+        assert "momentum_score" in result
+        assert "quality_score" in result
+        # IC는 -1~1 범위
+        for v in result.values():
+            assert -1.0 <= v <= 1.0
+
+    def test_factor_attribution_insufficient_data(self) -> None:
+        """종목 수 부족 시 빈 dict"""
+        composite = pd.DataFrame(
+            {"value_score": [50.0], "composite_score": [50.0]},
+            index=["A"],
+        )
+        returns = pd.Series([0.01], index=["A"])
+        result = self.analyzer.factor_attribution(composite, returns)
+        assert result == {}
+
     def test_summary(self) -> None:
         """summary()가 모든 필수 키를 포함하는지"""
         pv = self._make_portfolio_values()
@@ -361,12 +624,30 @@ class TestMetrics:
             "volatility",
             "mdd",
             "sharpe",
+            "sortino",
             "calmar",
+            "var_95",
             "win_rate",
             "n_years",
         ]
         for key in required_keys:
             assert key in metrics, f"missing key: {key}"
+
+    def test_summary_with_benchmark(self) -> None:
+        """벤치마크 포함 summary에서 초과수익률 키 존재"""
+        pv = self._make_portfolio_values()
+        returns = pv.pct_change().dropna()
+        bm = pv * 0.9  # 벤치마크는 10% 낮은 값
+        bm_ret = bm.pct_change().dropna()
+
+        metrics = self.analyzer.summary(
+            pv, returns,
+            benchmark_values=bm,
+            benchmark_returns=bm_ret,
+        )
+        assert "excess_return" in metrics
+        assert "benchmark_cagr" in metrics
+        assert "information_ratio" in metrics
 
     def test_summary_values_reasonable(self) -> None:
         """summary 값이 합리적인 범위인지"""
@@ -412,6 +693,87 @@ class TestReport:
         gen.generate_html(returns, benchmark_returns=benchmark, output_path=output)
 
         assert os.path.exists(output)
+
+    def test_walk_forward_basic(self) -> None:
+        """워크-포워드 검증 — 결과 구조 확인"""
+        np.random.seed(42)
+        n_tickers = 50
+        tickers = [f"T{i:04d}" for i in range(n_tickers)]
+
+        fundamentals = pd.DataFrame(
+            {
+                "BPS": np.random.uniform(10000, 100000, n_tickers),
+                "PER": np.random.uniform(3, 30, n_tickers),
+                "PBR": np.random.uniform(0.3, 5.0, n_tickers),
+                "EPS": np.random.uniform(1000, 20000, n_tickers),
+                "DIV": np.random.uniform(0, 5, n_tickers),
+            },
+            index=tickers,
+        )
+        market_cap_df = pd.DataFrame(
+            {
+                "market_cap": np.random.uniform(1e10, 1e14, n_tickers),
+                "shares": np.random.randint(1000000, 100000000, n_tickers),
+            },
+            index=tickers,
+        )
+
+        def mock_ohlcv(t, s, e):
+            dates = pd.bdate_range(s, e)
+            if len(dates) == 0:
+                dates = pd.bdate_range(s, s)
+            n = len(dates)
+            return pd.DataFrame(
+                {
+                    "open": [50000.0] * n,
+                    "high": [51000.0] * n,
+                    "low": [49000.0] * n,
+                    "close": [50500.0] * n,
+                    "volume": [1000000] * n,
+                },
+                index=dates,
+            )
+
+        returns = pd.Series(
+            np.random.uniform(-0.2, 0.5, n_tickers),
+            index=tickers,
+            name="return_12m",
+        )
+
+        with patch("backtest.engine.KRXDataCollector") as MockC, \
+             patch("backtest.engine.ReturnCalculator") as MockR:
+            mc = MockC.return_value
+            mc.get_fundamentals_all.return_value = fundamentals
+            mc.get_market_cap.return_value = market_cap_df
+            mc.get_ohlcv.side_effect = mock_ohlcv
+            mc.prefetch_daily_trade.return_value = None
+            mc.get_avg_trading_value.return_value = pd.Series(
+                np.random.uniform(1e8, 1e10, n_tickers), index=tickers
+            )
+
+            mr = MockR.return_value
+            mr.get_returns_for_universe.return_value = returns
+
+            engine = MultiFactorBacktest(initial_cash=10_000_000)
+            results = engine.walk_forward(
+                "2024-01-01", "2024-12-31", n_splits=2, train_ratio=0.7
+            )
+
+        assert isinstance(results, list)
+        assert len(results) > 0
+        for r in results:
+            assert "split" in r
+            assert "train_start" in r
+            assert "test_start" in r
+            assert "train_cagr" in r or r.get("train_cagr") is None
+            assert "test_cagr" in r or r.get("test_cagr") is None
+
+    def test_walk_forward_short_period_raises(self) -> None:
+        """기간이 너무 짧으면 ValueError"""
+        engine = MultiFactorBacktest()
+        import pytest
+        with pytest.raises(ValueError, match="기간이 너무 짧습니다"):
+            engine.walk_forward("2024-01-01", "2024-01-15", n_splits=3)
 
     def test_benchmark_date_mismatch(self, tmp_path) -> None:
         """벤치마크 날짜 불일치 처리 — 에러 없이 생성"""

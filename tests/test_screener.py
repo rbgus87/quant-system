@@ -45,6 +45,45 @@ class TestMultiFactorScreener:
             name="return_12m",
         )
 
+    def _make_avg_trading_value(self, tickers: list[str]) -> pd.Series:
+        """테스트용 평균 거래대금 Series (모두 유동성 통과)"""
+        np.random.seed(42)
+        return pd.Series(
+            np.random.uniform(1e8, 1e10, len(tickers)),
+            index=tickers,
+        )
+
+    @patch("strategy.screener.ReturnCalculator")
+    @patch("strategy.screener.KRXDataCollector")
+    def test_screen_all_market(
+        self, MockCollector: MagicMock, MockReturnCalc: MagicMock
+    ) -> None:
+        """ALL 시장 — KOSPI+KOSDAQ 각각 호출 확인"""
+        fundamentals = self._make_fundamentals(50)
+        tickers = fundamentals.index.tolist()
+        market_cap = self._make_market_cap(tickers)
+
+        mock_collector = MockCollector.return_value
+        mock_collector.get_fundamentals_all.return_value = fundamentals
+        mock_collector.get_market_cap.return_value = market_cap
+        mock_collector.get_avg_trading_value.return_value = (
+            self._make_avg_trading_value(tickers)
+        )
+        mock_collector.get_suspended_tickers.return_value = set()
+
+        mock_return_calc = MockReturnCalc.return_value
+        mock_return_calc.get_returns_for_universe.return_value = self._make_returns(
+            tickers
+        )
+
+        screener = MultiFactorScreener()
+        result = screener.screen("20240102", market="ALL", n_stocks=10)
+
+        # ALL 모드에서 KOSPI, KOSDAQ 2번 호출
+        assert mock_collector.get_fundamentals_all.call_count == 2
+        assert mock_collector.get_market_cap.call_count == 2
+        assert len(result) <= 10
+
     @patch("strategy.screener.ReturnCalculator")
     @patch("strategy.screener.KRXDataCollector")
     def test_screen_basic(
@@ -57,6 +96,10 @@ class TestMultiFactorScreener:
         mock_collector = MockCollector.return_value
         mock_collector.get_fundamentals_all.return_value = fundamentals
         mock_collector.get_market_cap.return_value = market_cap
+        mock_collector.get_avg_trading_value.return_value = (
+            self._make_avg_trading_value(tickers)
+        )
+        mock_collector.get_suspended_tickers.return_value = set()
 
         mock_return_calc = MockReturnCalc.return_value
         mock_return_calc.get_returns_for_universe.return_value = self._make_returns(
@@ -97,6 +140,10 @@ class TestMultiFactorScreener:
         mock_collector = MockCollector.return_value
         mock_collector.get_fundamentals_all.return_value = fundamentals
         mock_collector.get_market_cap.return_value = market_cap
+        mock_collector.get_avg_trading_value.return_value = (
+            self._make_avg_trading_value(tickers)
+        )
+        mock_collector.get_suspended_tickers.return_value = set()
 
         mock_return_calc = MockReturnCalc.return_value
         mock_return_calc.get_returns_for_universe.return_value = self._make_returns(

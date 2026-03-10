@@ -1,71 +1,61 @@
 # tests/test_scheduler.py
 from unittest.mock import patch, MagicMock
-from datetime import datetime
+from datetime import date
 
-import pandas as pd
+from config.calendar import is_krx_business_day, is_last_krx_business_day_of_month
 
 
 class TestIsLastBusinessDayOfMonth:
-    """월말 영업일 판정 테스트"""
+    """KRX 월말 거래일 판정 테스트"""
 
     def test_last_bday_jan(self) -> None:
-        """2024-01-31 (수) = 1월 마지막 영업일"""
-        today = pd.Timestamp("2024-01-31")
-        last_bday = today + pd.offsets.BMonthEnd(0)
-        assert today == last_bday
+        """2024-01-31 (수) = 1월 마지막 KRX 거래일"""
+        assert is_last_krx_business_day_of_month(date(2024, 1, 31)) is True
 
     def test_mid_month_not_last(self) -> None:
-        """월 중간은 마지막 영업일이 아님"""
-        today = pd.Timestamp("2024-01-15")
-        last_bday = today + pd.offsets.BMonthEnd(0)
-        assert today != last_bday
+        """월 중간은 마지막 거래일이 아님"""
+        assert is_last_krx_business_day_of_month(date(2024, 1, 15)) is False
 
     def test_saturday_not_last(self) -> None:
-        """주말은 영업일이 아님"""
-        today = pd.Timestamp("2024-02-03")  # 토요일
-        last_bday = today + pd.offsets.BMonthEnd(0)
-        # 토요일 + BMonthEnd(0) → 직전 금요일(1/31)이므로 다름
-        assert today != last_bday
+        """주말은 거래일이 아님"""
+        assert is_last_krx_business_day_of_month(date(2024, 2, 3)) is False
 
     def test_feb_last_bday(self) -> None:
-        """2024년 2월 마지막 영업일 = 2/29 (목, 윤년)"""
-        today = pd.Timestamp("2024-02-29")
-        last_bday = today + pd.offsets.BMonthEnd(0)
-        assert today == last_bday
+        """2024년 2월 마지막 KRX 거래일 = 2/29 (목, 윤년)"""
+        assert is_last_krx_business_day_of_month(date(2024, 2, 29)) is True
 
     def test_dec_last_bday(self) -> None:
-        """12월 마지막 영업일 = 2024-12-31 (화)"""
-        today = pd.Timestamp("2024-12-31")
-        last_bday = today + pd.offsets.BMonthEnd(0)
-        assert today == last_bday
+        """12월 마지막 KRX 거래일 = 2024-12-31 (화)"""
+        # 12/31이 KRX 마지막 거래일인지는 공휴일 여부에 따라 다름
+        # 2024-12-31은 화요일이고 한국 공휴일 아님 → 거래일
+        assert is_last_krx_business_day_of_month(date(2024, 12, 31)) is False
+        # 2024-12-30은 월요일 → 마지막 거래일
+        assert is_last_krx_business_day_of_month(date(2024, 12, 30)) is True
 
 
 class TestIsBusinessDay:
-    """영업일 판정 테스트"""
+    """KRX 거래일 판정 테스트 (한국 공휴일 인식)"""
 
     def test_monday_is_business_day(self) -> None:
-        """월요일 = 영업일"""
-        from scheduler.main import is_business_day
-
-        with patch("scheduler.main.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2024, 1, 29)  # 월요일
-            assert is_business_day() is True
+        """평일 월요일 = 거래일"""
+        assert is_krx_business_day(date(2024, 1, 29)) is True
 
     def test_saturday_not_business_day(self) -> None:
-        """토요일 ≠ 영업일"""
-        from scheduler.main import is_business_day
-
-        with patch("scheduler.main.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2024, 2, 3)  # 토요일
-            assert is_business_day() is False
+        """토요일 = 휴장"""
+        assert is_krx_business_day(date(2024, 2, 3)) is False
 
     def test_sunday_not_business_day(self) -> None:
-        """일요일 ≠ 영업일"""
-        from scheduler.main import is_business_day
+        """일요일 = 휴장"""
+        assert is_krx_business_day(date(2024, 2, 4)) is False
 
-        with patch("scheduler.main.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2024, 2, 4)  # 일요일
-            assert is_business_day() is False
+    def test_korean_holiday_not_business_day(self) -> None:
+        """한국 공휴일(광복절 2024-08-15 목) = 휴장"""
+        assert is_krx_business_day(date(2024, 8, 15)) is False
+
+    def test_chuseok_not_business_day(self) -> None:
+        """추석 연휴 (2024-09-16~18) = 휴장"""
+        assert is_krx_business_day(date(2024, 9, 16)) is False
+        assert is_krx_business_day(date(2024, 9, 17)) is False
 
 
 class TestRunMonthlyRebalancing:

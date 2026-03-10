@@ -62,6 +62,11 @@ class TestKRXDataCollector:
         self.collector = KRXDataCollector(request_delay=0.0)
         # 테스트마다 독립적인 in-memory DB 사용
         self.collector.storage = DataStorage(db_path=":memory:")
+        # KRX/DART API 비활성화 (pykrx mock만 사용)
+        self.collector._krx_api = None
+        self.collector._krx_api_checked = True
+        self.collector._dart_client = None
+        self.collector._dart_client_checked = True
 
     @patch("data.collector.stock")
     def test_get_universe(self, mock_stock: MagicMock) -> None:

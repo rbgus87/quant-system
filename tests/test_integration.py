@@ -69,7 +69,8 @@ class TestE2EPipeline:
         assert len(selected) == 10
         assert selected.index.is_unique
 
-    def test_screening_to_order_flow(self) -> None:
+    @patch("time.sleep")
+    def test_screening_to_order_flow(self, mock_sleep) -> None:
         """스크리닝 결과 → 주문 실행 흐름"""
         mock_api = MagicMock()
         mock_api.is_paper = True
@@ -84,14 +85,7 @@ class TestE2EPipeline:
                 "total_eval_amount": 15000000,
                 "total_profit": 0,
             },
-            # ② 매도 체결 대기 중 잔고 확인 (005930 체결 완료)
-            {
-                "holdings": [{"ticker": "000660", "qty": 50}],
-                "cash": 10000000,
-                "total_eval_amount": 15000000,
-                "total_profit": 0,
-            },
-            # ③ 매수 전 예수금 재확인
+            # ② 매수 전 예수금 재확인
             {
                 "holdings": [],
                 "cash": 15000000,
@@ -100,12 +94,17 @@ class TestE2EPipeline:
             },
         ]
         mock_api.sell_stock.return_value = {"return_code": 0, "ord_no": "S001"}
+        mock_api.get_unfilled_orders.return_value = []
         mock_api.get_current_price.return_value = {"current_price": 50000}
         mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
 
         with patch("trading.order.settings") as mock_settings:
             mock_settings.is_paper_trading = True
             mock_settings.trading.commission_rate = 0.00015
+            mock_settings.trading.slippage = 0.001
+            mock_settings.trading.max_position_pct = 0.10
+            mock_settings.trading.max_turnover_pct = 0.50
+            mock_settings.trading.max_drawdown_pct = 0.30
             with patch("trading.order.KiwoomRestClient", return_value=mock_api):
                 from trading.order import OrderExecutor
 
