@@ -9,13 +9,8 @@ from config.calendar import (
     next_krx_business_day,
 )
 from config.settings import settings
-from data.collector import KRXDataCollector, ReturnCalculator
-from data.processor import DataProcessor
-from factors.value import ValueFactor
-from factors.momentum import MomentumFactor
-from factors.quality import QualityFactor
-from factors.composite import MultiFactorComposite
 from strategy.rebalancer import Rebalancer
+from strategy.screener import MultiFactorScreener
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +23,14 @@ class MultiFactorBacktest:
       → T+1 영업일 시가(open)로 매매 체결 (선견 편향 방지)
     """
 
-    def __init__(self, initial_cash: float = 10_000_000) -> None:
+    def __init__(self, initial_cash: float = 0) -> None:
+        if initial_cash <= 0:
+            # config.yaml의 initial_cash 사용 (기본 1000만원)
+            initial_cash = settings.portfolio.initial_cash
         self.initial_cash = initial_cash
-        self.krx = KRXDataCollector()
-        self.ret_calc = ReturnCalculator()
-        self.processor = DataProcessor()
-        self.value_f = ValueFactor()
-        self.momentum_f = MomentumFactor()
-        self.quality_f = QualityFactor()
-        self.composite = MultiFactorComposite()
+        self.screener = MultiFactorScreener()
+        self.krx = self.screener.collector  # OHLCV 조회용 collector 공유
         self.rebalancer = Rebalancer()
-        self._prefetched_dates: set[str] = set()  # 프리페치 완료 날짜 추적
 
     def run(
         self,
@@ -98,10 +90,16 @@ class MultiFactorBacktest:
                     if ticker in prices:
                         total_value += prices[ticker] * shares
 
+                # 고정 금액 모드: 리밸런싱 기준 금액 제한
+                max_inv = settings.portfolio.max_investment_amount
+                rebal_value = total_value
+                if max_inv > 0 and total_value > max_inv:
+                    rebal_value = max_inv
+
                 # 비중 리밸런싱 주문 계산 (기존 보유종목 포함 재조정)
                 old_tickers = set(holdings.keys())
                 orders = self.rebalancer.compute_weight_rebalance(
-                    holdings, new_tickers, prices, total_value
+                    holdings, new_tickers, prices, rebal_value
                 )
 
                 # 턴오버 기록
@@ -136,6 +134,7 @@ class MultiFactorBacktest:
                         holdings.pop(ticker, None)
 
                 # 매수 실행
+                skipped_buys: list[str] = []
                 for ticker, delta in sorted(orders.items()):
                     if delta <= 0:
                         continue
@@ -146,6 +145,14 @@ class MultiFactorBacktest:
                     if cash >= cost:
                         cash -= cost
                         holdings[ticker] = holdings.get(ticker, 0) + delta
+                    else:
+                        skipped_buys.append(ticker)
+
+                if skipped_buys:
+                    logger.warning(
+                        f"[{date_str}] 현금 부족으로 매수 스킵: "
+                        f"{len(skipped_buys)}개 종목 {skipped_buys}"
+                    )
 
                 # 보유 종목 OHLCV 기간 일괄 프리페치 (개별 일자 조회 방지)
                 period_end = (
@@ -153,6 +160,9 @@ class MultiFactorBacktest:
                     if i + 1 < len(rebal_dates)
                     else pd.Timestamp(end_date)
                 )
+                # T+1 매매일이 period_end를 초과하면 연장 (1개월 백테스트 등)
+                if trade_dt > period_end:
+                    period_end = trade_dt + pd.Timedelta(days=20)
                 period_end_str = period_end.strftime("%Y%m%d")
                 trade_dt_str_for_range = trade_dt.strftime("%Y%m%d")
 
@@ -164,11 +174,11 @@ class MultiFactorBacktest:
                             ticker, trade_dt_str_for_range, period_end_str
                         )
                         if ohlcv is not None and not ohlcv.empty and "close" in ohlcv.columns:
-                            for dt_idx, row in ohlcv.iterrows():
+                            closes = ohlcv["close"].dropna()
+                            closes = closes[closes > 0]
+                            for dt_idx, val in closes.items():
                                 dt_key = dt_idx.strftime("%Y%m%d") if hasattr(dt_idx, "strftime") else str(dt_idx)
-                                val = row["close"]
-                                if val is not None and val > 0:
-                                    close_price_cache[(ticker, dt_key)] = float(val)
+                                close_price_cache[(ticker, dt_key)] = float(val)
                     except Exception as e:
                         logger.warning(f"기간 OHLCV 프리페치 실패 ({ticker}): {e}")
 
@@ -341,8 +351,8 @@ class MultiFactorBacktest:
     def _calc_portfolio(self, date_str: str, market: str) -> list[str]:
         """T일 기준 팩터 계산 후 상위 N개 종목 반환
 
-        스크리너와 동일한 전처리 파이프라인 적용:
-        clean_fundamentals → filter_universe → 팩터 계산 → 상위 N개
+        screener.screen()에 위임하여 실전과 동일한 파이프라인 사용.
+        (거래정지/금융주 필터 포함)
 
         Args:
             date_str: 기준 날짜 (YYYYMMDD)
@@ -351,87 +361,10 @@ class MultiFactorBacktest:
         Returns:
             선정된 종목 코드 리스트 (빈 리스트 = 실패)
         """
-        # ALL = KOSPI+KOSDAQ 통합
-        markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
-
-        fund_list = []
-        cap_list = []
-        for m in markets:
-            f = self.krx.get_fundamentals_all(date_str, m)
-            if not f.empty:
-                fund_list.append(f)
-            mc = self.krx.get_market_cap(date_str, m)
-            if not mc.empty:
-                cap_list.append(mc)
-
-        fundamentals = pd.concat(fund_list) if fund_list else pd.DataFrame()
-        market_cap_df = pd.concat(cap_list) if cap_list else pd.DataFrame()
-        if not market_cap_df.empty:
-            market_cap_df = market_cap_df[~market_cap_df.index.duplicated(keep="first")]
-
-        # 펀더멘털 유무에 따라 분기
-        has_fundamentals = not fundamentals.empty
-        if has_fundamentals:
-            fundamentals = fundamentals[~fundamentals.index.duplicated(keep="first")]
-            cleaned = self.processor.clean_fundamentals(fundamentals)
-        else:
-            cleaned = pd.DataFrame()
-            logger.warning(f"{date_str}: 펀더멘털 데이터 없음 → 모멘텀 전용 모드")
-
-        # 유니버스 결정 (펀더멘털 없으면 시가총액 기반)
-        if not cleaned.empty:
-            universe_tickers = cleaned.index.tolist()
-        elif not market_cap_df.empty:
-            universe_tickers = market_cap_df.index.tolist()
-        else:
+        portfolio_df = self.screener.screen(date_str, market=market)
+        if portfolio_df.empty:
             return []
-
-        # 유동성 필터 데이터 (현재 날짜 OHLCV 프리페치 보장)
-        avg_tv = None
-        min_tv = settings.universe.min_avg_trading_value
-        if min_tv > 0:
-            if date_str not in self._prefetched_dates:
-                for m in markets:
-                    self.krx.prefetch_daily_trade(date_str, m)
-                self._prefetched_dates.add(date_str)
-            avg_tv = self.krx.get_avg_trading_value(universe_tickers, date_str)
-
-        # 유니버스 필터 적용
-        tickers = self.processor.filter_universe(
-            tickers=universe_tickers,
-            market_cap=market_cap_df,
-            fundamentals=cleaned if not cleaned.empty else None,
-            min_cap_percentile=settings.universe.min_market_cap_percentile,
-            avg_trading_value=avg_tv,
-            min_avg_trading_value=min_tv,
-        )
-
-        if not tickers:
-            return []
-
-        # 팩터 계산
-        value_score = pd.Series(dtype=float, name="value_score")
-        quality_score = pd.Series(dtype=float, name="quality_score")
-
-        if not cleaned.empty:
-            filtered_fundamentals = cleaned.loc[cleaned.index.isin(tickers)]
-            value_score = self.value_f.calculate(filtered_fundamentals)
-            quality_score = self.quality_f.calculate(filtered_fundamentals)
-
-        returns_12m = self.ret_calc.get_returns_for_universe(tickers, date_str, 12, 1)
-        momentum_score = self.momentum_f.calculate(returns_12m)
-
-        # 합산 → 선정 (펀더멘털 없으면 모멘텀만으로 min_factor_count=1)
-        min_factors = 2 if has_fundamentals else 1
-        composite_df = self.composite.calculate(
-            value_score, momentum_score, quality_score,
-            min_factor_count=min_factors,
-        )
-        if composite_df.empty:
-            return []
-
-        selected = self.composite.select_top(composite_df)
-        return selected.index.tolist()
+        return portfolio_df.index.tolist()
 
     def _get_open_price(self, ticker: str, date_str: str) -> Optional[float]:
         """특정 날짜 시가 조회 (매매 체결용)

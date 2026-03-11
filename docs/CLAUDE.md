@@ -6,8 +6,8 @@
 **매월 마지막 영업일** 신호 계산 → **다음 영업일 시가** 자동 리밸런싱.
 
 ## 기술 스택
-- **Python 3.11**, 가상환경(venv)
-- **데이터**: pykrx (KRX 공식), FinanceDataReader (보조/벤치마크)
+- **Python 3.14**, 가상환경(venv)
+- **데이터**: pykrx + pykrx-openapi (KRX Open API) + DART OpenAPI (multi-tier 폴백)
 - **백테스트**: 자체 구현 (pandas 기반, 월별 리밸런싱)
 - **성과 분석**: quantstats (HTML 리포트)
 - **자동매매**: 키움 REST API
@@ -26,11 +26,14 @@ korean-quant/
 ├── docs/                 ← 상세 개발 가이드
 ├── .env                  ← API 키 (git 제외)
 ├── requirements.txt
-├── config/settings.py    ← 전역 설정 (팩터 가중치 등)
+├── config/settings.py    ← 전역 설정 (YAML 오버라이드 지원)
+├── config/config.yaml    ← 전략 파라미터 외부화
+├── config/calendar.py    ← KRX 영업일 유틸리티
 ├── data/
-│   ├── collector.py      ← pykrx 데이터 수집
-│   ├── processor.py      ← 전처리 (이상치, 결측치)
-│   └── storage.py        ← SQLite 저장/로드
+│   ├── collector.py      ← 멀티소스 데이터 수집 (KRX Open API → DART → pykrx 폴백)
+│   ├── dart_client.py    ← DART OpenAPI 클라이언트 (재무제표 기반 PER/PBR 계산)
+│   ├── processor.py      ← 전처리 (이상치, 유동성, 거래정지 필터)
+│   └── storage.py        ← SQLite 저장/로드 (WAL 모드, 벌크 쿼리)
 ├── factors/
 │   ├── value.py          ← 밸류 팩터
 │   ├── momentum.py       ← 모멘텀 팩터
@@ -94,15 +97,18 @@ SLIPPAGE = 0.001       # 0.10%
 
 ## 현재 개발 진행 상태
 - [x] Phase 1: 환경 구축
-- [ ] Phase 2: 데이터 파이프라인
-- [ ] Phase 3: 팩터 구현
-- [ ] Phase 4: 백테스트
-- [ ] Phase 5: 키움 REST API 연동
-- [ ] Phase 6: 자동화
-- [ ] Phase 7: 실전 투입
+- [x] Phase 2: 데이터 파이프라인 (KRX Open API + DART + pykrx multi-tier)
+- [x] Phase 3: 팩터 구현 (Value + Momentum + Quality + Composite)
+- [x] Phase 4: 백테스트 (월별 리밸런싱, T+1 체결, HTML 리포트)
+- [x] Phase 5: 키움 REST API 연동 (주문 실행 + 안전장치)
+- [x] Phase 6: 자동화 (스케줄러 + 텔레그램 + Streamlit 대시보드)
+- [ ] Phase 7: 실전 투입 (모의투자 검증 중)
 
 ## 알려진 이슈 / 메모
-- pykrx API 과호출 방지: 종목별 조회 시 0.3~0.5초 delay 필수
+- **KRX API 변경 (2025-12-27)**: KRX Data Marketplace 로그인 필수화로 pykrx 배치 API 차단됨
+  - `stock.get_market_ohlcv(date, market="KOSPI")` 등 전종목 배치 조회 사용 금지
+  - 데이터 소싱: SQLite 캐시 → KRX Open API (`pykrx-openapi`) → DART → pykrx 개별 폴백
+- pykrx 개별 종목 OHLCV (`get_market_ohlcv(start, end, ticker)`)는 여전히 작동 (Naver 기반)
 - quantstats: `qs.extend_pandas()` 호출 없이도 `qs.reports.html()` 단독 사용 가능
 - APScheduler: `BackgroundScheduler` 사용, timezone='Asia/Seoul' 명시 필수
 - pandas 2.2+: `freq="BME"` deprecated → `pd.offsets.BMonthEnd()` 사용 권장

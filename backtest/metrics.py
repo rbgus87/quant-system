@@ -200,6 +200,185 @@ class PerformanceAnalyzer:
             return 0.0
         return float(excess.mean() * 252 / tracking_error)
 
+    def top_drawdowns(
+        self, portfolio_values: pd.Series, n: int = 5
+    ) -> list[dict]:
+        """Top N 낙폭 구간 상세 정보
+
+        Args:
+            portfolio_values: 일별 포트폴리오 가치 Series
+            n: 상위 N개
+
+        Returns:
+            [{start, trough, end, days, recovery_days, depth}, ...]
+        """
+        if len(portfolio_values) < 2:
+            return []
+
+        rolling_max = portfolio_values.cummax()
+        drawdown = (portfolio_values - rolling_max) / rolling_max
+
+        # 낙폭 구간 식별: drawdown < 0 인 연속 구간
+        is_dd = drawdown < -1e-8
+        segments: list[dict] = []
+        in_dd = False
+        start_idx = 0
+
+        for i in range(len(drawdown)):
+            if is_dd.iloc[i] and not in_dd:
+                in_dd = True
+                start_idx = max(0, i - 1)  # 고점
+            elif not is_dd.iloc[i] and in_dd:
+                in_dd = False
+                seg = drawdown.iloc[start_idx:i + 1]
+                trough_idx = seg.idxmin()
+                segments.append({
+                    "start": portfolio_values.index[start_idx],
+                    "trough": trough_idx,
+                    "end": portfolio_values.index[i],
+                    "depth": float(seg.min()),
+                    "days": (trough_idx - portfolio_values.index[start_idx]).days,
+                    "recovery_days": (portfolio_values.index[i] - trough_idx).days,
+                })
+
+        # 마지막 미회복 구간
+        if in_dd:
+            seg = drawdown.iloc[start_idx:]
+            trough_idx = seg.idxmin()
+            segments.append({
+                "start": portfolio_values.index[start_idx],
+                "trough": trough_idx,
+                "end": None,  # 미회복
+                "depth": float(seg.min()),
+                "days": (trough_idx - portfolio_values.index[start_idx]).days,
+                "recovery_days": None,
+            })
+
+        # 깊이 기준 정렬
+        segments.sort(key=lambda x: x["depth"])
+        return segments[:n]
+
+    def rolling_returns(
+        self, portfolio_values: pd.Series, window: int = 252
+    ) -> pd.Series:
+        """롤링 수익률
+
+        Args:
+            portfolio_values: 일별 포트폴리오 가치 Series
+            window: 롤링 윈도우 (거래일 기준, 기본 252 = 12개월)
+
+        Returns:
+            롤링 수익률 Series
+        """
+        if len(portfolio_values) < window:
+            return pd.Series(dtype=float)
+        return portfolio_values.pct_change(window).dropna()
+
+    def rolling_sharpe(
+        self, returns: pd.Series, window: int = 252, risk_free: float = RF_ANNUAL
+    ) -> pd.Series:
+        """롤링 샤프 비율
+
+        Args:
+            returns: 일별 수익률 Series
+            window: 롤링 윈도우 (거래일)
+            risk_free: 연간 무위험 수익률
+
+        Returns:
+            롤링 샤프 Series
+        """
+        if len(returns) < window:
+            return pd.Series(dtype=float)
+
+        rf_daily = risk_free / 252
+        excess = returns - rf_daily
+        roll_mean = excess.rolling(window).mean()
+        roll_std = excess.rolling(window).std()
+        # std가 0에 가까운 경우 방지
+        roll_std = roll_std.replace(0, np.nan)
+        return (roll_mean / roll_std * np.sqrt(252)).dropna()
+
+    def return_distribution(self, returns: pd.Series) -> dict:
+        """수익률 분포 통계
+
+        Args:
+            returns: 일별 수익률 Series
+
+        Returns:
+            {skewness, kurtosis, max_consecutive_loss, max_consecutive_win}
+        """
+        if len(returns) < 10:
+            return {
+                "skewness": 0.0,
+                "kurtosis": 0.0,
+                "max_consecutive_loss": 0,
+                "max_consecutive_win": 0,
+            }
+
+        skew = float(returns.skew())
+        kurt = float(returns.kurtosis())
+
+        # 최대 연속 손실/수익
+        def _max_consecutive(series: pd.Series, positive: bool) -> int:
+            mask = series > 0 if positive else series < 0
+            max_count = 0
+            count = 0
+            for v in mask:
+                if v:
+                    count += 1
+                    max_count = max(max_count, count)
+                else:
+                    count = 0
+            return max_count
+
+        return {
+            "skewness": skew,
+            "kurtosis": kurt,
+            "max_consecutive_loss": _max_consecutive(returns, positive=False),
+            "max_consecutive_win": _max_consecutive(returns, positive=True),
+        }
+
+    def best_worst_periods(
+        self, portfolio_values: pd.Series, returns: pd.Series
+    ) -> dict:
+        """최고/최저 기간 수익률
+
+        Args:
+            portfolio_values: 일별 포트폴리오 가치 Series
+            returns: 일별 수익률 Series
+
+        Returns:
+            {best_day, worst_day, best_month, worst_month, best_year, worst_year}
+            각 항목은 {date, value} dict
+        """
+        result: dict = {}
+
+        # 일별
+        if len(returns) > 0:
+            best_idx = returns.idxmax()
+            worst_idx = returns.idxmin()
+            result["best_day"] = {"date": best_idx, "value": float(returns.loc[best_idx])}
+            result["worst_day"] = {"date": worst_idx, "value": float(returns.loc[worst_idx])}
+
+        # 월별
+        if len(portfolio_values) > 20:
+            monthly = portfolio_values.resample("ME").last().pct_change().dropna()
+            if len(monthly) > 0:
+                best_m = monthly.idxmax()
+                worst_m = monthly.idxmin()
+                result["best_month"] = {"date": best_m, "value": float(monthly.loc[best_m])}
+                result["worst_month"] = {"date": worst_m, "value": float(monthly.loc[worst_m])}
+
+        # 연별
+        yearly = self.yearly_returns(portfolio_values)
+        if len(yearly) > 0:
+            best_y = yearly.idxmax()
+            worst_y = yearly.idxmin()
+            result["best_year"] = {"date": best_y, "value": float(yearly.loc[best_y])}
+            result["worst_year"] = {"date": worst_y, "value": float(yearly.loc[worst_y])}
+
+        return result
+
     def monthly_returns(self, portfolio_values: pd.Series) -> pd.DataFrame:
         """월별 수익률 테이블 (행=연도, 열=월)
 
@@ -236,6 +415,49 @@ class PerformanceAnalyzer:
             pivot["연간"] = pivot.index.map(lambda y: yearly_map.get(y, np.nan))
 
         return pivot
+
+    def monthly_pnl(self, portfolio_values: pd.Series) -> pd.DataFrame:
+        """월별 손익 상세 (시작금액, 종료금액, 손익금액, 수익률)
+
+        Args:
+            portfolio_values: 일별 포트폴리오 가치 Series (index=date)
+
+        Returns:
+            DataFrame (columns: year, month, start_value, end_value, pnl, return_pct)
+        """
+        if len(portfolio_values) < 2:
+            return pd.DataFrame()
+
+        monthly_last = portfolio_values.resample("ME").last()
+        monthly_first = portfolio_values.resample("MS").first()
+
+        records: list[dict] = []
+        for i in range(len(monthly_last)):
+            end_val = monthly_last.iloc[i]
+            dt = monthly_last.index[i]
+
+            # 시작값: 해당 월 첫 거래일 값
+            month_mask = (portfolio_values.index.year == dt.year) & (
+                portfolio_values.index.month == dt.month
+            )
+            month_data = portfolio_values[month_mask]
+            if len(month_data) == 0:
+                continue
+            start_val = month_data.iloc[0]
+
+            pnl = end_val - start_val
+            ret = pnl / start_val if start_val != 0 else 0.0
+
+            records.append({
+                "year": dt.year,
+                "month": dt.month,
+                "start_value": float(start_val),
+                "end_value": float(end_val),
+                "pnl": float(pnl),
+                "return_pct": float(ret),
+            })
+
+        return pd.DataFrame(records)
 
     def yearly_returns(self, portfolio_values: pd.Series) -> pd.Series:
         """연도별 수익률 Series

@@ -37,20 +37,35 @@ class MomentumFactor:
             logger.info(f"모멘텀 스코어 계산 완료: {len(score_12m)}개 종목")
             return score_12m
 
-        # 복합: 12M 60% + 6M 30% + 3M 10%
-        score_6m = self._single_score(returns_6m) if returns_6m is not None else None
-        score_3m = self._single_score(returns_3m) if returns_3m is not None else None
+        # 복합: 12M 60% + 6M 30% + 3M 10% (NaN-aware 가중 합산)
+        score_parts: dict[str, tuple[pd.Series, float]] = {"12m": (score_12m, 0.60)}
 
-        result = score_12m * 0.60
+        if returns_6m is not None:
+            score_6m = self._single_score(returns_6m)
+            if not score_6m.empty:
+                score_parts["6m"] = (score_6m, 0.30)
 
-        if score_6m is not None:
-            result = result.add(
-                score_6m.reindex(score_12m.index).fillna(50) * 0.30, fill_value=0
-            )
-        if score_3m is not None:
-            result = result.add(
-                score_3m.reindex(score_12m.index).fillna(50) * 0.10, fill_value=0
-            )
+        if returns_3m is not None:
+            score_3m = self._single_score(returns_3m)
+            if not score_3m.empty:
+                score_parts["3m"] = (score_3m, 0.10)
+
+        # union 인덱스 + 가중치 정규화
+        union_idx = score_12m.index
+        for _, (s, _) in score_parts.items():
+            union_idx = union_idx.union(s.index)
+
+        composite = pd.Series(0.0, index=union_idx)
+        weight_sum = pd.Series(0.0, index=union_idx)
+        for name, (score, weight) in score_parts.items():
+            aligned = score.reindex(union_idx)
+            mask = aligned.notna()
+            composite[mask] += aligned[mask] * weight
+            weight_sum[mask] += weight
+
+        valid = weight_sum > 0
+        composite[valid] /= weight_sum[valid]
+        result = composite[valid]
 
         result.name = "momentum_score"
         logger.info(f"모멘텀 스코어 계산 완료: {len(result)}개 종목")

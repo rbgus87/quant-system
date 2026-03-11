@@ -14,7 +14,9 @@ from sqlalchemy import (
     DateTime,
     Boolean,
     BigInteger,
+    Index,
     UniqueConstraint,
+    event,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -39,6 +41,7 @@ class DailyPrice(Base):
     __tablename__ = "daily_price"
     __table_args__ = (
         UniqueConstraint("ticker", "date", name="uq_daily_price_ticker_date"),
+        Index("ix_daily_price_date_ticker", "date", "ticker"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -67,7 +70,6 @@ class Fundamental(Base):
     pbr = Column(Float)
     eps = Column(Float)
     div = Column(Float)
-    market_cap = Column(BigInteger)
 
 
 class MarketCap(Base):
@@ -151,6 +153,15 @@ class DataStorage:
         """
         path = db_path or settings.db_path
         self.engine = create_engine(f"sqlite:///{path}", echo=False)
+
+        @event.listens_for(self.engine, "connect")
+        def set_sqlite_pragma(dbapi_conn, connection_record):  # type: ignore[no-untyped-def]
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA cache_size=-64000")  # 64MB
+            cursor.close()
+
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info(f"DB 연결: {path}")
@@ -172,18 +183,11 @@ class DataStorage:
         if df.empty:
             return 0
 
-        rows = []
-        for dt, row in df.iterrows():
-            dt_date = dt.date() if hasattr(dt, "date") else dt
-            rows.append({
-                "ticker": ticker,
-                "date": dt_date,
-                "open": row.get("open"),
-                "high": row.get("high"),
-                "low": row.get("low"),
-                "close": row.get("close"),
-                "volume": row.get("volume"),
-            })
+        tmp = df.reset_index()
+        tmp = tmp.rename(columns={tmp.columns[0]: "date"})
+        tmp["ticker"] = ticker
+        tmp["date"] = pd.to_datetime(tmp["date"]).dt.date
+        rows = tmp[["ticker", "date", "open", "high", "low", "close", "volume"]].to_dict("records")
 
         with self.SessionLocal() as session:
             stmt = sqlite_insert(DailyPrice).values(rows)
@@ -200,7 +204,7 @@ class DataStorage:
             session.execute(stmt)
             session.commit()
 
-        logger.info(f"일별 가격 저장: {ticker} ({len(rows)}건)")
+        logger.debug(f"일별 가격 저장: {ticker} ({len(rows)}건)")
         return len(rows)
 
     def load_daily_prices(
@@ -262,17 +266,16 @@ class DataStorage:
         if df.empty:
             return 0
 
-        rows = []
-        for ticker, row in df.iterrows():
-            rows.append({
-                "ticker": ticker,
-                "date": dt,
-                "bps": row.get("BPS"),
-                "per": row.get("PER"),
-                "pbr": row.get("PBR"),
-                "eps": row.get("EPS"),
-                "div": row.get("DIV"),
-            })
+        tmp = df.reset_index()
+        tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
+        tmp["date"] = dt
+        col_map = {"BPS": "bps", "PER": "per", "PBR": "pbr", "EPS": "eps", "DIV": "div"}
+        for old, new in col_map.items():
+            if old in tmp.columns:
+                tmp[new] = tmp[old]
+            else:
+                tmp[new] = None
+        rows = tmp[["ticker", "date", "bps", "per", "pbr", "eps", "div"]].to_dict("records")
 
         with self.SessionLocal() as session:
             stmt = sqlite_insert(Fundamental).values(rows)
@@ -336,14 +339,10 @@ class DataStorage:
         if df.empty:
             return 0
 
-        rows = []
-        for ticker, row in df.iterrows():
-            rows.append({
-                "ticker": ticker,
-                "date": dt,
-                "market_cap": row.get("market_cap"),
-                "shares": row.get("shares"),
-            })
+        tmp = df.reset_index()
+        tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
+        tmp["date"] = dt
+        rows = tmp[["ticker", "date", "market_cap", "shares"]].to_dict("records")
 
         with self.SessionLocal() as session:
             stmt = sqlite_insert(MarketCap).values(rows)
@@ -385,6 +384,98 @@ class DataStorage:
         return pd.DataFrame(rows).set_index("ticker")
 
     # ───────────────────────────────────────────────
+    # 일별 가격 (벌크)
+    # ───────────────────────────────────────────────
+
+    def load_daily_prices_bulk(
+        self,
+        tickers: list[str],
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> pd.DataFrame:
+        """여러 종목의 일별 가격 일괄 조회
+
+        Args:
+            tickers: 종목코드 리스트
+            start_date: 시작 날짜
+            end_date: 종료 날짜
+
+        Returns:
+            DataFrame(columns=[ticker, date, open, high, low, close, volume])
+        """
+        if not tickers:
+            return pd.DataFrame()
+
+        # SQLite IN clause 변수 제한 (기본 999) 대응: 청크 분할
+        chunk_size = 900
+        rows: list[dict] = []
+        with self.SessionLocal() as session:
+            for i in range(0, len(tickers), chunk_size):
+                chunk = tickers[i:i + chunk_size]
+                query = session.query(DailyPrice).filter(
+                    DailyPrice.ticker.in_(chunk)
+                )
+                if start_date:
+                    query = query.filter(DailyPrice.date >= start_date)
+                if end_date:
+                    query = query.filter(DailyPrice.date <= end_date)
+                query = query.order_by(DailyPrice.ticker, DailyPrice.date)
+
+                rows.extend(
+                    {
+                        "ticker": r.ticker,
+                        "date": r.date,
+                        "open": r.open,
+                        "high": r.high,
+                        "low": r.low,
+                        "close": r.close,
+                        "volume": r.volume,
+                    }
+                    for r in query.all()
+                )
+
+        if not rows:
+            return pd.DataFrame()
+
+        return pd.DataFrame(rows)
+
+    def save_daily_prices_bulk(self, dt: date, df: pd.DataFrame) -> int:
+        """여러 종목의 일별 가격 일괄 upsert 저장
+
+        Args:
+            dt: 기준 날짜
+            df: DataFrame(index=ticker, columns=[open, high, low, close, volume])
+
+        Returns:
+            저장된 행 수
+        """
+        if df.empty:
+            return 0
+
+        tmp = df.reset_index()
+        tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
+        tmp["date"] = dt
+        rows = tmp[["ticker", "date", "open", "high", "low", "close", "volume"]].to_dict("records")
+
+        with self.SessionLocal() as session:
+            stmt = sqlite_insert(DailyPrice).values(rows)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["ticker", "date"],
+                set_={
+                    "open": stmt.excluded.open,
+                    "high": stmt.excluded.high,
+                    "low": stmt.excluded.low,
+                    "close": stmt.excluded.close,
+                    "volume": stmt.excluded.volume,
+                },
+            )
+            session.execute(stmt)
+            session.commit()
+
+        logger.info(f"일별 가격 일괄 저장: {dt} ({len(rows)}건)")
+        return len(rows)
+
+    # ───────────────────────────────────────────────
     # 팩터 스코어
     # ───────────────────────────────────────────────
 
@@ -401,16 +492,10 @@ class DataStorage:
         if df.empty:
             return 0
 
-        rows = []
-        for ticker, row in df.iterrows():
-            rows.append({
-                "ticker": ticker,
-                "date": dt,
-                "value_score": row.get("value_score"),
-                "momentum_score": row.get("momentum_score"),
-                "quality_score": row.get("quality_score"),
-                "composite_score": row.get("composite_score"),
-            })
+        tmp = df.reset_index()
+        tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
+        tmp["date"] = dt
+        rows = tmp[["ticker", "date", "value_score", "momentum_score", "quality_score", "composite_score"]].to_dict("records")
 
         with self.SessionLocal() as session:
             stmt = sqlite_insert(FactorScore).values(rows)
@@ -446,15 +531,9 @@ class DataStorage:
         if df.empty:
             return 0
 
-        rows = []
-        for _, row in df.iterrows():
-            rows.append({
-                "rebalance_date": rebalance_date,
-                "ticker": row["ticker"],
-                "name": row.get("name"),
-                "weight": row.get("weight"),
-                "composite_score": row.get("composite_score"),
-            })
+        tmp = df.copy()
+        tmp["rebalance_date"] = rebalance_date
+        rows = tmp[["rebalance_date", "ticker", "name", "weight", "composite_score"]].to_dict("records")
 
         with self.SessionLocal() as session:
             stmt = sqlite_insert(Portfolio).values(rows)

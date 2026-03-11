@@ -1,4 +1,5 @@
 # tests/test_scheduler.py
+import pandas as pd
 from unittest.mock import patch, MagicMock
 from datetime import date
 
@@ -89,6 +90,13 @@ class TestRunMonthlyRebalancing:
         from scheduler.main import run_monthly_rebalancing
 
         mock_notifier_instance = MagicMock()
+        mock_screener = MagicMock()
+        mock_screener.screen.return_value = pd.DataFrame(
+            {"composite_score": [0.9]}, index=["000660"]
+        )
+        mock_screener_module = MagicMock()
+        mock_screener_module.MultiFactorScreener.return_value = mock_screener
+
         with patch(
             "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
         ):
@@ -96,10 +104,14 @@ class TestRunMonthlyRebalancing:
                 "scheduler.main.KiwoomRestClient",
                 side_effect=RuntimeError("API 연결 실패"),
             ):
-                run_monthly_rebalancing()
-                mock_notifier_instance.send_error.assert_called_once()
-                error_arg = mock_notifier_instance.send_error.call_args[0][0]
-                assert "API 연결 실패" in error_arg
+                with patch.dict(
+                    "sys.modules",
+                    {"strategy.screener": mock_screener_module},
+                ):
+                    run_monthly_rebalancing()
+                    mock_notifier_instance.send_error.assert_called_once()
+                    error_arg = mock_notifier_instance.send_error.call_args[0][0]
+                    assert "API 연결 실패" in error_arg
 
 
 class TestRunDailyReport:
@@ -116,14 +128,16 @@ class TestRunDailyReport:
 
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_daily_report_success(self, mock_bday) -> None:
-        """일별 리포트 정상 발송"""
+        """일별 리포트 정상 발송 (상세 리포트)"""
         from scheduler.main import run_daily_report
 
         mock_notifier_instance = MagicMock()
+        mock_notifier_instance.send_detailed_daily_report.return_value = True
         mock_api = MagicMock()
         mock_api.get_balance.return_value = {
             "holdings": [{"ticker": "005930"}],
             "total_eval_amount": 50000000,
+            "total_profit": 1000000,
             "cash": 5000000,
         }
         with patch(
@@ -131,9 +145,9 @@ class TestRunDailyReport:
         ):
             with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
                 run_daily_report()
-                mock_notifier_instance.send.assert_called_once()
-                msg = mock_notifier_instance.send.call_args[0][0]
-                assert "50,000,000" in msg
+                mock_notifier_instance.send_detailed_daily_report.assert_called_once()
+                balance = mock_notifier_instance.send_detailed_daily_report.call_args[0][0]
+                assert balance["total_eval_amount"] == 50000000
 
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_daily_report_error_sends_telegram(self, mock_bday) -> None:

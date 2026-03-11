@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.logging_config import setup_logging
+from config.settings import settings
 from backtest.engine import MultiFactorBacktest
 from backtest.metrics import PerformanceAnalyzer
 from backtest.report import ReportGenerator
@@ -48,11 +49,32 @@ def run(
     # HTML 리포트
     reporter = ReportGenerator()
     benchmark = reporter.fetch_kospi_benchmark(start_date, end_date)
+
+    # 영문 리포트 (quantstats)
     reporter.generate_html(
         returns,
         benchmark_returns=benchmark if not benchmark.empty else None,
         output_path=report_path,
         title=f"멀티팩터 퀀트 — {label}",
+    )
+
+    # 한글 리포트
+    kr_path = report_path.replace(".html", "_kr.html")
+    bm_values = None
+    if not benchmark.empty:
+        bm_values = (1 + benchmark).cumprod() * initial_cash
+
+    # 턴오버 로그 (engine이 result.attrs에 저장)
+    turnover_log = result.attrs.get("turnover_log")
+
+    reporter.generate_korean_html(
+        portfolio_values=result["portfolio_value"],
+        returns=returns,
+        metrics=metrics,
+        output_path=kr_path,
+        title=f"멀티팩터 퀀트 — {label}",
+        benchmark_values=bm_values,
+        turnover_log=turnover_log,
     )
 
 
@@ -76,11 +98,13 @@ def main() -> None:
         default=None,
         help="종료일 YYYY-MM-DD (--mode custom 시 필수)",
     )
+    # config.yaml의 portfolio.initial_cash 사용 (기본 1000만원)
+    default_cash = settings.portfolio.initial_cash
     parser.add_argument(
         "--cash",
         type=float,
-        default=10_000_000,
-        help="초기 자금 (기본: 10,000,000)",
+        default=default_cash,
+        help=f"초기 자금 (기본: {default_cash:,.0f}, config.yaml portfolio.initial_cash 연동)",
     )
     args = parser.parse_args()
 

@@ -35,7 +35,8 @@ class TestValueFactor:
         assert result.min() >= 0
         assert result.max() <= 100
 
-    def test_negative_pbr_excluded(self) -> None:
+    def test_negative_pbr_included_via_other_factors(self) -> None:
+        """PBR <= 0인 종목도 PER+DIV로 스코어 산출 (union 방식)"""
         df = pd.DataFrame(
             {
                 "PBR": [-1.0, 0.0, 1.0, 2.0],
@@ -45,12 +46,15 @@ class TestValueFactor:
             index=["A", "B", "C", "D"],
         )
         result = self.factor.calculate(df)
-        # PBR <= 0인 A, B는 PBR 스코어 없음 → 공통 교집합에서 제외
-        assert "A" not in result.index
-        assert "B" not in result.index
+        # PBR <= 0인 A, B도 PER+DIV 스코어로 포함됨
+        assert "A" in result.index
+        assert "B" in result.index
+        # PBR이 유효한 C, D는 3개 지표 모두 반영
+        assert "C" in result.index
+        assert "D" in result.index
 
-    def test_negative_per_excluded(self) -> None:
-        """적자 기업(PER <= 0)은 제외"""
+    def test_negative_per_included_via_other_factors(self) -> None:
+        """적자 기업(PER <= 0)도 PBR+DIV로 스코어 산출 (union 방식)"""
         df = pd.DataFrame(
             {
                 "PBR": [1.0, 1.0, 1.0],
@@ -60,8 +64,9 @@ class TestValueFactor:
             index=["A", "B", "C"],
         )
         result = self.factor.calculate(df)
-        assert "A" not in result.index
-        assert "B" not in result.index
+        # PER이 무효해도 PBR+DIV로 스코어 산출
+        assert "A" in result.index
+        assert "B" in result.index
         assert "C" in result.index
 
     def test_empty_input(self) -> None:

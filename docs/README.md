@@ -1,7 +1,7 @@
 # 한국 주식 멀티팩터 퀀트 자동매매 시스템 — 개발 문서
 
 > **전략**: 밸류(40%) × 모멘텀(40%) × 퀄리티(20%) | KOSPI | 월 1회 자동 리밸런싱
-> **개발 환경**: Python 3.11 + Claude Code CLI + 키움 REST API
+> **개발 환경**: Python 3.14 + Claude Code CLI + 키움 REST API
 
 ---
 
@@ -13,7 +13,7 @@
 | **`CLAUDE.md`** | Claude Code CLI 핵심 컨텍스트 (프로젝트 루트에 복사) |
 | `docs/01_environment.md` | 개발 환경 설정, requirements.txt, .env |
 | `docs/02_architecture.md` | 전체 데이터 흐름, 프로젝트 구조, config/settings.py |
-| `docs/03_data_pipeline.md` | pykrx API, data/collector.py, 데이터 검증 |
+| `docs/03_data_pipeline.md` | 데이터 소싱 (KRX Open API + DART + pykrx), multi-tier 폴백 |
 | `docs/04_factors.md` | ValueFactor, MomentumFactor, QualityFactor, MultiFactorComposite |
 | `docs/05_backtest.md` | 백테스트 엔진, 성과 분석, 목표 기준 |
 | `docs/06_kiwoom_api.md` | 키움 REST API 공식 확인 사항, 연동 코드, 테스트 순서 |
@@ -55,6 +55,12 @@ streamlit run dashboard/app.py
 5. **pandas 호환**: `freq="BME"` deprecated → `pd.offsets.BMonthEnd()`
 6. **pykrx 컬럼**: 한글 컬럼명 rename 로직 추가
 7. **모멘텀 수익률**: 하드코딩 `iloc[-22]` → `relativedelta` 정확한 날짜 계산
+
+## KRX API 변경 사항 (2025-12-27)
+
+pykrx 배치 API가 KRX Data Marketplace 로그인 필수화로 전면 차단되었습니다.
+현재 multi-tier 데이터 소싱 구조로 대응 완료:
+- **1차**: SQLite 캐시 → **2차**: KRX Open API (pykrx-openapi) → **3차**: DART OpenAPI → **4차**: pykrx 개별 폴백
 
 ---
 

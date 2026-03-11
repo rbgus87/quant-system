@@ -207,12 +207,23 @@ class TestSchedulerTelegramFlow:
         from scheduler.main import run_monthly_rebalancing
 
         mock_notifier = MagicMock()
+        mock_screener = MagicMock()
+        mock_screener.screen.return_value = pd.DataFrame(
+            {"composite_score": [0.9]}, index=["000660"]
+        )
+        mock_screener_module = MagicMock()
+        mock_screener_module.MultiFactorScreener.return_value = mock_screener
+
         with patch("scheduler.main.TelegramNotifier", return_value=mock_notifier):
             with patch(
                 "scheduler.main.KiwoomRestClient",
                 side_effect=RuntimeError("API 토큰 만료"),
             ):
-                run_monthly_rebalancing()
+                with patch.dict(
+                    "sys.modules",
+                    {"strategy.screener": mock_screener_module},
+                ):
+                    run_monthly_rebalancing()
 
         # 에러 알림 발송
         mock_notifier.send_error.assert_called_once()
@@ -221,14 +232,16 @@ class TestSchedulerTelegramFlow:
 
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_daily_report_sends_balance(self, mock_bday) -> None:
-        """일별 리포트 → 잔고 정보 텔레그램 발송"""
+        """일별 리포트 → 상세 잔고 정보 텔레그램 발송"""
         from scheduler.main import run_daily_report
 
         mock_notifier = MagicMock()
+        mock_notifier.send_detailed_daily_report.return_value = True
         mock_api = MagicMock()
         mock_api.get_balance.return_value = {
             "holdings": [{"ticker": "005930"}, {"ticker": "000660"}],
             "total_eval_amount": 52000000,
+            "total_profit": 2000000,
             "cash": 3000000,
         }
 
@@ -236,7 +249,6 @@ class TestSchedulerTelegramFlow:
             with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
                 run_daily_report()
 
-        mock_notifier.send.assert_called_once()
-        msg = mock_notifier.send.call_args[0][0]
-        assert "52,000,000" in msg
-        assert "2개" in msg
+        mock_notifier.send_detailed_daily_report.assert_called_once()
+        balance = mock_notifier.send_detailed_daily_report.call_args[0][0]
+        assert balance["total_eval_amount"] == 52000000

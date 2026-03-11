@@ -73,9 +73,7 @@ def run_monthly_rebalancing() -> None:
     try:
         from strategy.screener import MultiFactorScreener
 
-        api = KiwoomRestClient()
         screener = MultiFactorScreener()
-        executor = OrderExecutor()
 
         # 새 포트폴리오 계산
         today_str = datetime.now().strftime("%Y%m%d")
@@ -87,10 +85,22 @@ def run_monthly_rebalancing() -> None:
             notifier.send("스크리닝 결과가 비어 있어 리밸런싱을 건너뜁니다.")
             return
 
-        # 현재 보유 종목 조회
+        # 현재 잔고 조회 후 OrderExecutor에 총 평가금액 전달 (MDD 기준값)
+        api = KiwoomRestClient()
         balance = api.get_balance()
         current_holdings = [h["ticker"] for h in balance["holdings"] if h["qty"] > 0]
         total_value = balance.get("total_eval_amount", 0)
+
+        # 고정 금액 모드: max_investment_amount > 0이면 투자 금액 제한
+        max_inv = settings.portfolio.max_investment_amount
+        if max_inv > 0 and total_value > max_inv:
+            logger.info(
+                f"고정 금액 모드: 계좌 {total_value:,.0f}원 중 "
+                f"{max_inv:,.0f}원만 투자"
+            )
+            total_value = max_inv
+
+        executor = OrderExecutor(initial_value=total_value)
 
         # 리밸런싱 주문 실행
         sell_done, buy_done = executor.execute_rebalancing(
@@ -114,7 +124,7 @@ def run_monthly_rebalancing() -> None:
 
 
 def run_daily_report() -> None:
-    """장 마감 후 일별 수익 리포트 발송"""
+    """장 마감 후 상세 일별 수익 리포트 발송"""
     if not is_business_day():
         return
 
@@ -122,13 +132,7 @@ def run_daily_report() -> None:
     try:
         api = KiwoomRestClient()
         balance = api.get_balance()
-        total_value = balance.get("total_eval_amount", 0)
-
-        notifier.send(
-            f"*일별 리포트*\n\n"
-            f"총 평가금액: `{total_value:,.0f}원`\n"
-            f"보유 종목: `{len(balance['holdings'])}개`"
-        )
+        notifier.send_detailed_daily_report(balance)
     except Exception as e:
         logger.error(f"일별 리포트 오류: {e}")
         notifier.send_error(str(e))

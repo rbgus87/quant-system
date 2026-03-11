@@ -29,7 +29,8 @@ def executor(mock_api):
         mock_settings.trading.max_turnover_pct = 0.50
         mock_settings.trading.max_drawdown_pct = 0.30
         with patch("trading.order.KiwoomRestClient", return_value=mock_api):
-            ex = OrderExecutor()
+            with patch.object(OrderExecutor, "_load_peak_value", return_value=0):
+                ex = OrderExecutor()
     return ex
 
 
@@ -425,6 +426,65 @@ class TestPaperTradingGuard:
                 with patch("trading.order.logger") as mock_logger:
                     OrderExecutor()
                     mock_logger.warning.assert_called()
+
+
+class TestCapitalAdaptiveAllocation:
+    """자본 적응형 배분 테스트 (소액 자본에서 비싼 종목 자동 제외)"""
+
+    def test_expensive_stock_excluded_and_redistributed(
+        self, executor, mock_api
+    ) -> None:
+        """비싼 종목 제외 후 남은 종목에 재분배"""
+        mock_api.get_balance.side_effect = [
+            {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
+            {
+                "holdings": [],
+                "cash": 1_000_000,  # 100만원
+                "total_eval_amount": 1_000_000,
+                "total_profit": 0,
+            },
+        ]
+        # 3종목: A=5만, B=60만(비쌈), C=8만
+        # 종목당 33만원 → B는 1주도 못 삼 → 제외
+        # → 2종목, 종목당 49.5만원 (99%)
+        mock_api.get_current_price.side_effect = [
+            {"current_price": 50000},   # A
+            {"current_price": 600000},  # B (비쌈)
+            {"current_price": 80000},   # C
+        ]
+        mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
+
+        sell_done, buy_done = executor.execute_rebalancing(
+            current_holdings=[],
+            target_portfolio=["A", "B", "C"],
+        )
+
+        # B는 제외되고 A, C만 매수
+        assert "A" in buy_done
+        assert "C" in buy_done
+        assert "B" not in buy_done
+        # buy_stock은 2번만 호출 (B 제외)
+        assert mock_api.buy_stock.call_count == 2
+
+    def test_all_stocks_too_expensive(self, executor, mock_api) -> None:
+        """모든 종목이 너무 비싸면 매수 0건"""
+        mock_api.get_balance.side_effect = [
+            {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
+            {
+                "holdings": [],
+                "cash": 100_000,  # 10만원
+                "total_eval_amount": 100_000,
+                "total_profit": 0,
+            },
+        ]
+        mock_api.get_current_price.return_value = {"current_price": 500000}
+
+        sell_done, buy_done = executor.execute_rebalancing(
+            current_holdings=[],
+            target_portfolio=["A", "B"],
+        )
+        assert buy_done == []
+        mock_api.buy_stock.assert_not_called()
 
 
 class TestEdgeCases:

@@ -32,6 +32,12 @@ st.caption("밸류 x 모멘텀 x 퀄리티 | 매월 리밸런싱")
 # ────────────────────────────────────────────
 
 
+@st.cache_resource
+def _get_kiwoom_client() -> KiwoomRestClient:
+    """KiwoomRestClient 싱글톤 (토큰 재사용)"""
+    return KiwoomRestClient()
+
+
 @st.cache_data(ttl=60)
 def load_balance() -> dict:
     """키움 API에서 계좌 잔고 로드 (60초 캐시)
@@ -39,8 +45,7 @@ def load_balance() -> dict:
     Returns:
         잔고 dict
     """
-    client = KiwoomRestClient()
-    return client.get_balance()
+    return _get_kiwoom_client().get_balance()
 
 
 try:

@@ -8,6 +8,8 @@ import time
 from typing import Optional, Callable, TypeVar
 from functools import wraps
 
+from tqdm import tqdm
+
 from config.settings import settings
 from data.storage import DataStorage
 
@@ -467,13 +469,9 @@ class KRXDataCollector:
 
             df = pd.DataFrame(rows).set_index("ticker")
 
-            # OHLCV 캐시 저장 (종목별)
+            # OHLCV 캐시 일괄 저장
             ohlcv_cols = ["open", "high", "low", "close", "volume"]
-            for ticker in df.index:
-                row_df = df.loc[[ticker], ohlcv_cols].copy()
-                row_df.index = [dt]
-                row_df.index.name = "date"
-                self.storage.save_daily_prices(ticker, row_df)
+            self.storage.save_daily_prices_bulk(dt, df[ohlcv_cols])
 
             # 시가총액 캐시 저장
             cap_cols = [c for c in ["market_cap", "shares"] if c in df.columns]
@@ -497,7 +495,7 @@ class KRXDataCollector:
         date: str,
         lookback_days: int = 20,
     ) -> pd.Series:
-        """종목별 N일 평균 거래대금 계산 (close × volume)
+        """종목별 N일 평균 거래대금 계산 (close × volume) - 벌크 조회
 
         Args:
             tickers: 종목 코드 리스트
@@ -509,6 +507,55 @@ class KRXDataCollector:
         """
         base_dt = datetime.strptime(date.replace("-", ""), "%Y%m%d")
         start_dt = base_dt - relativedelta(days=lookback_days * 2)  # 영업일 마진
+        start_str = start_dt.strftime("%Y%m%d")
+
+        sd = _parse_date(start_str)
+        ed = _parse_date(date)
+
+        # 벌크 DB 조회 (N+1 → 1회 쿼리)
+        bulk_df = self.storage.load_daily_prices_bulk(tickers, sd, ed)
+
+        if bulk_df.empty:
+            # DB에 데이터 없으면 기존 방식 폴백
+            return self._get_avg_trading_value_fallback(tickers, date, lookback_days)
+
+        # 종목별 최근 N일 평균 거래대금 계산 (벡터화)
+        bulk_df = bulk_df.sort_values(["ticker", "date"])
+
+        # 종목별 최근 lookback_days개 행만 추출
+        recent = bulk_df.groupby("ticker").tail(lookback_days)
+
+        # 거래대금 = close * volume
+        recent = recent.copy()
+        recent["trading_value"] = recent["close"] * recent["volume"]
+
+        # 종목별 평균
+        avg_values = recent.groupby("ticker")["trading_value"].mean()
+        avg_values = avg_values[avg_values > 0]
+
+        # 벌크 조회에서 누락된 종목은 개별 조회 폴백
+        missing = [t for t in tickers if t not in avg_values.index]
+        if missing:
+            fallback = self._get_avg_trading_value_fallback(missing, date, lookback_days)
+            if not fallback.empty:
+                avg_values = pd.concat([avg_values, fallback])
+
+        avg_values.index.name = "ticker"
+        logger.info(
+            f"[{date}] 평균 거래대금 계산: {len(avg_values)}건 "
+            f"(>{lookback_days}일 평균)"
+        )
+        return avg_values
+
+    def _get_avg_trading_value_fallback(
+        self,
+        tickers: list[str],
+        date: str,
+        lookback_days: int = 20,
+    ) -> pd.Series:
+        """평균 거래대금 개별 조회 폴백 (캐시 미스 종목용)"""
+        base_dt = datetime.strptime(date.replace("-", ""), "%Y%m%d")
+        start_dt = base_dt - relativedelta(days=lookback_days * 2)
         start_str = start_dt.strftime("%Y%m%d")
 
         result: dict[str, float] = {}
@@ -525,20 +572,14 @@ class KRXDataCollector:
                 logger.debug(f"[{ticker}] 거래대금 조회 실패: {e}")
                 continue
 
-        series = pd.Series(result, dtype=float)
-        series.index.name = "ticker"
-        logger.info(
-            f"[{date}] 평균 거래대금 계산: {len(series)}건 "
-            f"(>{lookback_days}일 평균)"
-        )
-        return series
+        return pd.Series(result, dtype=float)
 
     def get_suspended_tickers(
         self,
         tickers: list[str],
         date: str,
     ) -> set[str]:
-        """거래정지 종목 감지 (당일 거래량 0)
+        """거래정지 종목 감지 (당일 거래량 0) - 벌크 조회
 
         Args:
             tickers: 종목 코드 리스트
@@ -547,18 +588,21 @@ class KRXDataCollector:
         Returns:
             거래정지 종목 코드 집합
         """
-        suspended: set[str] = set()
-        for ticker in tickers:
-            try:
-                ohlcv = self.get_ohlcv(ticker, date, date)
-                if ohlcv.empty:
-                    suspended.add(ticker)
-                    continue
-                vol = ohlcv["volume"].iloc[0] if "volume" in ohlcv.columns else 0
-                if vol == 0:
-                    suspended.add(ticker)
-            except Exception:
-                suspended.add(ticker)
+        dt = _parse_date(date)
+
+        # 벌크 DB 조회
+        bulk_df = self.storage.load_daily_prices_bulk(tickers, dt, dt)
+
+        if bulk_df.empty:
+            # 데이터 없으면 판단 불가 → 거래정지 없음으로 처리 (안전 방향)
+            logger.warning(
+                f"[{date}] 거래정지 판단 불가: DB 데이터 없음 ({len(tickers)}종목)"
+            )
+            return set()
+
+        # 거래량 > 0인 종목 = 정상 거래
+        active = set(bulk_df[bulk_df["volume"] > 0]["ticker"])
+        suspended = set(tickers) - active
 
         if suspended:
             logger.info(f"[{date}] 거래정지 종목: {len(suspended)}개")
@@ -752,7 +796,7 @@ class ReturnCalculator:
         lookback_months: int = 12,
         skip_months: int = 1,
     ) -> pd.Series:
-        """유니버스 전체 종목 모멘텀 수익률 계산
+        """유니버스 전체 종목 모멘텀 수익률 계산 (벌크 우선)
 
         Args:
             tickers: 종목코드 리스트
@@ -763,19 +807,97 @@ class ReturnCalculator:
         Returns:
             Series(index=ticker, values=return_rate)
         """
+        base_dt = datetime.strptime(base_date, "%Y%m%d")
+        end_dt = base_dt - relativedelta(months=skip_months)
+        start_dt = base_dt - relativedelta(months=lookback_months)
+
+        end_str = end_dt.strftime("%Y%m%d")
+        start_str = start_dt.strftime("%Y%m%d")
+        sd = _parse_date(start_str)
+        ed = _parse_date(end_str)
+
+        # 벌크 DB 조회 시도
+        bulk_df = self.collector.storage.load_daily_prices_bulk(tickers, sd, ed)
+
         results: dict[str, float] = {}
+        remaining: list[str] = []
+
+        if not bulk_df.empty:
+            # 벌크 데이터에서 벡터화 수익률 계산
+            bulk_df = bulk_df.sort_values(["ticker", "date"])
+
+            for ticker, group in bulk_df.groupby("ticker"):
+                if len(group) < 10:
+                    remaining.append(str(ticker))
+                    continue
+                start_price = group["close"].iloc[0]
+                end_price = group["close"].iloc[-1]
+                if start_price > 0:
+                    results[str(ticker)] = float(end_price / start_price - 1)
+
+            # 벌크에서 조회 안 된 종목
+            found = set(bulk_df["ticker"].unique())
+            remaining.extend([t for t in tickers if t not in found])
+        else:
+            remaining = list(tickers)
+
+        # 나머지: KRX Open API 프리페치 → DB 벌크 재조회
         total = len(tickers)
+        if remaining:
+            # 시작일/종료일 근처 영업일 프리페치 (KRX Open API)
+            from config.calendar import get_krx_sessions
 
-        for i, ticker in enumerate(tickers):
-            ret = self.get_momentum_return(
-                ticker, base_date, lookback_months, skip_months
-            )
-            if ret is not None:
-                results[ticker] = ret
+            sessions = get_krx_sessions(start_str, end_str)
+            if len(sessions) >= 2:
+                first_day = sessions[0].strftime("%Y%m%d")
+                last_day = sessions[-1].strftime("%Y%m%d")
+                logger.info(
+                    f"모멘텀 벌크 프리페치: {first_day}, {last_day}"
+                )
+                self.collector.prefetch_daily_trade(first_day)
+                self.collector.prefetch_daily_trade(last_day)
 
-            if (i + 1) % 50 == 0:
-                logger.info(f"  수익률 계산 중: {i + 1}/{total}")
-                time.sleep(0.3)
+                # DB 재조회
+                bulk_df2 = self.collector.storage.load_daily_prices_bulk(
+                    remaining, sd, ed
+                )
+                if not bulk_df2.empty:
+                    bulk_df2 = bulk_df2.sort_values(["ticker", "date"])
+                    filled = 0
+                    for ticker, group in bulk_df2.groupby("ticker"):
+                        if len(group) < 2:
+                            continue
+                        sp = group["close"].iloc[0]
+                        ep = group["close"].iloc[-1]
+                        if sp > 0:
+                            results[str(ticker)] = float(ep / sp - 1)
+                            remaining.remove(str(ticker))
+                            filled += 1
+                    logger.info(
+                        f"모멘텀 벌크 프리페치 완료: {filled}개 성공, "
+                        f"{len(remaining)}개 미스"
+                    )
+
+            # 벌크에서도 못 구한 종목만 개별 조회
+            if remaining:
+                pbar = tqdm(
+                    remaining,
+                    desc="모멘텀 개별 조회",
+                    unit="종목",
+                    bar_format=(
+                        "{l_bar}{bar}| {n_fmt}/{total_fmt} "
+                        "[{elapsed}<{remaining}]"
+                    ),
+                )
+                found_count = 0
+                for ticker in pbar:
+                    ret = self.get_momentum_return(
+                        ticker, base_date, lookback_months, skip_months
+                    )
+                    if ret is not None:
+                        results[ticker] = ret
+                        found_count += 1
+                    pbar.set_postfix(유효=found_count, refresh=False)
 
         logger.info(f"수익률 계산 완료: {len(results)}/{total}개")
         return pd.Series(results, name=f"return_{lookback_months}m")

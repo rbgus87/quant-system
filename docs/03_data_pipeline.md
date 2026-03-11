@@ -1,18 +1,48 @@
 # 03. 데이터 수집 파이프라인
 
+## 3-0. KRX API 변경 사항 (2025-12-27)
+
+> **중요**: 2025-12-27부터 KRX Data Marketplace가 로그인 필수로 전환되어
+> pykrx의 배치 API (fundamental, market cap, ticker list)가 전부 차단되었습니다.
+
+**차단된 API** (절대 사용 금지):
+- `stock.get_market_ohlcv(date, market="KOSPI")` — 전종목 배치 OHLCV
+- `stock.get_market_fundamental(date, date, market)` — 전종목 배치 기본지표
+- `stock.get_market_cap(date, market)` — 전종목 배치 시가총액
+
+**여전히 작동하는 API**:
+- `stock.get_market_ohlcv(start, end, ticker)` — 개별 종목 OHLCV (Naver 기반)
+
+**현재 데이터 소싱 구조** (multi-tier 폴백):
+```
+SQLite 캐시 → KRX Open API (pykrx-openapi) → DART OpenAPI → pykrx 개별 폴백
+```
+
+| 데이터 유형 | 1차 소스 | 2차 소스 | 3차 소스 |
+|------------|---------|---------|---------|
+| 유니버스 (종목 목록) | KRX Open API | pykrx | - |
+| Fundamentals (PER/PBR/EPS/BPS/DIV) | KRX Open API | DART (재무제표 → PER/PBR 계산) | pykrx 폴백 |
+| 시가총액 | KRX Open API | pykrx 폴백 | - |
+| OHLCV (일봉) | SQLite 캐시 | pykrx 개별 종목 조회 | - |
+| 배당 (DPS) | DART 알롯매터 API | - | - |
+
+> 환경변수: `KRX_OPENAPI_KEY` (KRX Open API), `DART_API_KEY` (DART OpenAPI)
+
+---
+
 ## 3-1. pykrx 핵심 API 정리
 
 > ⚠️ **pykrx 응답 컬럼명은 한글** — 수집 후 반드시 영문으로 rename 필요
+> ⚠️ 배치 API는 KRX 로그인 필수화로 차단됨 — 개별 종목 API만 사용 가능
 
-| 함수 | 설명 | 응답 컬럼 |
-|------|------|----------|
-| `stock.get_market_ticker_list(date, market)` | 시장 전체 종목 코드 | 코드 리스트 |
-| `stock.get_market_ticker_name(ticker)` | 종목명 | 문자열 |
-| `stock.get_market_ohlcv(start, end, ticker)` | 단일 종목 일봉 | 시가, 고가, 저가, 종가, 거래량, 거래대금 |
-| `stock.get_market_ohlcv(date, date, market)` | 전체 시장 단일일 OHLCV | 위 동일 (index=ticker) |
-| `stock.get_market_fundamental(date, date, ticker)` | 단일 종목 기본 지표 | BPS, PER, PBR, EPS, DIV |
-| `stock.get_market_fundamental(date, date, market)` | 전체 시장 기본 지표 (배치) | 위 동일 (index=ticker) |
-| `stock.get_market_cap(date, market)` | 시가총액 | 시가총액, 거래량, 거래대금, 상장주식수 |
+| 함수 | 설명 | 상태 |
+|------|------|------|
+| `stock.get_market_ticker_list(date, market)` | 시장 전체 종목 코드 | **차단됨** → KRX Open API 사용 |
+| `stock.get_market_ticker_name(ticker)` | 종목명 | 작동 |
+| `stock.get_market_ohlcv(start, end, ticker)` | 단일 종목 일봉 | **작동** (Naver 기반) |
+| `stock.get_market_ohlcv(date, date, market)` | 전체 시장 OHLCV 배치 | **차단됨** → KRX Open API 사용 |
+| `stock.get_market_fundamental(date, date, market)` | 전체 시장 기본 지표 배치 | **차단됨** → KRX Open API + DART 사용 |
+| `stock.get_market_cap(date, market)` | 시가총액 | **차단됨** → KRX Open API 사용 |
 
 ---
 
@@ -376,12 +406,28 @@ print(ohlcv.columns.tolist())  # 한글 컬럼 확인
 
 ---
 
-## 3-5. 주의사항
+## 3-5. data/dart_client.py (추가됨)
+
+DART OpenAPI를 통해 재무제표 기반 PER/PBR/EPS/BPS/DIV를 계산합니다.
+KRX Open API에서 누락된 Fundamental 데이터를 보완하는 2차 소스로 사용됩니다.
+
+주요 기능:
+- `DartClient.get_fundamentals_for_date(tickers, date_str, close_prices, shares)` — DART + KRX 가격 결합하여 PER/PBR 계산
+- `DartClient.get_dps_for_tickers(tickers, bsns_year, reprt_code)` — 주당배당금 조회 (alotMatter API)
+- 보고서 기간 자동 결정: 날짜 기준 연간/반기/분기 보고서 선택 (선견 편향 방지)
+- 법인코드 매핑: ticker ↔ DART corp_code (7일 파일 캐시)
+- DPS JSON 캐시: 연도별 배당 데이터 캐시
+
+---
+
+## 3-6. 주의사항
 
 | 항목 | 내용 |
 |------|------|
-| pykrx 호출 속도 | 종목별 루프 시 0.3~0.5초 delay 필수 (과호출 시 차단) |
-| 배치 vs 개별 | `get_market_fundamental(date, date, "KOSPI")`로 전체 조회 → 속도 수십 배 빠름 |
-| 결측치 처리 | PBR/PER이 없는 종목은 해당 팩터 스코어에서만 제외, 다른 팩터는 유지 |
+| **KRX 배치 API 차단** | 2025-12-27부터 pykrx 배치 API 전면 차단 → KRX Open API + DART 사용 |
+| pykrx 개별 조회 | `get_market_ohlcv(start, end, ticker)`는 Naver 기반으로 여전히 작동 |
+| KRX Open API 제한 | 일 10,000건 호출 제한 (`KRX_OPENAPI_KEY` 환경변수 필요) |
+| DART API 제한 | 일 10,000건 호출 제한 (`DART_API_KEY` 환경변수 필요) |
+| 결측치 처리 | PBR/PER이 없는 종목은 해당 팩터 스코어에서만 제외, 다른 팩터는 유지 (NaN-aware 가중합) |
 | 컬럼명 | pykrx 버전에 따라 한글/영문 다를 수 있음 → `print(df.columns)` 확인 후 작업 |
-| 생존 편향 | pykrx는 과거 날짜로 조회 시 당시 상장 종목만 반환 → 자동 방지됨 |
+| 생존 편향 | 과거 날짜 기준 종목 조회로 당시 상장 종목만 반환 → 자동 방지됨 |

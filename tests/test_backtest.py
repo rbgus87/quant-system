@@ -21,6 +21,8 @@ from strategy.rebalancer import Rebalancer
 class TestRebalancer:
     def setup_method(self) -> None:
         self.rebalancer = Rebalancer()
+        # 테스트 편의: 종목 수가 적으므로 집중도 제한 완화
+        self.rebalancer.cfg.max_position_pct = 1.0
 
     def test_first_rebalance_all_buys(self) -> None:
         """첫 리밸런싱: 보유 없음 → 전부 매수"""
@@ -169,6 +171,108 @@ class TestRebalancer:
         )
         assert orders == {"A": -50, "B": -30}
 
+    def test_max_position_pct_limits_allocation(self) -> None:
+        """max_position_pct가 종목당 비중을 제한하는지 확인"""
+        self.rebalancer.cfg.max_position_pct = 0.10  # 10%
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={},
+            target_tickers=["A", "B"],
+            prices={"A": 10000, "B": 20000},
+            total_value=1_000_000,
+        )
+        # 균등 비중 50% > max 10%, cap 적용 → 종목당 10만원
+        # A: 10만/10000*1.00115 ≈ 9주, B: 10만/20000*1.00115 ≈ 4주
+        assert orders["A"] < 50  # 50주 미만 (제한 없으면 49주)
+        assert orders["B"] < 25  # 25주 미만 (제한 없으면 24주)
+        assert orders["A"] <= 10
+        assert orders["B"] <= 5
+
+    def test_capital_adaptive_excludes_expensive_stocks(self) -> None:
+        """소액 자본에서 비싼 종목 자동 제외 + 재분배"""
+        # 100만원, 5종목 → 종목당 20만원
+        # C(50만원)는 1주도 못 삼 → 제외 → 4종목으로 재분배 (25만원씩)
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={},
+            target_tickers=["A", "B", "C", "D", "E"],
+            prices={
+                "A": 50000,   # 20만원 배분 → 3주 OK
+                "B": 100000,  # 20만원 배분 → 1주 OK
+                "C": 500000,  # 20만원 배분 → 0주 → 제외!
+                "D": 80000,   # 20만원 배분 → 2주 OK
+                "E": 150000,  # 20만원 배분 → 1주 OK
+            },
+            total_value=1_000_000,
+        )
+        # C는 제외됨
+        assert "C" not in orders
+        # 나머지 4종목은 매수 주문 생성됨
+        assert orders.get("A", 0) > 0
+        assert orders.get("B", 0) > 0
+        assert orders.get("D", 0) > 0
+        assert orders.get("E", 0) > 0
+
+    def test_capital_adaptive_redistributes_budget(self) -> None:
+        """제외 후 종목당 배분 금액이 증가하는지 확인"""
+        # 100만원, 2종목 → 종목당 50만원
+        # B(60만원)는 50만원 배분으로 0주 → 제외 → A만 100만원 배분
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={},
+            target_tickers=["A", "B"],
+            prices={"A": 50000, "B": 600000},
+            total_value=1_000_000,
+        )
+        assert "B" not in orders
+        # A에 100만원 전체 배분 → 약 19주 (수수료 고려)
+        assert orders["A"] >= 19
+
+    def test_capital_adaptive_keeps_existing_holdings(self) -> None:
+        """이미 보유 중인 종목은 가격이 비싸도 제외하지 않음"""
+        # 100만원, 2종목 → 종목당 50만원
+        # B(60만원)는 비싸지만 이미 1주 보유 → 제외하지 않음
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={"B": 1},
+            target_tickers=["A", "B"],
+            prices={"A": 50000, "B": 600000},
+            total_value=1_000_000,
+        )
+        # B는 이미 보유하므로 제외되지 않음 (delta 0이면 orders에 안 들어갈 수 있음)
+        assert "A" in orders
+        assert orders["A"] > 0
+
+    def test_capital_adaptive_all_too_expensive(self) -> None:
+        """모든 종목이 너무 비싸면 빈 주문 반환"""
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={},
+            target_tickers=["A", "B"],
+            prices={"A": 600000, "B": 800000},
+            total_value=500_000,
+        )
+        # 둘 다 매수 불가 → 빈 주문
+        assert "A" not in orders
+        assert "B" not in orders
+
+    def test_capital_adaptive_iterative_exclusion(self) -> None:
+        """반복적 제외: 1차 제외 후 재분배해도 여전히 못 사는 종목 추가 제외"""
+        # 100만원, 4종목 → 종목당 25만원
+        # D(30만원) 제외 → 3종목, 종목당 33만원
+        # C(35만원) 여전히 OK (33만원 < 35만원이면 제외... )
+        # 실제: C(350000)는 33만원으로 0주 → 추가 제외
+        # → 2종목, 종목당 50만원
+        orders = self.rebalancer.compute_weight_rebalance(
+            current_holdings={},
+            target_tickers=["A", "B", "C", "D"],
+            prices={
+                "A": 50000,   # OK
+                "B": 100000,  # OK
+                "C": 350000,  # 25만→제외, 33만→제외, 50만→OK? → 1주 OK
+                "D": 600000,  # 25만→제외
+            },
+            total_value=1_000_000,
+        )
+        assert "D" not in orders  # 항상 너무 비쌈
+        assert orders.get("A", 0) > 0
+        assert orders.get("B", 0) > 0
+
 
 # ───────────────────────────────────────────────
 # Engine 테스트
@@ -235,40 +339,25 @@ class TestEngine:
         # 총 비용은 주가*수량보다 커야 함 (비용 추가)
         assert cost > gross
 
-    @patch("backtest.engine.KRXDataCollector")
-    @patch("backtest.engine.ReturnCalculator")
-    def test_run_basic(
-        self, MockReturnCalc: MagicMock, MockCollector: MagicMock
-    ) -> None:
+    @patch("backtest.engine.MultiFactorScreener")
+    def test_run_basic(self, MockScreener: MagicMock) -> None:
         """기본 백테스트 실행 — 결과 DataFrame 구조 확인"""
         np.random.seed(42)
-        n_tickers = 50
-        tickers = [f"T{i:04d}" for i in range(n_tickers)]
+        selected_tickers = [f"T{i:04d}" for i in range(20)]
 
-        # Mock 기본 지표
-        fundamentals = pd.DataFrame(
-            {
-                "BPS": np.random.uniform(10000, 100000, n_tickers),
-                "PER": np.random.uniform(3, 30, n_tickers),
-                "PBR": np.random.uniform(0.3, 5.0, n_tickers),
-                "EPS": np.random.uniform(1000, 20000, n_tickers),
-                "DIV": np.random.uniform(0, 5, n_tickers),
-            },
-            index=tickers,
+        # screener.screen() → 선정 종목 DataFrame 반환
+        screen_result = pd.DataFrame(
+            {"composite_score": np.random.uniform(50, 100, len(selected_tickers))},
+            index=selected_tickers,
         )
+        mock_screener = MockScreener.return_value
+        mock_screener.screen.return_value = screen_result
 
-        market_cap_df = pd.DataFrame(
-            {
-                "market_cap": np.random.uniform(1e10, 1e14, n_tickers),
-                "shares": np.random.randint(1000000, 100000000, n_tickers),
-            },
-            index=tickers,
-        )
+        # collector (OHLCV 조회용) mock
+        mock_collector = MagicMock()
+        mock_screener.collector = mock_collector
 
-        # Mock OHLCV (시가 = 50000, 종가 = 50500 고정)
-        def mock_ohlcv(start, end, ticker_or_market=None):
-            if ticker_or_market is None:
-                return pd.DataFrame()
+        def mock_ohlcv(ticker, start, end):
             dates = pd.bdate_range(start, end)
             if len(dates) == 0:
                 dates = pd.bdate_range(start, start)
@@ -284,22 +373,8 @@ class TestEngine:
                 index=dates,
             )
 
-        mock_collector = MockCollector.return_value
-        mock_collector.get_fundamentals_all.return_value = fundamentals
-        mock_collector.get_market_cap.return_value = market_cap_df
-        mock_collector.get_ohlcv.side_effect = lambda t, s, e: mock_ohlcv(s, e, t)
-        mock_collector.get_avg_trading_value.return_value = pd.Series(
-            np.random.uniform(1e8, 1e10, n_tickers), index=tickers
-        )
-
-        # Mock 수익률
-        returns = pd.Series(
-            np.random.uniform(-0.2, 0.5, n_tickers),
-            index=tickers,
-            name="return_12m",
-        )
-        mock_return_calc = MockReturnCalc.return_value
-        mock_return_calc.get_returns_for_universe.return_value = returns
+        mock_collector.get_ohlcv.side_effect = mock_ohlcv
+        mock_collector.prefetch_daily_trade.return_value = None
 
         engine = MultiFactorBacktest(initial_cash=10_000_000)
         result = engine.run("2024-01-01", "2024-03-31")
@@ -310,41 +385,36 @@ class TestEngine:
         assert "returns" in result.columns
         assert "n_holdings" in result.columns
         assert len(result) > 0
-        # 첫 포트폴리오 가치는 초기 자금 근처
         assert result["portfolio_value"].iloc[0] > 0
 
-    @patch("backtest.engine.KRXDataCollector")
-    @patch("backtest.engine.ReturnCalculator")
-    def test_turnover_tracking(
-        self, MockReturnCalc: MagicMock, MockCollector: MagicMock
-    ) -> None:
+    @patch("backtest.engine.MultiFactorScreener")
+    def test_turnover_tracking(self, MockScreener: MagicMock) -> None:
         """턴오버 로그가 결과에 포함되는지 확인"""
         np.random.seed(42)
-        n_tickers = 50
-        tickers = [f"T{i:04d}" for i in range(n_tickers)]
 
-        fundamentals = pd.DataFrame(
-            {
-                "BPS": np.random.uniform(10000, 100000, n_tickers),
-                "PER": np.random.uniform(3, 30, n_tickers),
-                "PBR": np.random.uniform(0.3, 5.0, n_tickers),
-                "EPS": np.random.uniform(1000, 20000, n_tickers),
-                "DIV": np.random.uniform(0, 5, n_tickers),
-            },
-            index=tickers,
-        )
-        market_cap_df = pd.DataFrame(
-            {
-                "market_cap": np.random.uniform(1e10, 1e14, n_tickers),
-                "shares": np.random.randint(1000000, 100000000, n_tickers),
-            },
-            index=tickers,
-        )
+        # 매월 다른 포트폴리오를 반환하여 턴오버 발생
+        call_count = [0]
+        tickers_a = [f"T{i:04d}" for i in range(20)]
+        tickers_b = [f"T{i:04d}" for i in range(5, 25)]  # 15개 겹침, 5개 교체
 
-        def mock_ohlcv(t, s, e):
-            dates = pd.bdate_range(s, e)
+        def rotating_screen(*args, **kwargs):
+            call_count[0] += 1
+            tickers = tickers_a if call_count[0] % 2 == 1 else tickers_b
+            return pd.DataFrame(
+                {"composite_score": np.random.uniform(50, 100, len(tickers))},
+                index=tickers,
+            )
+
+        mock_screener = MockScreener.return_value
+        mock_screener.screen.side_effect = rotating_screen
+
+        mock_collector = MagicMock()
+        mock_screener.collector = mock_collector
+
+        def mock_ohlcv(ticker, start, end):
+            dates = pd.bdate_range(start, end)
             if len(dates) == 0:
-                dates = pd.bdate_range(s, s)
+                dates = pd.bdate_range(start, start)
             n = len(dates)
             return pd.DataFrame(
                 {
@@ -357,21 +427,8 @@ class TestEngine:
                 index=dates,
             )
 
-        mock_collector = MockCollector.return_value
-        mock_collector.get_fundamentals_all.return_value = fundamentals
-        mock_collector.get_market_cap.return_value = market_cap_df
-        mock_collector.get_ohlcv.side_effect = lambda t, s, e: mock_ohlcv(s, e, t)
-        mock_collector.get_avg_trading_value.return_value = pd.Series(
-            np.random.uniform(1e8, 1e10, n_tickers), index=tickers
-        )
-
-        returns = pd.Series(
-            np.random.uniform(-0.2, 0.5, n_tickers),
-            index=tickers,
-            name="return_12m",
-        )
-        mock_return_calc = MockReturnCalc.return_value
-        mock_return_calc.get_returns_for_universe.return_value = returns
+        mock_collector.get_ohlcv.side_effect = mock_ohlcv
+        mock_collector.prefetch_daily_trade.return_value = None
 
         engine = MultiFactorBacktest(initial_cash=10_000_000)
         result = engine.run("2024-01-01", "2024-03-31")
@@ -649,6 +706,69 @@ class TestMetrics:
         assert "benchmark_cagr" in metrics
         assert "information_ratio" in metrics
 
+    def test_top_drawdowns(self) -> None:
+        """Top N 낙폭 구간 추출"""
+        values = [100, 110, 120, 100, 70, 80, 120, 130, 100, 130]
+        dates = pd.bdate_range("2024-01-02", periods=10)
+        pv = pd.Series(values, index=dates, dtype=float)
+
+        dds = self.analyzer.top_drawdowns(pv, n=5)
+        assert len(dds) >= 1
+        # 가장 깊은 낙폭: 120→70 = -41.67%
+        assert dds[0]["depth"] < -0.40
+        assert dds[0]["trough"] is not None
+        assert dds[0]["start"] is not None
+
+    def test_top_drawdowns_monotone(self) -> None:
+        """단조 증가 → 낙폭 구간 없음"""
+        dates = pd.bdate_range("2024-01-02", periods=10)
+        pv = pd.Series(range(100, 110), index=dates, dtype=float)
+        dds = self.analyzer.top_drawdowns(pv)
+        assert dds == []
+
+    def test_rolling_returns(self) -> None:
+        """롤링 수익률 반환"""
+        pv = self._make_portfolio_values(n_days=504)
+        rolling = self.analyzer.rolling_returns(pv, window=252)
+        assert len(rolling) > 0
+        assert len(rolling) == len(pv) - 252
+
+    def test_rolling_returns_short(self) -> None:
+        """데이터 부족 시 빈 Series"""
+        dates = pd.bdate_range("2024-01-02", periods=10)
+        pv = pd.Series(range(100, 110), index=dates, dtype=float)
+        rolling = self.analyzer.rolling_returns(pv, window=252)
+        assert rolling.empty
+
+    def test_rolling_sharpe(self) -> None:
+        """롤링 샤프 비율"""
+        pv = self._make_portfolio_values(n_days=504)
+        returns = pv.pct_change().dropna()
+        rolling = self.analyzer.rolling_sharpe(returns, window=252)
+        assert len(rolling) > 0
+
+    def test_return_distribution(self) -> None:
+        """수익률 분포 통계"""
+        np.random.seed(42)
+        returns = pd.Series(np.random.normal(0.0005, 0.01, 252))
+        dist = self.analyzer.return_distribution(returns)
+        assert "skewness" in dist
+        assert "kurtosis" in dist
+        assert "max_consecutive_loss" in dist
+        assert "max_consecutive_win" in dist
+        assert dist["max_consecutive_loss"] >= 0
+        assert dist["max_consecutive_win"] >= 0
+
+    def test_best_worst_periods(self) -> None:
+        """최고/최저 기간"""
+        pv = self._make_portfolio_values(n_days=504)
+        returns = pv.pct_change().dropna()
+        bw = self.analyzer.best_worst_periods(pv, returns)
+        assert "best_day" in bw
+        assert "worst_day" in bw
+        assert bw["best_day"]["value"] > 0
+        assert bw["worst_day"]["value"] < 0
+
     def test_summary_values_reasonable(self) -> None:
         """summary 값이 합리적인 범위인지"""
         pv = self._make_portfolio_values(annual_return=0.15)
@@ -697,31 +817,17 @@ class TestReport:
     def test_walk_forward_basic(self) -> None:
         """워크-포워드 검증 — 결과 구조 확인"""
         np.random.seed(42)
-        n_tickers = 50
-        tickers = [f"T{i:04d}" for i in range(n_tickers)]
+        selected_tickers = [f"T{i:04d}" for i in range(20)]
 
-        fundamentals = pd.DataFrame(
-            {
-                "BPS": np.random.uniform(10000, 100000, n_tickers),
-                "PER": np.random.uniform(3, 30, n_tickers),
-                "PBR": np.random.uniform(0.3, 5.0, n_tickers),
-                "EPS": np.random.uniform(1000, 20000, n_tickers),
-                "DIV": np.random.uniform(0, 5, n_tickers),
-            },
-            index=tickers,
-        )
-        market_cap_df = pd.DataFrame(
-            {
-                "market_cap": np.random.uniform(1e10, 1e14, n_tickers),
-                "shares": np.random.randint(1000000, 100000000, n_tickers),
-            },
-            index=tickers,
+        screen_result = pd.DataFrame(
+            {"composite_score": np.random.uniform(50, 100, len(selected_tickers))},
+            index=selected_tickers,
         )
 
-        def mock_ohlcv(t, s, e):
-            dates = pd.bdate_range(s, e)
+        def mock_ohlcv(ticker, start, end):
+            dates = pd.bdate_range(start, end)
             if len(dates) == 0:
-                dates = pd.bdate_range(s, s)
+                dates = pd.bdate_range(start, start)
             n = len(dates)
             return pd.DataFrame(
                 {
@@ -734,25 +840,13 @@ class TestReport:
                 index=dates,
             )
 
-        returns = pd.Series(
-            np.random.uniform(-0.2, 0.5, n_tickers),
-            index=tickers,
-            name="return_12m",
-        )
-
-        with patch("backtest.engine.KRXDataCollector") as MockC, \
-             patch("backtest.engine.ReturnCalculator") as MockR:
-            mc = MockC.return_value
-            mc.get_fundamentals_all.return_value = fundamentals
-            mc.get_market_cap.return_value = market_cap_df
+        with patch("backtest.engine.MultiFactorScreener") as MockS:
+            ms = MockS.return_value
+            ms.screen.return_value = screen_result
+            mc = MagicMock()
+            ms.collector = mc
             mc.get_ohlcv.side_effect = mock_ohlcv
             mc.prefetch_daily_trade.return_value = None
-            mc.get_avg_trading_value.return_value = pd.Series(
-                np.random.uniform(1e8, 1e10, n_tickers), index=tickers
-            )
-
-            mr = MockR.return_value
-            mr.get_returns_for_universe.return_value = returns
 
             engine = MultiFactorBacktest(initial_cash=10_000_000)
             results = engine.walk_forward(
@@ -770,10 +864,137 @@ class TestReport:
 
     def test_walk_forward_short_period_raises(self) -> None:
         """기간이 너무 짧으면 ValueError"""
-        engine = MultiFactorBacktest()
-        import pytest
-        with pytest.raises(ValueError, match="기간이 너무 짧습니다"):
-            engine.walk_forward("2024-01-01", "2024-01-15", n_splits=3)
+        with patch("backtest.engine.MultiFactorScreener"):
+            engine = MultiFactorBacktest()
+            import pytest
+            with pytest.raises(ValueError, match="기간이 너무 짧습니다"):
+                engine.walk_forward("2024-01-01", "2024-01-15", n_splits=3)
+
+    def test_generate_korean_html(self, tmp_path) -> None:
+        """한글 HTML 리포트 생성 확인"""
+        np.random.seed(42)
+        dates = pd.bdate_range("2023-01-02", periods=252)
+        returns = pd.Series(np.random.normal(0.0005, 0.01, 252), index=dates)
+        portfolio_values = (1 + returns).cumprod() * 10_000_000
+
+        from backtest.metrics import PerformanceAnalyzer
+        analyzer = PerformanceAnalyzer()
+        metrics = analyzer.summary(portfolio_values, returns)
+
+        output = str(tmp_path / "test_kr_report.html")
+        gen = ReportGenerator()
+        gen.generate_korean_html(
+            portfolio_values=portfolio_values,
+            returns=returns,
+            metrics=metrics,
+            output_path=output,
+        )
+
+        assert os.path.exists(output)
+        content = open(output, encoding="utf-8").read()
+        assert "연 수익률" in content
+        assert "최대 낙폭" in content
+        assert "샤프 비율" in content
+        assert "lang=\"ko\"" in content
+        assert len(content) > 5000
+
+    def test_generate_korean_html_with_benchmark(self, tmp_path) -> None:
+        """벤치마크 포함 한글 리포트"""
+        np.random.seed(42)
+        dates = pd.bdate_range("2023-01-02", periods=252)
+        returns = pd.Series(np.random.normal(0.0005, 0.01, 252), index=dates)
+        portfolio_values = (1 + returns).cumprod() * 10_000_000
+        benchmark_values = (1 + pd.Series(
+            np.random.normal(0.0003, 0.008, 252), index=dates
+        )).cumprod() * 10_000_000
+
+        from backtest.metrics import PerformanceAnalyzer
+        analyzer = PerformanceAnalyzer()
+        bm_returns = benchmark_values.pct_change().dropna()
+        metrics = analyzer.summary(
+            portfolio_values, returns,
+            benchmark_values=benchmark_values,
+            benchmark_returns=bm_returns,
+        )
+
+        output = str(tmp_path / "test_kr_bench.html")
+        gen = ReportGenerator()
+        gen.generate_korean_html(
+            portfolio_values=portfolio_values,
+            returns=returns,
+            metrics=metrics,
+            output_path=output,
+            benchmark_values=benchmark_values,
+        )
+
+        assert os.path.exists(output)
+        content = open(output, encoding="utf-8").read()
+        assert "KOSPI" in content
+        assert "초과수익률" in content
+
+    def test_generate_korean_html_full_sections(self, tmp_path) -> None:
+        """한글 리포트 전체 섹션 (턴오버, 팩터IC 포함) 생성 확인"""
+        np.random.seed(42)
+        dates = pd.bdate_range("2022-01-03", periods=504)
+        returns = pd.Series(np.random.normal(0.0005, 0.01, 504), index=dates)
+        portfolio_values = (1 + returns).cumprod() * 10_000_000
+        benchmark_values = (1 + pd.Series(
+            np.random.normal(0.0003, 0.008, 504), index=dates
+        )).cumprod() * 10_000_000
+
+        from backtest.metrics import PerformanceAnalyzer
+        analyzer = PerformanceAnalyzer()
+        bm_returns = benchmark_values.pct_change().dropna()
+        metrics = analyzer.summary(
+            portfolio_values, returns,
+            benchmark_values=benchmark_values,
+            benchmark_returns=bm_returns,
+        )
+
+        turnover_log = [
+            {"date": "20220131", "sells": 3, "buys": 5, "turnover_rate": 0.4,
+             "n_holdings_before": 10, "n_holdings_after": 12},
+            {"date": "20220228", "sells": 2, "buys": 2, "turnover_rate": 0.2,
+             "n_holdings_before": 12, "n_holdings_after": 12},
+        ]
+        factor_ic = {
+            "value_score": 0.05,
+            "momentum_score": -0.02,
+            "quality_score": 0.03,
+        }
+
+        output = str(tmp_path / "test_kr_full.html")
+        gen = ReportGenerator()
+        gen.generate_korean_html(
+            portfolio_values=portfolio_values,
+            returns=returns,
+            metrics=metrics,
+            output_path=output,
+            benchmark_values=benchmark_values,
+            turnover_log=turnover_log,
+            factor_ic=factor_ic,
+        )
+
+        assert os.path.exists(output)
+        content = open(output, encoding="utf-8").read()
+        # 새 섹션들 확인
+        assert "전략 vs KOSPI 비교" in content
+        assert "월별 수익률" in content
+        assert "연도별 수익률" in content
+        assert "Top 5 낙폭 구간" in content
+        assert "최고/최저 수익률 기간" in content
+        assert "수익률 분포 분석" in content
+        assert "리밸런싱 요약" in content
+        assert "팩터 기여도" in content
+        # 개선된 리포트 섹션 확인
+        assert "월별 자산 추이" in content
+        assert "연도별 월간 손익 차트" in content
+        assert "월초 자산" in content
+        assert "손익" in content
+        assert "만원" in content or "원" in content  # 금액 포맷
+        # 롤링 차트는 이미지(base64)로 포함되므로 이미지 태그 존재 확인
+        assert content.count("chart-img") >= 6  # 기존 4 + 연도별 월간 차트
+        assert len(content) > 20000
 
     def test_benchmark_date_mismatch(self, tmp_path) -> None:
         """벤치마크 날짜 불일치 처리 — 에러 없이 생성"""

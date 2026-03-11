@@ -1,0 +1,41 @@
+# ============================================================
+# 퀀트 전략 설정 파일
+# 이 파일을 수정하여 코드 변경 없이 전략 파라미터를 조정합니다.
+# API 키 등 비밀정보는 .env 파일에서 관리합니다.
+# ============================================================
+
+# === 팩터 가중치 (합 = 1.0) ===
+factor_weights:
+  value: 0.40       # 밸류 팩터 비중
+  momentum: 0.40    # 모멘텀 팩터 비중
+  quality: 0.20     # 퀄리티 팩터 비중
+
+# === 밸류 팩터 세부 가중치 (합 = 1.0) ===
+value_weights:
+  pbr: 0.50         # 1/PBR 비중
+  per: 0.30         # 1/PER 비중
+  div: 0.20         # 배당수익률 비중
+
+# === 종목 유니버스 필터 ===
+universe:
+  market: "KOSPI"                    # KOSPI / KOSDAQ / ALL
+  min_market_cap_percentile: 10.0    # 시총 하위 N% 제외
+  exclude_finance: true              # 금융주 제외
+  min_listing_days: 365              # 최소 상장일수
+  min_avg_trading_value: 100000000   # 20일 평균 거래대금 하한 (원)
+
+# === 포트폴리오 ===
+portfolio:
+  n_stocks: 5                       # 선정 종목 수
+  weight_method: "equal"             # equal / value_weighted
+  initial_cash: 1000000             # 백테스트 초기 자금 (기본 1000만원, --cash 미지정 시 사용)
+  max_investment_amount: 0           # 최대 투자 금액 (0=전액 투자, 양수=고정 금액)
+
+# === 거래 비용 & 리스크 관리 ===
+trading:
+  commission_rate: 0.00015           # 수수료 (0.015%)
+  tax_rate: 0.0018                   # 거래세 (0.18%, 매도만)
+  slippage: 0.001                    # 슬리피지 (0.1%)
+  max_position_pct: 0.10             # 단일 종목 최대 비중 (10%)
+  max_turnover_pct: 0.50             # 월간 최대 교체율 (50%)
+  max_drawdown_pct: 0.30             # MDD 서킷브레이커 (-30%)

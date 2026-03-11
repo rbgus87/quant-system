@@ -2,12 +2,12 @@
 
 ## 1-1. 필수 설치
 
-### Python 3.11
+### Python 3.14
 ```bash
-# Windows: python.org에서 3.11.x 다운로드
+# Windows: python.org에서 3.14.x 다운로드
 # 설치 시 "Add Python to PATH" 반드시 체크
 
-python --version   # Python 3.11.x 확인
+python --version   # Python 3.14.x 확인
 python -m pip install --upgrade pip
 ```
 
@@ -61,45 +61,47 @@ git init
 ## 1-3. requirements.txt
 
 ```text
+# 실제 버전은 requirements.txt 참조 — 아래는 주요 의존성 목록
 # 핵심
-pandas==2.2.3
-numpy==1.26.4
-scipy==1.13.1
+pandas, numpy, scipy
 
 # 한국 주식 데이터
-pykrx==1.0.47
-finance-datareader==0.9.52
+pykrx                    # KRX 개별 종목 OHLCV (Naver 기반)
+pykrx-openapi            # KRX Open API (전종목 벌크 조회)
+finance-datareader       # 보조/벤치마크 데이터
+
+# DART 재무제표 (KRX 배치 API 대체)
+# dart_client.py에서 requests로 직접 호출
 
 # 시각화
-matplotlib==3.9.2
-seaborn==0.13.2
-plotly==5.24.1
+matplotlib, seaborn, plotly
 
 # 성과 분석
-quantstats==0.0.62
+quantstats
 
 # HTTP 요청 (키움 REST API)
-requests==2.32.3
-websocket-client==1.8.0
+requests
 
 # 스케줄링
-APScheduler==3.10.4
+APScheduler
 
-# 알림 (async 버전)
-python-telegram-bot==21.7
+# 알림
+python-telegram-bot      # v21 async
 
 # 데이터베이스
-sqlalchemy==2.0.36
+sqlalchemy               # SQLite ORM
 
-# 환경 변수
-python-dotenv==1.0.1
+# 환경 변수 / 설정
+python-dotenv, pyyaml
+
+# KRX 영업일 캘린더
+exchange-calendars
 
 # 대시보드
-streamlit==1.40.2
+streamlit
 
 # 개발/테스트
-pytest==8.3.3
-black==24.10.0
+pytest, black, ruff
 ```
 
 > ⚠️ **vectorbt, backtrader, pyfolio-reloaded 제거**: 의존성 충돌 및 설치 복잡도 높음.
@@ -128,9 +130,14 @@ IS_PAPER_TRADING=True
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 
+# 데이터 API (KRX 배치 API 차단 대체)
+KRX_OPENAPI_KEY=your_krx_api_key   # KRX Open API 인증키
+DART_API_KEY=your_dart_api_key     # DART OpenAPI 인증키
+
 # 내부 경로
 DB_PATH=data/quant.db
 LOG_PATH=logs/quant.log
+LOG_LEVEL=INFO
 ```
 
 ---

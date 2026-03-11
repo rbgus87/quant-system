@@ -12,6 +12,32 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 0.5  # 초
 
 
+def _safe_int(val: object, default: int = 0) -> int:
+    """API 응답 값을 안전하게 int 변환 (쉼표, 대시, 빈값 처리)"""
+    if val is None:
+        return default
+    s = str(val).replace(",", "").replace("-", "").strip()
+    if not s:
+        return default
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float(val: object, default: float = 0.0) -> float:
+    """API 응답 값을 안전하게 float 변환 (쉼표, 대시, 빈값 처리)"""
+    if val is None:
+        return default
+    s = str(val).replace(",", "").strip()
+    if not s or s == "-":
+        return default
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
 class KiwoomRestClient:
     """키움 REST API 클라이언트
 
@@ -147,12 +173,12 @@ class KiwoomRestClient:
             data = self._get_with_retry(url, "ka10001", {"stk_cd": ticker})
             return {
                 "ticker": ticker,
-                "current_price": int(data.get("cur_prc", 0)),
-                "open_price": int(data.get("opng_prc", 0)),
-                "high_price": int(data.get("hgst_prc", 0)),
-                "low_price": int(data.get("lwst_prc", 0)),
-                "volume": int(data.get("acc_trd_qty", 0)),
-                "change_rate": float(data.get("flu_rt", 0)),
+                "current_price": _safe_int(data.get("cur_prc")),
+                "open_price": _safe_int(data.get("opng_prc")),
+                "high_price": _safe_int(data.get("hgst_prc")),
+                "low_price": _safe_int(data.get("lwst_prc")),
+                "volume": _safe_int(data.get("acc_trd_qty")),
+                "change_rate": _safe_float(data.get("flu_rt")),
             }
         except Exception as e:
             logger.error(f"현재가 조회 실패 ({ticker}): {e}")
@@ -220,6 +246,30 @@ class KiwoomRestClient:
                     time.sleep(delay)
         raise last_exc
 
+    def _post_order(self, url: str, api_id: str, body: dict) -> dict:
+        """주문 전용 POST 요청 (재시도 없음 — 중복 주문 방지)
+
+        주문(매수/매도)은 서버가 처리 후 응답 전 네트워크 끊김 시
+        재시도하면 동일 주문이 중복 체결될 위험이 있으므로 단 1회만 시도합니다.
+
+        Args:
+            url: 요청 URL
+            api_id: TR 코드
+            body: 요청 본문
+
+        Returns:
+            응답 JSON dict
+        """
+        self._throttle()
+        resp = requests.post(
+            url,
+            headers=self._headers(api_id),
+            json=body,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     # ────────────────────────────────────────────
     # 주문
     # ────────────────────────────────────────────
@@ -259,7 +309,7 @@ class KiwoomRestClient:
             "acnt_no": self.account_no,
         }
         try:
-            data = self._post_with_retry(url, "kt10000", body)
+            data = self._post_order(url, "kt10000", body)
             if data.get("return_code") == 0:
                 logger.info(
                     f"매수 완료: {ticker} {qty}주 (주문번호: {data.get('ord_no')})"
@@ -306,7 +356,7 @@ class KiwoomRestClient:
             "acnt_no": self.account_no,
         }
         try:
-            data = self._post_with_retry(url, "kt10001", body)
+            data = self._post_order(url, "kt10001", body)
             if data.get("return_code") == 0:
                 logger.info(
                     f"매도 완료: {ticker} {qty}주 (주문번호: {data.get('ord_no')})"
@@ -366,20 +416,20 @@ class KiwoomRestClient:
                     {
                         "ticker": item.get("stk_cd", ""),
                         "name": item.get("stk_nm", ""),
-                        "qty": int(item.get("rmnd_qty", 0)),
-                        "avg_price": float(item.get("avg_prc", 0)),
-                        "current_price": float(item.get("cur_prc", 0)),
-                        "eval_amount": float(item.get("evlt_amt", 0)),
-                        "eval_profit": float(item.get("evlt_pfls", 0)),
-                        "profit_rate": float(item.get("pfls_rt", 0)),
+                        "qty": _safe_int(item.get("rmnd_qty")),
+                        "avg_price": _safe_float(item.get("avg_prc")),
+                        "current_price": _safe_float(item.get("cur_prc")),
+                        "eval_amount": _safe_float(item.get("evlt_amt")),
+                        "eval_profit": _safe_float(item.get("evlt_pfls")),
+                        "profit_rate": _safe_float(item.get("pfls_rt")),
                     }
                 )
 
             return {
                 "holdings": holdings,
-                "cash": float(data.get("dnca_tot_amt", 0)),
-                "total_eval_amount": float(data.get("tot_evlt_amt", 0)),
-                "total_profit": float(data.get("tot_pfls", 0)),
+                "cash": _safe_float(data.get("dnca_tot_amt")),
+                "total_eval_amount": _safe_float(data.get("tot_evlt_amt")),
+                "total_profit": _safe_float(data.get("tot_pfls")),
             }
         except Exception as e:
             logger.error(f"잔고 조회 실패: {e}")

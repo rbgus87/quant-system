@@ -1,12 +1,13 @@
 # data/dart_client.py
 """DART OpenAPI 클라이언트 - 재무제표 기반 펀더멘털 데이터 수집
 
-DART(전자공시시스템)에서 EPS, 자본총계를 가져와
-KRX 시세 데이터와 결합하여 PER/PBR/BPS를 계산합니다.
+DART(전자공시시스템)에서 EPS, 자본총계, DPS를 가져와
+KRX 시세 데이터와 결합하여 PER/PBR/DIV을 계산합니다.
 
 사용 API:
   - corpCode.xml: 기업 고유번호 목록 (ticker <-> corp_code 매핑)
   - fnlttMultiAcnt.json: 다중회사 주요계정 (배치 조회, 최대 100개)
+  - alotMatter.json: 배당에 관한 사항 (개별 조회, DPS 추출)
 """
 
 import io
@@ -21,6 +22,7 @@ from typing import Optional
 
 import pandas as pd
 import requests
+from tqdm import tqdm
 
 from config.settings import settings
 
@@ -50,6 +52,7 @@ class DartClient:
     """
 
     CORP_CODE_CACHE_PATH = "data/dart_corp_codes.json"
+    DPS_CACHE_PATH = "data/dart_dps_cache.json"
 
     def __init__(
         self,
@@ -59,6 +62,7 @@ class DartClient:
         self.api_key = api_key or settings.dart_api_key
         self.delay = request_delay
         self._corp_code_map: Optional[dict[str, str]] = None
+        self._dps_cache: Optional[dict[str, dict[str, float]]] = None
 
         if not self.api_key:
             logger.warning("DART_API_KEY 미설정. .env 파일에 추가하세요.")
@@ -132,6 +136,166 @@ class DartClient:
             return {}
 
     # ───────────────────────────────────────────────
+    # DPS (주당배당금) 캐시
+    # ───────────────────────────────────────────────
+
+    @property
+    def dps_cache(self) -> dict[str, dict[str, float]]:
+        """DPS 캐시 (lazy load): {bsns_year: {ticker: dps}}"""
+        if self._dps_cache is None:
+            self._dps_cache = self._load_dps_cache()
+        return self._dps_cache
+
+    def _load_dps_cache(self) -> dict[str, dict[str, float]]:
+        """DPS 캐시 파일 로드"""
+        cache_path = Path(self.DPS_CACHE_PATH)
+        if cache_path.exists():
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"DPS 캐시 로드 실패: {e}")
+        return {}
+
+    def _save_dps_cache(self) -> None:
+        """DPS 캐시 파일 저장"""
+        try:
+            cache_path = Path(self.DPS_CACHE_PATH)
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(self._dps_cache, f, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"DPS 캐시 저장 실패: {e}")
+
+    def get_dps_for_tickers(
+        self,
+        tickers: list[str],
+        bsns_year: str,
+        reprt_code: str,
+    ) -> dict[str, float]:
+        """종목 리스트의 DPS(주당 현금배당금) 조회 (캐시 우선)
+
+        DART alotMatter API에서 보통주 주당 현금배당금을 추출합니다.
+        연도별로 캐시하여 동일 사업연도 재조회 시 API 호출을 생략합니다.
+
+        Args:
+            tickers: 종목코드 리스트
+            bsns_year: 사업연도
+            reprt_code: 보고서 코드 (사업보고서=11011 권장)
+
+        Returns:
+            {ticker: dps} 매핑
+        """
+        if not self.api_key:
+            return {}
+
+        cache_key = f"{bsns_year}_{reprt_code}"
+        year_cache = self.dps_cache.get(cache_key, {})
+
+        # 캐시 히트 종목과 미스 종목 분리
+        result: dict[str, float] = {}
+        missing: list[str] = []
+        for t in tickers:
+            if t in year_cache:
+                dps = year_cache[t]
+                if dps > 0:
+                    result[t] = dps
+            elif t in self.corp_code_map:
+                missing.append(t)
+
+        if not missing:
+            return result
+
+        logger.info(
+            f"[{bsns_year}] DPS 조회: {len(missing)}개 종목 "
+            f"(캐시 히트: {len(tickers) - len(missing)}개)"
+        )
+
+        # alotMatter API 개별 호출
+        fetched = 0
+        total = len(missing)
+        pbar = tqdm(
+            missing,
+            desc=f"[{bsns_year}] DPS 조회",
+            unit="종목",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
+        )
+        for i, ticker in enumerate(pbar):
+            corp_code = self.corp_code_map.get(ticker)
+            if not corp_code:
+                continue
+
+            dps = self._fetch_dps_single(corp_code, bsns_year, reprt_code)
+            year_cache[ticker] = dps if dps is not None else 0.0
+            if dps is not None and dps > 0:
+                result[ticker] = dps
+                fetched += 1
+
+            pbar.set_postfix(유효=fetched, refresh=False)
+
+            if (i + 1) % 50 == 0:
+                self.dps_cache[cache_key] = year_cache
+                self._save_dps_cache()
+
+            time.sleep(self.delay)
+
+        # 캐시 저장
+        self.dps_cache[cache_key] = year_cache
+        self._save_dps_cache()
+
+        logger.info(
+            f"[{bsns_year}] DPS 조회 완료: {fetched}/{len(missing)}개 종목 유효"
+        )
+        return result
+
+    def _fetch_dps_single(
+        self,
+        corp_code: str,
+        bsns_year: str,
+        reprt_code: str,
+    ) -> Optional[float]:
+        """단일 기업 DPS 조회 (alotMatter API)
+
+        보통주 주당 현금배당금(원) 추출.
+
+        Args:
+            corp_code: DART 기업 고유번호
+            bsns_year: 사업연도
+            reprt_code: 보고서 코드
+
+        Returns:
+            주당 현금배당금 (원) 또는 None
+        """
+        try:
+            resp = requests.get(
+                f"{DART_BASE_URL}/alotMatter.json",
+                params={
+                    "crtfc_key": self.api_key,
+                    "corp_code": corp_code,
+                    "bsns_year": bsns_year,
+                    "reprt_code": reprt_code,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("status") != "000":
+                return None
+
+            for item in data.get("list", []):
+                se = item.get("se", "")
+                stock_knd = item.get("stock_knd", "")
+                if se == "주당 현금배당금(원)" and stock_knd == "보통주":
+                    return self._parse_amount(item.get("thstrm", ""))
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"DPS 조회 실패 (corp_code={corp_code}): {e}")
+            return None
+
+    # ───────────────────────────────────────────────
     # 펀더멘털 데이터 조회
     # ───────────────────────────────────────────────
 
@@ -195,7 +359,12 @@ class DartClient:
             raw_data
         )
 
-        # PER/PBR/BPS/EPS 계산
+        # DPS (주당배당금) 조회 → DIV 계산용
+        # 배당 데이터는 사업보고서(연간)에서만 제공
+        dps_year, dps_reprt = self._determine_dps_report_period(date_str)
+        dps_map = self.get_dps_for_tickers(valid_tickers, dps_year, dps_reprt)
+
+        # PER/PBR/BPS/EPS/DIV 계산
         rows = []
         for ticker in valid_tickers:
             total_equity = equity_map.get(ticker)
@@ -227,13 +396,19 @@ class DartClient:
             if close and bps and bps > 0:
                 pbr = close / bps
 
+            # DIV = DPS / 종가 × 100 (배당수익률 %)
+            div = None
+            dps = dps_map.get(ticker)
+            if dps and close and close > 0:
+                div = dps / close * 100
+
             rows.append({
                 "ticker": ticker,
                 "EPS": eps,
                 "BPS": bps,
                 "PER": per,
                 "PBR": pbr,
-                "DIV": None,
+                "DIV": div,
             })
 
         if not rows:
@@ -242,9 +417,10 @@ class DartClient:
         df = pd.DataFrame(rows).set_index("ticker")
         n_eps = df["EPS"].notna().sum()
         n_pbr = df["PBR"].notna().sum()
+        n_div = df["DIV"].notna().sum()
         logger.info(
             f"[{date_str}] DART 펀더멘털 완료: {len(df)}개 종목 "
-            f"(EPS={n_eps}, PBR={n_pbr})"
+            f"(EPS={n_eps}, PBR={n_pbr}, DIV={n_div})"
         )
         return df
 
@@ -276,6 +452,26 @@ class DartClient:
             return str(year - 1), REPRT_CODES["annual"]
         else:
             return str(year - 2), REPRT_CODES["annual"]
+
+    @staticmethod
+    def _determine_dps_report_period(date_str: str) -> tuple[str, str]:
+        """기준일 -> DPS 조회용 보고서 기간 결정
+
+        배당 데이터(alotMatter)는 사업보고서(연간)에서만 제공됩니다.
+        사업보고서는 3월 말 공시 → 4월부터 사용 가능.
+
+        Returns:
+            (사업연도, 보고서코드) - 항상 사업보고서(11011)
+        """
+        dt = datetime.strptime(date_str.replace("-", ""), "%Y%m%d")
+        year = dt.year
+        month = dt.month
+
+        # 4월 이후: 전년도 사업보고서 사용 가능
+        if month >= 4:
+            return str(year - 1), REPRT_CODES["annual"]
+        # 1~3월: 전전년도 사업보고서 사용
+        return str(year - 2), REPRT_CODES["annual"]
 
     # ───────────────────────────────────────────────
     # API 호출

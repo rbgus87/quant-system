@@ -1,6 +1,8 @@
 # trading/order.py
+import json
 import logging
 import time
+from pathlib import Path
 from trading.kiwoom_api import KiwoomRestClient
 from config.settings import settings
 
@@ -31,16 +33,41 @@ class OrderExecutor:
     - 매도 체결 확인: get_unfilled_orders() 기반
     """
 
+    _PEAK_VALUE_PATH = Path("data/peak_value.json")
+
     def __init__(self, initial_value: float = 0) -> None:
         self.api = KiwoomRestClient()
         self.cfg = settings.trading
-        self._peak_value: float = initial_value  # 고점 기록 (MDD 계산용)
+        self._peak_value: float = self._load_peak_value(initial_value)
 
         if not settings.is_paper_trading:
             logger.warning(
                 "OrderExecutor 실전투자 모드로 초기화됨 — "
                 "IS_PAPER_TRADING=false 확인 필요"
             )
+
+    def _load_peak_value(self, default: float) -> float:
+        """영속화된 고점 값 로드"""
+        try:
+            if self._PEAK_VALUE_PATH.exists():
+                with open(self._PEAK_VALUE_PATH, "r") as f:
+                    data = json.load(f)
+                val = float(data.get("peak_value", default))
+                if val > 0:
+                    logger.info(f"MDD 고점 복원: {val:,.0f}원")
+                    return val
+        except Exception as e:
+            logger.warning(f"MDD 고점 로드 실패: {e}")
+        return default
+
+    def _save_peak_value(self) -> None:
+        """고점 값 영속화"""
+        try:
+            self._PEAK_VALUE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._PEAK_VALUE_PATH, "w") as f:
+                json.dump({"peak_value": self._peak_value}, f)
+        except Exception as e:
+            logger.error(f"MDD 고점 저장 실패: {e}")
 
     def _calculate_orders(
         self,
@@ -135,6 +162,7 @@ class OrderExecutor:
         # 고점 갱신
         if total_value > self._peak_value:
             self._peak_value = total_value
+            self._save_peak_value()
 
         if self._peak_value <= 0:
             return
@@ -214,41 +242,90 @@ class OrderExecutor:
 
         # ② 매도 체결 확인 (주문번호 기반)
         if sell_done:
-            self._wait_for_sells_to_settle(sell_done, sell_order_nos)
+            try:
+                self._wait_for_sells_to_settle(sell_done, sell_order_nos)
+            except TimeoutError:
+                logger.warning(
+                    f"매도 미체결로 매수 중단 — 매도 완료: {len(sell_done)}/{len(sell_list)}"
+                )
+                return sell_done, buy_done
 
         updated_balance = self.api.get_balance()
         self._validate_balance(updated_balance, "매수 전")
         available_cash = updated_balance.get("cash", 0) * 0.99
         total_eval = updated_balance.get("total_eval_amount", 0)
-        n_buy = len(buy_list)
 
-        if n_buy == 0:
+        # 고정 금액 모드: 매수 예산 상한 적용
+        max_inv = settings.portfolio.max_investment_amount
+        if max_inv > 0 and available_cash > max_inv:
+            logger.info(
+                f"고정 금액 모드: 예수금 {available_cash:,.0f}원 중 "
+                f"{max_inv:,.0f}원만 매수에 사용"
+            )
+            available_cash = max_inv
+
+        if not buy_list:
             logger.info(
                 f"리밸런싱 완료 — 매도: {len(sell_done)}/{len(sell_list)}, "
                 f"매수: 0/0"
             )
             return sell_done, buy_done
 
-        budget_per_stock = available_cash / n_buy
-
-        # 단일 종목 최대 비중 제한
-        max_position_amount = total_eval * self.cfg.max_position_pct if total_eval > 0 else budget_per_stock
-        budget_per_stock = min(budget_per_stock, max_position_amount)
-
-        # ③ 매수 (동일 비중)
+        # 현재가 조회 → 매수 가능 종목 필터링 (반복적 재분배)
+        buy_prices: dict[str, float] = {}
         for ticker in buy_list:
             price_data = self.api.get_current_price(ticker)
             price = price_data.get("current_price", 0)
-            if price <= 0:
+            if price > 0:
+                buy_prices[ticker] = price
+            else:
                 logger.warning(f"현재가 조회 실패, 매수 스킵: {ticker}")
-                continue
 
-            qty = int(
-                budget_per_stock
-                / (price * (1 + self.cfg.commission_rate + self.cfg.slippage))
+        affordable_list = list(buy_prices.keys())
+        cost_rate = 1 + self.cfg.commission_rate + self.cfg.slippage
+
+        # 반복적 재분배: 1주도 못 사는 종목 제외 → 남은 종목에 재분배
+        excluded: list[str] = []
+        while affordable_list:
+            n_buy = len(affordable_list)
+            budget_per_stock = available_cash / n_buy
+
+            # 단일 종목 최대 비중 제한
+            max_position_amount = (
+                total_eval * self.cfg.max_position_pct
+                if total_eval > 0
+                else budget_per_stock
             )
+            budget_per_stock = min(budget_per_stock, max_position_amount)
+
+            # 1주도 못 사는 종목 찾기
+            unaffordable = [
+                t for t in affordable_list
+                if int(budget_per_stock / (buy_prices[t] * cost_rate)) <= 0
+            ]
+
+            if not unaffordable:
+                break  # 모든 종목 매수 가능
+
+            for t in unaffordable:
+                logger.warning(
+                    f"자본 부족으로 제외: {t} "
+                    f"(가격 {buy_prices[t]:,.0f}원 > 종목당 배분 {budget_per_stock:,.0f}원)"
+                )
+                affordable_list.remove(t)
+                excluded.append(t)
+
+        if excluded:
+            logger.info(
+                f"자본 적응형 배분: {len(excluded)}개 제외, "
+                f"{len(affordable_list)}개 종목에 재분배"
+            )
+
+        # ③ 매수 (동일 비중, 재분배 완료된 목록)
+        for ticker in affordable_list:
+            price = buy_prices[ticker]
+            qty = int(budget_per_stock / (price * cost_rate))
             if qty <= 0:
-                logger.warning(f"예산 부족, 매수 스킵: {ticker} (가격: {price:,}원)")
                 continue
 
             result = self.api.buy_stock(
@@ -262,7 +339,8 @@ class OrderExecutor:
 
         logger.info(
             f"리밸런싱 완료 — 매도: {len(sell_done)}/{len(sell_list)}, "
-            f"매수: {len(buy_done)}/{len(buy_list)}"
+            f"매수: {len(buy_done)}/{len(affordable_list)}"
+            + (f" (자본부족 제외: {len(excluded)}개)" if excluded else "")
         )
         return sell_done, buy_done
 
@@ -311,6 +389,9 @@ class OrderExecutor:
                     f"매도 체결 대기 중... 미체결 {len(remaining)}건 ({elapsed}s/{max_wait_sec}s)"
                 )
 
-        logger.warning(
-            f"매도 체결 대기 타임아웃 ({max_wait_sec}초). 미체결 종목 있을 수 있음"
+        msg = (
+            f"매도 체결 대기 타임아웃 ({max_wait_sec}초). "
+            f"미체결 종목이 있을 수 있어 매수를 중단합니다."
         )
+        logger.warning(msg)
+        raise TimeoutError(msg)

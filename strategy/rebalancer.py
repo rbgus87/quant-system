@@ -52,6 +52,8 @@ class Rebalancer:
         """전체 목표 포트폴리오에 대한 비중 리밸런싱 주문 계산
 
         기존 보유종목 포함 모든 목표 종목을 균등 비중으로 조정합니다.
+        자본 부족으로 1주도 매수할 수 없는 종목은 자동 제외하고
+        남은 종목에 자금을 재분배합니다.
 
         Args:
             current_holdings: 현재 보유 {ticker: shares}
@@ -64,13 +66,62 @@ class Rebalancer:
             포트폴리오에서 빠지는 종목은 -current_shares
         """
         target_set = set(target_tickers)
-        n_target = len(target_set)
-        if n_target == 0:
+        if not target_set:
             # 전량 청산
             return {t: -s for t, s in current_holdings.items() if s > 0}
 
-        target_per_stock = total_value / n_target
-        orders: dict[str, int] = {}
+        # 가격 조회 가능한 목표 종목만으로 균등 비중 계산
+        priced_targets = [t for t in target_tickers if prices.get(t, 0) > 0]
+        n_priced = len(priced_targets)
+        if n_priced == 0:
+            logger.warning("목표 종목 중 가격 조회 가능한 종목 없음")
+            return {}
+
+        # 반복적 재분배: 1주도 못 사는 종목 제외 → 남은 종목에 재분배
+        excluded: list[str] = []
+        while n_priced > 0:
+            target_per_stock = total_value / n_priced
+            max_per_stock = total_value * self.cfg.max_position_pct
+            if target_per_stock > max_per_stock:
+                target_per_stock = max_per_stock
+
+            # 신규 매수 대상 중 1주도 못 사는 종목 찾기
+            unaffordable = [
+                t for t in priced_targets
+                if current_holdings.get(t, 0) == 0
+                and self.calc_buy_shares(target_per_stock, prices[t]) == 0
+            ]
+
+            if not unaffordable:
+                break  # 모든 종목 매수 가능 → 확정
+
+            for t in unaffordable:
+                logger.warning(
+                    f"자본 부족으로 제외: {t} "
+                    f"(주가 {prices[t]:,.0f}원 > 종목당 배분 {target_per_stock:,.0f}원)"
+                )
+                priced_targets.remove(t)
+                excluded.append(t)
+
+            n_priced = len(priced_targets)
+
+        if n_priced == 0:
+            logger.warning("모든 목표 종목이 자본 부족으로 제외됨")
+            # 기존 보유분 매도만 진행
+            orders: dict[str, int] = {}
+            for ticker, shares in current_holdings.items():
+                if ticker not in target_set and shares > 0:
+                    orders[ticker] = -shares
+            return orders
+
+        if excluded:
+            logger.info(
+                f"자본 적응형 배분: {len(excluded)}개 제외, "
+                f"{n_priced}개 종목에 재분배 "
+                f"(종목당 {target_per_stock:,.0f}원)"
+            )
+
+        orders = {}
 
         # 포트폴리오에서 빠지는 종목: 전량 매도
         for ticker, shares in current_holdings.items():
@@ -78,10 +129,8 @@ class Rebalancer:
                 orders[ticker] = -shares
 
         # 목표 종목: 균등 비중으로 조정
-        for ticker in target_tickers:
-            price = prices.get(ticker, 0)
-            if price <= 0:
-                continue
+        for ticker in priced_targets:
+            price = prices[ticker]
             target_shares = self.calc_buy_shares(target_per_stock, price)
             current_shares = current_holdings.get(ticker, 0)
             delta = target_shares - current_shares
