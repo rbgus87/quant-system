@@ -199,12 +199,14 @@ class ReportGenerator:
             charts["monthly"] = _fig_to_base64(fig)
             plt.close(fig)
 
-        # 3-b) 연도별 월간 수익률 바 차트 (각 연도 개별)
+        # 3-b) 연도별 월간 수익률 바 차트 (3개월 이상 데이터가 있는 연도만)
         monthly_pnl_df = analyzer.monthly_pnl(portfolio_values)
         yearly_month_charts: list[str] = []
         if not monthly_pnl_df.empty:
             for year in sorted(monthly_pnl_df["year"].unique()):
                 year_data = monthly_pnl_df[monthly_pnl_df["year"] == year]
+                if len(year_data) < 3:
+                    continue  # 데이터 부족한 연도는 스킵
                 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 5), gridspec_kw={"height_ratios": [3, 2]})
                 fig.subplots_adjust(hspace=0.4)
 
@@ -248,9 +250,9 @@ class ReportGenerator:
                 yearly_month_charts.append(_fig_to_base64(fig))
                 plt.close(fig)
 
-        # 4) 연도별 수익률 막대
+        # 4) 연도별 수익률 막대 (2개 이상 연도일 때만 차트 생성)
         yearly = analyzer.yearly_returns(portfolio_values)
-        if not yearly.empty:
+        if not yearly.empty and len(yearly) >= 2:
             fig, ax = plt.subplots(figsize=(10, 3))
             colors = ["#4ecdc4" if v >= 0 else "#ff6b6b" for v in yearly.values]
             ax.bar([str(y) for y in yearly.index], yearly.values * 100, color=colors)
@@ -431,7 +433,7 @@ class ReportGenerator:
 
             month_rows = ""
             for year in monthly_table.index:
-                month_rows += f"<tr><td class='metric-name'>{year}</td>"
+                month_rows += f"<tr><td>{year}</td>"
                 for col in monthly_table.columns:
                     val = monthly_table.loc[year, col]
                     if pd.isna(val):
@@ -440,7 +442,7 @@ class ReportGenerator:
                         pct = val * 100
                         color = "#4ecdc4" if val >= 0 else "#ff6b6b"
                         weight = "bold" if col == "연간" else "normal"
-                        month_rows += f"<td style='color:{color};font-weight:{weight};text-align:right'>{pct:.1f}%</td>"
+                        month_rows += f"<td style='color:{color};font-weight:{weight}'>{pct:.1f}%</td>"
                 month_rows += "</tr>"
 
             monthly_table_html = f"""
@@ -487,12 +489,12 @@ class ReportGenerator:
 
                 pnl_rows += f"""
                 <tr style="{year_style}">
-                    <td class="metric-name">{year_label}</td>
-                    <td style="text-align:center">{month}월</td>
-                    <td style="text-align:right">{start_v:,.0f}</td>
-                    <td style="text-align:right">{end_v:,.0f}</td>
-                    <td style="text-align:right;color:{pnl_color};font-weight:bold">{pnl_sign}{pnl:,.0f}</td>
-                    <td style="text-align:right;color:{pnl_color}">{ret_sign}{ret * 100:.2f}%</td>
+                    <td>{year_label}</td>
+                    <td>{month}월</td>
+                    <td>{start_v:,.0f}</td>
+                    <td>{end_v:,.0f}</td>
+                    <td style="color:{pnl_color};font-weight:bold">{pnl_sign}{pnl:,.0f}</td>
+                    <td style="color:{pnl_color}">{ret_sign}{ret * 100:.2f}%</td>
                 </tr>"""
 
             # 연도별 소계
@@ -508,11 +510,11 @@ class ReportGenerator:
                 yearly_summary_rows += f"""
                 <tr style="background:#16213e;font-weight:bold">
                     <td style="color:#00d2ff">{year}년 합계</td>
-                    <td style="text-align:center">-</td>
-                    <td style="text-align:right">{yr_start:,.0f}</td>
-                    <td style="text-align:right">{yr_end:,.0f}</td>
-                    <td style="text-align:right;color:{yr_color}">{yr_sign}{yr_pnl:,.0f}</td>
-                    <td style="text-align:right;color:{yr_color}">{yr_sign}{yr_ret * 100:.2f}%</td>
+                    <td>-</td>
+                    <td>{yr_start:,.0f}</td>
+                    <td>{yr_end:,.0f}</td>
+                    <td style="color:{yr_color}">{yr_sign}{yr_pnl:,.0f}</td>
+                    <td style="color:{yr_color}">{yr_sign}{yr_ret * 100:.2f}%</td>
                 </tr>"""
 
             monthly_pnl_html = f"""
@@ -688,16 +690,120 @@ class ReportGenerator:
 
             # 리밸런싱 상세 이력
             rebal_detail = ""
-            for t in turnover_log:
+            for idx, t in enumerate(turnover_log):
+                date_fmt = f"{t['date'][:4]}-{t['date'][4:6]}-{t['date'][6:]}"
+                has_details = t.get("sell_details") or t.get("buy_details")
+                toggle_id = f"rebal_detail_{idx}"
+
+                # 매매 상세 서브테이블 (좌우 2열 배치)
+                detail_sub = ""
+                if has_details:
+                    sell_details = t.get("sell_details", [])
+                    buy_details = t.get("buy_details", [])
+
+                    # 매도 패널
+                    sell_panel = ""
+                    if sell_details:
+                        sell_rows = ""
+                        sell_total = 0
+                        total_pnl = 0
+                        for s in sell_details:
+                            sell_total += s['amount']
+                            ret = s.get('return_pct')
+                            buy_px = s.get('buy_price')
+                            # 수익률 표시: 색상 분기
+                            if ret is not None:
+                                ret_color = '#4ecdc4' if ret >= 0 else '#ff6b6b'
+                                ret_str = f'<span style="color:{ret_color}">{ret:+.1%}</span>'
+                                pnl = s['price'] * s['quantity'] - (buy_px or 0) * s['quantity']
+                                total_pnl += pnl
+                            else:
+                                ret_str = '<span style="color:#555">-</span>'
+                            buy_px_str = f"{buy_px:,.0f}" if buy_px else "-"
+                            sell_rows += f"""<tr>
+                                <td>{s['name']}</td>
+                                <td style="color:#888">{s['ticker']}</td>
+                                <td>{s['quantity']:,}</td>
+                                <td style="color:#888">{buy_px_str}</td>
+                                <td>{s['price']:,.0f}</td>
+                                <td style="color:#ff6b6b">{s['amount']:,.0f}</td>
+                                <td>{ret_str}</td>
+                            </tr>"""
+                        # 합계 행: 손익 합계 색상
+                        pnl_color = '#4ecdc4' if total_pnl >= 0 else '#ff6b6b'
+                        pnl_str = f'<span style="color:{pnl_color}">{total_pnl:+,.0f}</span>' if total_pnl != 0 else ''
+                        sell_panel = f"""<div class="trade-panel">
+                            <div class="trade-panel-header" style="color:#ff6b6b">매도 ({len(sell_details)}종목)</div>
+                            <table style="font-size:11px">
+                                <thead><tr><th>종목</th><th>코드</th><th>수량</th><th>매수가</th><th>매도가</th><th>금액</th><th>수익률</th></tr></thead>
+                                <tbody>{sell_rows}
+                                <tr style="border-top:1px solid #3a3a5a;font-weight:bold">
+                                    <td colspan="5" style="color:#aaa">합계</td>
+                                    <td style="color:#ff6b6b">{sell_total:,.0f}</td>
+                                    <td>{pnl_str}</td>
+                                </tr></tbody>
+                            </table>
+                        </div>"""
+                    else:
+                        sell_panel = """<div class="trade-panel">
+                            <div class="trade-panel-header" style="color:#ff6b6b">매도</div>
+                            <div style="color:#555;font-size:11px;padding:10px">매도 없음</div>
+                        </div>"""
+
+                    # 매수 패널
+                    buy_panel = ""
+                    if buy_details:
+                        buy_rows = ""
+                        buy_total = 0
+                        for b in buy_details:
+                            buy_total += b['amount']
+                            buy_rows += f"""<tr>
+                                <td>{b['name']}</td>
+                                <td style="color:#888">{b['ticker']}</td>
+                                <td>{b['quantity']:,}</td>
+                                <td>{b['price']:,.0f}</td>
+                                <td style="color:#4ecdc4">{b['amount']:,.0f}</td>
+                            </tr>"""
+                        buy_panel = f"""<div class="trade-panel">
+                            <div class="trade-panel-header" style="color:#4ecdc4">매수 ({len(buy_details)}종목)</div>
+                            <table style="font-size:11px">
+                                <thead><tr><th>종목</th><th>코드</th><th>수량</th><th>단가</th><th>금액</th></tr></thead>
+                                <tbody>{buy_rows}
+                                <tr style="border-top:1px solid #3a3a5a;font-weight:bold">
+                                    <td colspan="4" style="color:#aaa">합계</td>
+                                    <td style="color:#4ecdc4">{buy_total:,.0f}</td>
+                                </tr></tbody>
+                            </table>
+                        </div>"""
+                    else:
+                        buy_panel = """<div class="trade-panel">
+                            <div class="trade-panel-header" style="color:#4ecdc4">매수</div>
+                            <div style="color:#555;font-size:11px;padding:10px">매수 없음</div>
+                        </div>"""
+
+                    detail_sub = f"""
+                    <tr id="{toggle_id}" class="trade-detail" style="display:none">
+                        <td colspan="6" style="padding:0">
+                            <div class="trade-grid">
+                                {sell_panel}
+                                {buy_panel}
+                            </div>
+                        </td>
+                    </tr>"""
+
+                toggle_btn = ""
+                if has_details:
+                    toggle_btn = f' <span class="toggle-btn" onclick="toggleDetail(\'{toggle_id}\')" style="cursor:pointer;color:#00d2ff;font-size:11px">[상세]</span>'
+
                 rebal_detail += f"""
                 <tr>
-                    <td>{t['date'][:4]}-{t['date'][4:6]}-{t['date'][6:]}</td>
-                    <td style="text-align:right">{t['n_holdings_before']}</td>
-                    <td style="text-align:right">{t['n_holdings_after']}</td>
-                    <td style="text-align:right;color:#ff6b6b">{t['sells']}</td>
-                    <td style="text-align:right;color:#4ecdc4">{t['buys']}</td>
-                    <td style="text-align:right">{t['turnover_rate'] * 100:.0f}%</td>
-                </tr>"""
+                    <td>{date_fmt}{toggle_btn}</td>
+                    <td>{t['n_holdings_before']}</td>
+                    <td>{t['n_holdings_after']}</td>
+                    <td style="color:#ff6b6b">{t['sells']}</td>
+                    <td style="color:#4ecdc4">{t['buys']}</td>
+                    <td>{t['turnover_rate'] * 100:.0f}%</td>
+                </tr>{detail_sub}"""
 
             rebal_html = f"""
     <div class="section">
@@ -712,7 +818,13 @@ class ReportGenerator:
                 <tbody>{rebal_detail}</tbody>
             </table>
         </div>
-    </div>"""
+    </div>
+    <script>
+    function toggleDetail(id) {{
+        var el = document.getElementById(id);
+        if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
+    }}
+    </script>"""
 
         # --- 팩터 기여도 ---
         factor_html = ""
@@ -765,11 +877,111 @@ class ReportGenerator:
                 <td class="metric-desc">{desc}</td>
             </tr>"""
 
-        chart_sections = ""
-        chart_keys = ["cumulative", "drawdown", "rolling_ret", "rolling_sharpe", "monthly", "yearly"]
-        for key in chart_keys:
+        # --- 섹션 조립 (빈 섹션 없도록 조건부 조립) ---
+        sections = []
+
+        # 상세 지표 테이블 (항상 존재)
+        detail_section = f"""<div class="section">
+        <div class="section-title">상세 성과 지표</div>
+        <table>
+            <thead><tr><th>지표</th><th>값</th><th>해석</th></tr></thead>
+            <tbody>{detail_html}</tbody>
+        </table>
+    </div>"""
+
+        # 1. 메인 차트 (누적수익률 + 낙폭)
+        main_charts_html = ""
+        for key in ["cumulative", "drawdown"]:
             if key in charts:
-                chart_sections += f'<img src="data:image/png;base64,{charts[key]}" class="chart-img">\n'
+                main_charts_html += f'<img src="data:image/png;base64,{charts[key]}" class="chart-img">\n'
+        if main_charts_html:
+            sections.append(f"""<div class="section">
+        <div class="section-title">성과 차트</div>
+        {main_charts_html}
+    </div>""")
+
+        # 2. 상세 지표 + 벤치마크/팩터 (있으면 나란히, 없으면 단독 풀와이드)
+        side_sections = []
+        if benchmark_compare_html:
+            side_sections.append(benchmark_compare_html)
+        if factor_html:
+            side_sections.append(factor_html)
+
+        if side_sections:
+            # 보조 섹션이 있으면 2열 그리드
+            side_content = "".join(side_sections)
+            sections.append(f'<div class="grid-2">{detail_section}<div>{side_content}</div></div>')
+        else:
+            # 없으면 단독 풀와이드
+            sections.append(detail_section)
+
+        # 3. 히트맵 + 연도별 차트 (둘 다 있으면 2열, 아니면 단독)
+        hm_items = []
+        if "monthly" in charts:
+            hm_items.append(f'<img src="data:image/png;base64,{charts["monthly"]}" class="chart-img">')
+        if "yearly" in charts:
+            hm_items.append(f'<img src="data:image/png;base64,{charts["yearly"]}" class="chart-img">')
+        if len(hm_items) == 2:
+            sections.append(f"""<div class="section">
+        <div class="section-title">기간별 수익률</div>
+        <div class="grid-2">{"".join(hm_items)}</div>
+    </div>""")
+        elif hm_items:
+            sections.append(f"""<div class="section">
+        <div class="section-title">기간별 수익률</div>
+        {hm_items[0]}
+    </div>""")
+
+        # 4. 롤링 차트 (둘 다 있으면 2열)
+        rolling_items = []
+        for key in ["rolling_ret", "rolling_sharpe"]:
+            if key in charts:
+                rolling_items.append(f'<img src="data:image/png;base64,{charts[key]}" class="chart-img">')
+        if len(rolling_items) == 2:
+            sections.append(f"""<div class="section">
+        <div class="section-title">롤링 분석</div>
+        <div class="grid-2">{"".join(rolling_items)}</div>
+    </div>""")
+        elif rolling_items:
+            sections.append(f"""<div class="section">
+        <div class="section-title">롤링 분석</div>
+        {rolling_items[0]}
+    </div>""")
+
+        # 5. 연도별 월간 손익 차트
+        if yearly_month_charts_html:
+            sections.append(yearly_month_charts_html)
+
+        # 6. 월별 테이블들 + 연도별 수익률 (세로 스택)
+        if monthly_table_html:
+            sections.append(monthly_table_html)
+        if monthly_pnl_html:
+            sections.append(monthly_pnl_html)
+        if yearly_table_html:
+            sections.append(yearly_table_html)
+
+        # 7. 리스크 분석 (Top DD + 최고/최저/분포)
+        risk_parts = []
+        if top_dd_html:
+            risk_parts.append(top_dd_html)
+        if best_worst_html:
+            risk_parts.append(best_worst_html)
+        if dist_html:
+            risk_parts.append(dist_html)
+
+        if len(risk_parts) >= 2:
+            # 2열 그리드: 첫 번째 + 나머지를 한 열에 묶기
+            left = risk_parts[0]
+            right = "<div>" + "".join(risk_parts[1:]) + "</div>"
+            sections.append(f'<div class="grid-2">{left}{right}</div>')
+        elif risk_parts:
+            sections.append(risk_parts[0])
+
+        # 8. 리밸런싱
+        if rebal_html:
+            sections.append(rebal_html)
+
+        all_sections = "\n".join(sections)
 
         html = f"""<!DOCTYPE html>
 <html lang="ko">
@@ -779,26 +991,39 @@ class ReportGenerator:
 <title>{title}</title>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ background: #0f0f23; color: #e0e0e0; font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; padding: 20px; }}
-.container {{ max-width: 1100px; margin: 0 auto; }}
-h1 {{ color: #00d2ff; font-size: 24px; margin-bottom: 5px; }}
-.subtitle {{ color: #888; font-size: 14px; margin-bottom: 25px; }}
-.cards {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 30px; }}
-.card {{ background: #1a1a2e; border-radius: 10px; padding: 20px; text-align: center; border: 1px solid #2a2a4a; }}
-.card-value {{ font-size: 28px; font-weight: bold; margin-bottom: 5px; }}
-.card-label {{ font-size: 13px; color: #aaa; margin-bottom: 3px; }}
+body {{ background: #0f0f23; color: #e0e0e0; font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; padding: 20px; line-height: 1.5; }}
+.container {{ max-width: 1200px; margin: 0 auto; }}
+h1 {{ color: #00d2ff; font-size: 22px; margin-bottom: 4px; }}
+.subtitle {{ color: #888; font-size: 13px; margin-bottom: 16px; }}
+.cards {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; }}
+.card {{ background: #1a1a2e; border-radius: 8px; padding: 14px 10px; text-align: center; border: 1px solid #2a2a4a; }}
+.card-value {{ font-size: 24px; font-weight: bold; margin-bottom: 2px; }}
+.card-label {{ font-size: 12px; color: #aaa; margin-bottom: 2px; }}
 .card-desc {{ font-size: 11px; color: #666; }}
-.section {{ margin-bottom: 30px; }}
-.section-title {{ font-size: 18px; color: #00d2ff; margin-bottom: 15px; border-bottom: 1px solid #2a2a4a; padding-bottom: 8px; }}
-table {{ width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 8px; overflow: hidden; }}
-th {{ background: #16213e; color: #00d2ff; text-align: left; padding: 10px 15px; font-size: 13px; }}
-td {{ padding: 8px 15px; border-bottom: 1px solid #2a2a4a; font-size: 13px; }}
-.metric-name {{ color: #ccc; width: 25%; }}
-.metric-value {{ color: #fff; font-weight: bold; width: 20%; }}
-.metric-desc {{ color: #888; font-size: 12px; }}
-.chart-img {{ width: 100%; border-radius: 8px; margin-bottom: 15px; }}
-.footer {{ text-align: center; color: #555; font-size: 11px; margin-top: 30px; padding-top: 15px; border-top: 1px solid #2a2a4a; }}
-@media (max-width: 768px) {{ .cards {{ grid-template-columns: repeat(2, 1fr); }} }}
+.section {{ margin-bottom: 16px; }}
+.section-title {{ font-size: 15px; color: #00d2ff; margin-bottom: 8px; border-bottom: 1px solid #2a2a4a; padding-bottom: 6px; }}
+.grid-2 {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }}
+.grid-2 > .section {{ margin-bottom: 0; }}
+table {{ width: 100%; border-collapse: collapse; background: #1a1a2e; border-radius: 6px; overflow: hidden; }}
+th {{ background: #16213e; color: #00d2ff; text-align: center; padding: 7px 12px; font-size: 12px; white-space: nowrap; }}
+td {{ padding: 6px 12px; border-bottom: 1px solid #2a2a4a; font-size: 12px; text-align: center; }}
+th:first-child {{ text-align: left; }}
+td:first-child {{ text-align: left; }}
+.metric-name {{ color: #ccc; text-align: left; }}
+.metric-value {{ color: #fff; font-weight: bold; text-align: center; }}
+.metric-desc {{ color: #888; font-size: 11px; text-align: left; }}
+.chart-img {{ width: 100%; border-radius: 6px; margin-bottom: 8px; display: block; }}
+.grid-2 .chart-img {{ margin-bottom: 0; }}
+.footer {{ text-align: center; color: #555; font-size: 11px; margin-top: 20px; padding-top: 10px; border-top: 1px solid #2a2a4a; }}
+.trade-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px 10px; background: #0f0f23; }}
+.trade-panel {{ background: #12122a; border-radius: 6px; padding: 8px 10px; border: 1px solid #2a2a4a; }}
+.trade-panel-header {{ font-size: 12px; font-weight: bold; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #2a2a4a; }}
+.trade-panel table {{ margin: 0; }}
+@media (max-width: 900px) {{
+    .cards {{ grid-template-columns: repeat(2, 1fr); }}
+    .grid-2 {{ grid-template-columns: 1fr; }}
+    .trade-grid {{ grid-template-columns: 1fr; }}
+}}
 </style>
 </head>
 <body>
@@ -809,39 +1034,7 @@ td {{ padding: 8px 15px; border-bottom: 1px solid #2a2a4a; font-size: 13px; }}
     <div class="cards">{cards_html}
     </div>
 
-    <div class="section">
-        <div class="section-title">성과 차트</div>
-        {chart_sections}
-    </div>
-
-    {benchmark_compare_html}
-
-    <div class="section">
-        <div class="section-title">상세 성과 지표</div>
-        <table>
-            <thead><tr><th>지표</th><th>값</th><th>해석</th></tr></thead>
-            <tbody>{detail_html}
-            </tbody>
-        </table>
-    </div>
-
-    {yearly_month_charts_html}
-
-    {monthly_table_html}
-
-    {monthly_pnl_html}
-
-    {yearly_table_html}
-
-    {top_dd_html}
-
-    {best_worst_html}
-
-    {dist_html}
-
-    {rebal_html}
-
-    {factor_html}
+    {all_sections}
 
     <div class="footer">
         Korean Quant Backtest Report | Generated by korean-quant system

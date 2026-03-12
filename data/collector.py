@@ -136,6 +136,8 @@ class KRXDataCollector:
         self._krx_api_checked = False
         self._dart_client = None
         self._dart_client_checked = False
+        self._prefetched_dates: set[str] = set()  # 이미 프리페치한 날짜 (중복 방지)
+        self._ticker_names: dict[str, str] = {}  # ticker→name 매핑 캐시
 
     @property
     def krx_api(self) -> Optional[object]:
@@ -437,7 +439,20 @@ class KRXDataCollector:
         Returns:
             DataFrame(index=ticker, columns=[open, high, low, close, volume, market_cap, shares])
         """
+        # 중복 프리페치 방지 (인메모리)
+        cache_key = f"{date}_{market}"
+        if cache_key in self._prefetched_dates:
+            logger.debug(f"[{date}] 이미 프리페치됨 (메모리), 스킵")
+            return pd.DataFrame()
+
         dt = _parse_date(date)
+
+        # DB 캐시 확인: 해당 날짜에 충분한 데이터가 이미 있으면 API 스킵
+        cached_count = self.storage.load_daily_prices_for_date(dt)
+        if cached_count >= 100:  # KOSPI 종목 수 기준 충분한 데이터
+            self._prefetched_dates.add(cache_key)
+            logger.debug(f"[{date}] DB 캐시 히트 ({cached_count}건), API 스킵")
+            return pd.DataFrame()
 
         if not self.krx_api:
             return pd.DataFrame()
@@ -454,6 +469,10 @@ class KRXDataCollector:
                 ticker = self._normalize_ticker(r.get("ISU_CD", ""))
                 if not ticker:
                     continue
+                # 종목명 캐시 (배치 로드)
+                name = r.get("ISU_NM", "") or r.get("ISU_ABBRV", "")
+                if name:
+                    self._ticker_names[ticker] = name
                 rows.append(
                     {
                         "ticker": ticker,
@@ -478,6 +497,7 @@ class KRXDataCollector:
             if cap_cols:
                 self.storage.save_market_caps(dt, df[cap_cols])
 
+            self._prefetched_dates.add(cache_key)
             logger.info(f"[{date}] 일별 거래 프리페치: {len(df)}건 캐시 저장")
             return df
 
@@ -700,6 +720,24 @@ class KRXDataCollector:
 
         return pd.DataFrame(rows).set_index("ticker")
 
+    def get_ticker_name(self, ticker: str) -> str:
+        """종목명 조회 (프리페치 캐시 우선, pykrx 폴백)
+
+        Args:
+            ticker: 종목코드
+
+        Returns:
+            종목명 (없으면 ticker 반환)
+        """
+        if ticker in self._ticker_names:
+            return self._ticker_names[ticker]
+        try:
+            name = stock.get_market_ticker_name(ticker)
+            self._ticker_names[ticker] = name or ticker
+        except Exception:
+            self._ticker_names[ticker] = ticker
+        return self._ticker_names[ticker]
+
     @staticmethod
     def _safe_float(val: object) -> Optional[float]:
         """안전한 float 변환
@@ -742,8 +780,12 @@ class KRXDataCollector:
 class ReturnCalculator:
     """수익률 계산기 (모멘텀 팩터용)"""
 
-    def __init__(self, request_delay: float = 0.3) -> None:
-        self.collector = KRXDataCollector(request_delay=request_delay)
+    def __init__(
+        self,
+        request_delay: float = 0.3,
+        collector: Optional[KRXDataCollector] = None,
+    ) -> None:
+        self.collector = collector or KRXDataCollector(request_delay=request_delay)
 
     def get_momentum_return(
         self,

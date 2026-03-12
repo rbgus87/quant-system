@@ -40,6 +40,22 @@ class UniverseConfig:
 
 
 @dataclass
+class MomentumConfig:
+    """모멘텀 팩터 설정"""
+
+    absolute_momentum_enabled: bool = True  # 듀얼 모멘텀 활성화
+    risk_free_rate: float = 0.035  # 연간 무위험 수익률 (국고채 3년 기준 3.5%)
+
+
+@dataclass
+class QualityConfig:
+    """퀄리티 팩터 설정"""
+
+    fscore_enabled: bool = True  # F-Score 필터 활성화
+    min_fscore: int = 2  # 최소 F-Score (5점 만점, 2점 이상만 통과 — 최악만 제거)
+
+
+@dataclass
 class PortfolioConfig:
     n_stocks: int = 30
     weight_method: str = "equal"  # equal / value_weighted
@@ -80,6 +96,8 @@ def _load_yaml(path: str) -> dict:
 _YAML_SECTIONS = {
     "factor_weights": FactorWeights,
     "value_weights": ValueWeights,
+    "momentum": MomentumConfig,
+    "quality": QualityConfig,
     "universe": UniverseConfig,
     "portfolio": PortfolioConfig,
     "trading": TradingConfig,
@@ -164,6 +182,8 @@ def validate_settings(s: "Settings") -> None:
 class Settings:
     factor_weights: FactorWeights = field(default_factory=FactorWeights)
     value_weights: ValueWeights = field(default_factory=ValueWeights)
+    momentum: MomentumConfig = field(default_factory=MomentumConfig)
+    quality: QualityConfig = field(default_factory=QualityConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)

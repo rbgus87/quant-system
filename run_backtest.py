@@ -3,6 +3,8 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -90,13 +92,22 @@ def main() -> None:
         "--start",
         type=str,
         default=None,
-        help="시작일 YYYY-MM-DD (--mode custom 시 필수)",
+        help="시작일 YYYY-MM-DD (--mode custom 시 필수). "
+        "첫 달은 팩터 계산에 사용되어 실제 매매는 다음 달부터 시작됩니다. "
+        "예: 2025년 1월부터 매매 결과를 보려면 --start 2024-12-01",
     )
     parser.add_argument(
         "--end",
         type=str,
         default=None,
         help="종료일 YYYY-MM-DD (--mode custom 시 필수)",
+    )
+    parser.add_argument(
+        "--auto-lead",
+        action="store_true",
+        default=False,
+        help="start 날짜를 자동으로 1개월 앞당겨 첫 달부터 매매 결과 포함. "
+        "예: --start 2025-01-01 --auto-lead → 내부적으로 2024-12-01 시작",
     )
     # config.yaml의 portfolio.initial_cash 사용 (기본 1000만원)
     default_cash = settings.portfolio.initial_cash
@@ -113,8 +124,16 @@ def main() -> None:
     if args.mode == "custom":
         if not args.start or not args.end:
             parser.error("--mode custom 사용 시 --start, --end 필수")
+
+        start = args.start
+        if args.auto_lead:
+            # 1개월 선행: 사용자가 원하는 달부터 매매 결과가 나오도록
+            lead_dt = datetime.strptime(args.start, "%Y-%m-%d") - relativedelta(months=1)
+            start = lead_dt.strftime("%Y-%m-%d")
+            logger.info(f"--auto-lead: 시작일 {args.start} → {start} (1개월 선행)")
+
         run(
-            start_date=args.start,
+            start_date=start,
             end_date=args.end,
             initial_cash=args.cash,
             label=f"Custom ({args.start}~{args.end})",

@@ -1,6 +1,7 @@
 # tests/test_factors.py
 import pandas as pd
 import numpy as np
+import pytest
 
 from factors.value import ValueFactor
 from factors.momentum import MomentumFactor
@@ -330,3 +331,146 @@ class TestMultiFactorComposite:
         )
         # D는 시가총액 하위 10%로 제외, B는 금융주 제외
         assert "B" not in filtered.index
+
+
+# ───────────────────────────────────────────────
+# 듀얼 모멘텀 (절대 모멘텀) 테스트
+# ───────────────────────────────────────────────
+
+
+class TestAbsoluteMomentum:
+    def test_filters_below_risk_free_rate(self) -> None:
+        """무위험 수익률 이하 종목 필터링"""
+        returns = pd.Series({
+            "A": 0.30,   # 통과 (30% > 3.5%)
+            "B": 0.10,   # 통과
+            "C": 0.02,   # 제거 (2% < 3.5%)
+            "D": -0.05,  # 제거
+            "E": 0.035,  # 제거 (동일은 미포함)
+        })
+        result = MomentumFactor.apply_absolute_momentum(returns, risk_free_rate=0.035)
+        assert "A" in result.index
+        assert "B" in result.index
+        assert "C" not in result.index
+        assert "D" not in result.index
+        assert "E" not in result.index
+        assert len(result) == 2
+
+    def test_all_pass(self) -> None:
+        """모든 종목 통과"""
+        returns = pd.Series({"A": 0.20, "B": 0.15, "C": 0.10})
+        result = MomentumFactor.apply_absolute_momentum(returns, risk_free_rate=0.035)
+        assert len(result) == 3
+
+    def test_all_filtered(self) -> None:
+        """모든 종목 제거 (시장 전체 하락)"""
+        returns = pd.Series({"A": -0.10, "B": -0.05, "C": 0.01})
+        result = MomentumFactor.apply_absolute_momentum(returns, risk_free_rate=0.035)
+        assert result.empty
+
+    def test_empty_input(self) -> None:
+        returns = pd.Series(dtype=float)
+        result = MomentumFactor.apply_absolute_momentum(returns, risk_free_rate=0.035)
+        assert result.empty
+
+    def test_nan_handling(self) -> None:
+        """NaN 값은 제거됨"""
+        returns = pd.Series({"A": 0.20, "B": np.nan, "C": 0.10})
+        result = MomentumFactor.apply_absolute_momentum(returns, risk_free_rate=0.035)
+        assert "B" not in result.index
+        assert len(result) == 2
+
+    def test_default_risk_free_rate(self) -> None:
+        """기본 무위험 수익률(settings) 사용"""
+        returns = pd.Series({"A": 0.20, "B": 0.01})
+        result = MomentumFactor.apply_absolute_momentum(returns)
+        assert "A" in result.index
+        # B는 기본 3.5% 미만이므로 제거
+        assert "B" not in result.index
+
+
+# ───────────────────────────────────────────────
+# F-Score 테스트
+# ───────────────────────────────────────────────
+
+
+class TestFScore:
+    def test_perfect_score(self) -> None:
+        """우량주: ROE 양수 + 중앙값 초과, PER 양수, DIV 양수, PBR 중앙값 미만"""
+        df = pd.DataFrame(
+            {
+                "EPS": [5000, 1000, 500, 100, 50],
+                "BPS": [25000, 25000, 25000, 25000, 25000],
+                "PER": [5.0, 25.0, 50.0, 100.0, 200.0],
+                "PBR": [0.3, 0.8, 1.2, 2.0, 5.0],
+                "DIV": [5.0, 3.0, 1.0, 0.5, 0.0],
+            },
+            index=["A", "B", "C", "D", "E"],
+        )
+        fscore = QualityFactor.calc_fscore(df)
+        assert fscore.name == "fscore"
+        assert len(fscore) == 5
+        # A: ROE>0(+1), ROE>median(+1), PER>0(+1), DIV>0(+1), PBR<median(+1) = 5
+        assert fscore["A"] == 5
+        # E: ROE>0(+1), ROE<median(0), PER>0(+1), DIV=0(0), PBR>median(0) = 2
+        assert fscore["E"] == 2
+
+    def test_loss_making_company(self) -> None:
+        """적자 기업은 낮은 F-Score"""
+        df = pd.DataFrame(
+            {
+                "EPS": [-500, 5000],
+                "BPS": [25000, 25000],
+                "PER": [-50.0, 5.0],
+                "PBR": [0.8, 0.8],
+                "DIV": [0.0, 3.0],
+            },
+            index=["LOSS", "GOOD"],
+        )
+        fscore = QualityFactor.calc_fscore(df)
+        assert fscore["LOSS"] < fscore["GOOD"]
+        # LOSS: ROE<0(0), ROE<median(0), PER<0(0), DIV=0(0), PBR<median 비해당(0) = 0
+        assert fscore["LOSS"] <= 1
+
+    def test_filter_removes_low_fscore(self) -> None:
+        """min_fscore 미만 종목 제거"""
+        df = pd.DataFrame(
+            {
+                "EPS": [5000, -500, 1000, 100],
+                "BPS": [25000, 25000, 25000, 25000],
+                "PER": [5.0, -50.0, 25.0, 250.0],
+                "PBR": [0.3, 3.0, 0.8, 5.0],
+                "DIV": [3.0, 0.0, 2.0, 0.0],
+            },
+            index=["A", "B", "C", "D"],
+        )
+        fscore = QualityFactor.calc_fscore(df)
+        filtered = QualityFactor.apply_fscore_filter(df, fscore, min_fscore=3)
+        # 낮은 F-Score 종목은 제거됨
+        assert len(filtered) < len(df)
+        # A는 우량주이므로 반드시 포함
+        assert "A" in filtered.index
+
+    def test_empty_input(self) -> None:
+        df = pd.DataFrame(columns=["EPS", "BPS", "PER", "PBR", "DIV"])
+        fscore = QualityFactor.calc_fscore(df)
+        assert fscore.empty
+
+    def test_partial_columns(self) -> None:
+        """일부 컬럼만 있어도 동작 (가능한 항목만 계산)"""
+        df = pd.DataFrame(
+            {"EPS": [5000, -500], "BPS": [25000, 25000]},
+            index=["A", "B"],
+        )
+        fscore = QualityFactor.calc_fscore(df)
+        assert len(fscore) == 2
+        # A: ROE>0(+1), ROE>median(+1) = 2 (PER/DIV/PBR 없음)
+        assert fscore["A"] == 2
+        assert fscore["B"] == 0
+
+    def test_filter_with_empty_fscore(self) -> None:
+        """빈 F-Score는 필터 미적용"""
+        df = pd.DataFrame({"EPS": [5000]}, index=["A"])
+        fscore = pd.Series(dtype=int, name="fscore")
+        filtered = QualityFactor.apply_fscore_filter(df, fscore, min_fscore=3)
+        assert len(filtered) == 1

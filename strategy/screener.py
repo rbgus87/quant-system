@@ -22,7 +22,7 @@ class MultiFactorScreener:
 
     def __init__(self, request_delay: float = 0.5) -> None:
         self.collector = KRXDataCollector(request_delay=request_delay)
-        self.return_calc = ReturnCalculator(request_delay=0.3)
+        self.return_calc = ReturnCalculator(collector=self.collector)
         self.processor = DataProcessor()
         self.value_factor = ValueFactor()
         self.momentum_factor = MomentumFactor()
@@ -121,6 +121,14 @@ class MultiFactorScreener:
 
             if not cleaned.empty:
                 filtered_fund = cleaned.loc[cleaned.index.isin(tickers)]
+
+                # F-Score 필터 적용 (가치 함정 방어)
+                if settings.quality.fscore_enabled:
+                    fscore = self.quality_factor.calc_fscore(filtered_fund)
+                    filtered_fund = self.quality_factor.apply_fscore_filter(
+                        filtered_fund, fscore
+                    )
+
                 value_score = self.value_factor.calculate(filtered_fund)
                 quality_score = self.quality_factor.calculate(filtered_fund)
 
@@ -128,6 +136,11 @@ class MultiFactorScreener:
             returns_12m = self.return_calc.get_returns_for_universe(
                 tickers, date, lookback_months=12, skip_months=1
             )
+
+            # 듀얼 모멘텀: 절대 모멘텀 필터 (하락장 방어)
+            if settings.momentum.absolute_momentum_enabled:
+                returns_12m = self.momentum_factor.apply_absolute_momentum(returns_12m)
+
             momentum_score = self.momentum_factor.calculate(returns_12m)
 
             # 4. 복합 스코어 + 상위 N개

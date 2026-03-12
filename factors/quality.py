@@ -1,7 +1,10 @@
 # factors/quality.py
 import pandas as pd
+import numpy as np
 import logging
 from typing import Optional
+
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +17,7 @@ class QualityFactor:
     - Earnings Yield = 1 / PER (이익수익률, 수익 안정성)
     - 배당 지급 여부 (기업 질 신호)
     - 부채비율 역수 (선택, 외부 데이터 필요)
+    - F-Score 필터 (간소화 5점 피오트로스키)
     """
 
     def calculate(
@@ -161,3 +165,97 @@ class QualityFactor:
 
         valid = valid.clip(upper=valid.quantile(0.99))
         return valid.rank(pct=True) * 100
+
+    @staticmethod
+    def calc_fscore(fundamentals: pd.DataFrame) -> pd.Series:
+        """간소화 F-Score 계산 (5점 만점, 피오트로스키 기반)
+
+        현재 보유한 펀더멘털 데이터만으로 계산 가능한 5개 항목:
+          1. 수익성: ROE > 0 (+1)
+          2. 흑자: PER > 0 (EPS 양수) (+1)
+          3. 배당: DIV > 0 (배당 지급) (+1)
+          4. 가치: PBR < 유니버스 중앙값 (+1)
+          5. 수익 효율: ROE > 유니버스 중앙값 (+1)
+
+        Args:
+            fundamentals: DataFrame (index=ticker, 필요 컬럼: EPS, BPS, PER, PBR, DIV)
+
+        Returns:
+            Series (index=ticker, values=0~5 정수 F-Score)
+        """
+        if fundamentals.empty:
+            return pd.Series(dtype=int, name="fscore")
+
+        fscore = pd.Series(0, index=fundamentals.index, name="fscore")
+
+        # 1. 수익성: ROE > 0
+        if "EPS" in fundamentals.columns and "BPS" in fundamentals.columns:
+            eps = fundamentals["EPS"]
+            bps = fundamentals["BPS"]
+            valid_bps = bps > 0
+            roe = pd.Series(np.nan, index=fundamentals.index)
+            roe[valid_bps] = eps[valid_bps] / bps[valid_bps]
+            fscore += (roe > 0).astype(int)
+
+            # 5. 수익 효율: ROE > 유니버스 중앙값
+            roe_median = roe[roe.notna()].median()
+            if not np.isnan(roe_median):
+                fscore += (roe > roe_median).astype(int)
+
+        # 2. 흑자: PER > 0 (= EPS 양수)
+        if "PER" in fundamentals.columns:
+            fscore += (fundamentals["PER"] > 0).astype(int)
+
+        # 3. 배당 지급: DIV > 0
+        if "DIV" in fundamentals.columns:
+            div = fundamentals["DIV"].fillna(0)
+            fscore += (div > 0).astype(int)
+
+        # 4. 가치: PBR < 유니버스 중앙값
+        if "PBR" in fundamentals.columns:
+            pbr = fundamentals["PBR"]
+            pbr_valid = pbr[pbr > 0]
+            if not pbr_valid.empty:
+                pbr_median = pbr_valid.median()
+                fscore += ((pbr > 0) & (pbr < pbr_median)).astype(int)
+
+        logger.info(
+            f"F-Score 계산 완료: {len(fscore)}개 종목, "
+            f"평균={fscore.mean():.1f}, 분포={dict(fscore.value_counts().sort_index())}"
+        )
+        return fscore
+
+    @staticmethod
+    def apply_fscore_filter(
+        fundamentals: pd.DataFrame,
+        fscore: pd.Series,
+        min_fscore: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """F-Score 기준 미달 종목 제거
+
+        Args:
+            fundamentals: 펀더멘털 DataFrame
+            fscore: F-Score Series
+            min_fscore: 최소 F-Score (기본: settings.quality.min_fscore)
+
+        Returns:
+            필터링된 fundamentals DataFrame
+        """
+        if min_fscore is None:
+            min_fscore = settings.quality.min_fscore
+
+        if fscore.empty:
+            return fundamentals
+
+        passing = fscore[fscore >= min_fscore].index
+        before = len(fundamentals)
+        filtered = fundamentals[fundamentals.index.isin(passing)]
+        removed = before - len(filtered)
+
+        if removed > 0:
+            logger.info(
+                f"F-Score 필터: {before} → {len(filtered)}개 종목 "
+                f"({removed}개 제거, 기준={min_fscore}점 이상)"
+            )
+
+        return filtered

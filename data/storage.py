@@ -213,7 +213,7 @@ class DataStorage:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
     ) -> pd.DataFrame:
-        """일별 가격 조회
+        """일별 가격 조회 (pd.read_sql 직접 변환)
 
         Args:
             ticker: 종목코드
@@ -223,31 +223,47 @@ class DataStorage:
         Returns:
             DataFrame(index=date, columns=[open, high, low, close, volume])
         """
-        with self.SessionLocal() as session:
-            query = session.query(DailyPrice).filter_by(ticker=ticker)
-            if start_date:
-                query = query.filter(DailyPrice.date >= start_date)
-            if end_date:
-                query = query.filter(DailyPrice.date <= end_date)
-            query = query.order_by(DailyPrice.date)
+        sql = (
+            "SELECT date, open, high, low, close, volume "
+            "FROM daily_price WHERE ticker = :ticker"
+        )
+        params: dict = {"ticker": ticker}
+        if start_date:
+            sql += " AND date >= :sd"
+            params["sd"] = str(start_date)
+        if end_date:
+            sql += " AND date <= :ed"
+            params["ed"] = str(end_date)
+        sql += " ORDER BY date"
 
-            rows = [
-                {
-                    "date": r.date,
-                    "open": r.open,
-                    "high": r.high,
-                    "low": r.low,
-                    "close": r.close,
-                    "volume": r.volume,
-                }
-                for r in query.all()
-            ]
+        from sqlalchemy import text
 
-        if not rows:
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params=params, parse_dates=["date"])
+
+        if df.empty:
             return pd.DataFrame()
 
-        df = pd.DataFrame(rows).set_index("date")
-        return df
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        return df.set_index("date")
+
+    def load_daily_prices_for_date(self, dt: date) -> int:
+        """특정 날짜의 캐시된 OHLCV 종목 수 조회 (프리페치 스킵 판단용)
+
+        Args:
+            dt: 기준 날짜
+
+        Returns:
+            해당 날짜에 저장된 종목 수
+        """
+        from sqlalchemy import text
+
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT COUNT(*) FROM daily_price WHERE date = :dt"),
+                {"dt": str(dt)},
+            )
+            return result.scalar() or 0
 
     # ───────────────────────────────────────────────
     # 기본 지표
@@ -393,7 +409,7 @@ class DataStorage:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
     ) -> pd.DataFrame:
-        """여러 종목의 일별 가격 일괄 조회
+        """여러 종목의 일별 가격 일괄 조회 (pd.read_sql 직접 변환)
 
         Args:
             tickers: 종목코드 리스트
@@ -406,38 +422,40 @@ class DataStorage:
         if not tickers:
             return pd.DataFrame()
 
+        from sqlalchemy import text
+
         # SQLite IN clause 변수 제한 (기본 999) 대응: 청크 분할
         chunk_size = 900
-        rows: list[dict] = []
-        with self.SessionLocal() as session:
+        frames: list[pd.DataFrame] = []
+
+        with self.engine.connect() as conn:
             for i in range(0, len(tickers), chunk_size):
                 chunk = tickers[i:i + chunk_size]
-                query = session.query(DailyPrice).filter(
-                    DailyPrice.ticker.in_(chunk)
+                placeholders = ", ".join(f":t{j}" for j in range(len(chunk)))
+                sql = (
+                    f"SELECT ticker, date, open, high, low, close, volume "
+                    f"FROM daily_price WHERE ticker IN ({placeholders})"
                 )
+                params: dict = {f"t{j}": t for j, t in enumerate(chunk)}
                 if start_date:
-                    query = query.filter(DailyPrice.date >= start_date)
+                    sql += " AND date >= :sd"
+                    params["sd"] = str(start_date)
                 if end_date:
-                    query = query.filter(DailyPrice.date <= end_date)
-                query = query.order_by(DailyPrice.ticker, DailyPrice.date)
+                    sql += " AND date <= :ed"
+                    params["ed"] = str(end_date)
+                sql += " ORDER BY ticker, date"
 
-                rows.extend(
-                    {
-                        "ticker": r.ticker,
-                        "date": r.date,
-                        "open": r.open,
-                        "high": r.high,
-                        "low": r.low,
-                        "close": r.close,
-                        "volume": r.volume,
-                    }
-                    for r in query.all()
-                )
+                df = pd.read_sql(text(sql), conn, params=params, parse_dates=["date"])
+                if not df.empty:
+                    frames.append(df)
 
-        if not rows:
+        if not frames:
             return pd.DataFrame()
 
-        return pd.DataFrame(rows)
+        result = pd.concat(frames, ignore_index=True)
+        if "date" in result.columns:
+            result["date"] = pd.to_datetime(result["date"]).dt.date
+        return result
 
     def save_daily_prices_bulk(self, dt: date, df: pd.DataFrame) -> int:
         """여러 종목의 일별 가격 일괄 upsert 저장

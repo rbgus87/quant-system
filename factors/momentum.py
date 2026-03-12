@@ -3,6 +3,8 @@ import pandas as pd
 import logging
 from typing import Optional
 
+from config.settings import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -12,6 +14,8 @@ class MomentumFactor:
     표준: 12개월 수익률 (최근 1개월 제외)
     → 단기 반전(Short-term Reversal) 효과 제거
     → 계산: t-1개월 가격 / t-12개월 가격 - 1
+
+    듀얼 모멘텀: 절대 모멘텀(수익률 > 무위험 수익률) 필터 지원
     """
 
     def calculate(
@@ -70,6 +74,41 @@ class MomentumFactor:
         result.name = "momentum_score"
         logger.info(f"모멘텀 스코어 계산 완료: {len(result)}개 종목")
         return result
+
+    @staticmethod
+    def apply_absolute_momentum(
+        returns_12m: pd.Series,
+        risk_free_rate: Optional[float] = None,
+    ) -> pd.Series:
+        """절대 모멘텀 필터 (듀얼 모멘텀)
+
+        12개월 수익률이 무위험 수익률 이하인 종목을 제거합니다.
+        하락장에서 현금 대피 효과를 제공합니다.
+
+        Args:
+            returns_12m: 12개월 수익률 (index=ticker)
+            risk_free_rate: 연간 무위험 수익률 (기본: settings.momentum.risk_free_rate)
+
+        Returns:
+            절대 모멘텀 통과 종목의 수익률 Series
+        """
+        if risk_free_rate is None:
+            risk_free_rate = settings.momentum.risk_free_rate
+
+        clean = returns_12m.dropna()
+        if clean.empty:
+            return clean
+
+        passed = clean[clean > risk_free_rate]
+        filtered_count = len(clean) - len(passed)
+
+        if filtered_count > 0:
+            logger.info(
+                f"절대 모멘텀 필터: {len(clean)} → {len(passed)}개 종목 "
+                f"({filtered_count}개 제거, 기준 수익률={risk_free_rate:.1%})"
+            )
+
+        return passed
 
     @staticmethod
     def _single_score(returns: pd.Series) -> pd.Series:

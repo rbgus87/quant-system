@@ -22,13 +22,13 @@ universe:
   min_market_cap_percentile: 10.0    # 시총 하위 N% 제외
   exclude_finance: true              # 금융주 제외
   min_listing_days: 365              # 최소 상장일수
-  min_avg_trading_value: 100000000   # 20일 평균 거래대금 하한 (원)
+  min_avg_trading_value: 200000000   # 20일 평균 거래대금 하한 (원)
 
 # === 포트폴리오 ===
 portfolio:
-  n_stocks: 5                       # 선정 종목 수
+  n_stocks: 10                       # 선정 종목 수
   weight_method: "equal"             # equal / value_weighted
-  initial_cash: 1000000             # 백테스트 초기 자금 (기본 1000만원, --cash 미지정 시 사용)
+  initial_cash: 10000000             # 백테스트 초기 자금 (기본 1000만원, --cash 미지정 시 사용)
   max_investment_amount: 0           # 최대 투자 금액 (0=전액 투자, 양수=고정 금액)
 
 # === 거래 비용 & 리스크 관리 ===
@@ -38,4 +38,14 @@ trading:
   slippage: 0.001                    # 슬리피지 (0.1%)
   max_position_pct: 0.10             # 단일 종목 최대 비중 (10%)
   max_turnover_pct: 0.50             # 월간 최대 교체율 (50%)
-  max_drawdown_pct: 0.30             # MDD 서킷브레이커 (-30%)
+  max_drawdown_pct: 0.99             # MDD 서킷브레이커 (사실상 비활성화, 밸류 전략은 하락장 리밸런싱이 유리)
+
+# === 듀얼 모멘텀 (절대 + 상대) ===
+momentum:
+  absolute_momentum_enabled: true   # 비활성화 (하락장에서 유니버스 과소 필터 문제)
+  risk_free_rate: 0.035
+
+# === F-Score 퀄리티 필터(간소화 5점) ===
+quality:
+  fscore_enabled: true              # 비활성화 (개별 테스트 필요)
+  min_fscore: 2
