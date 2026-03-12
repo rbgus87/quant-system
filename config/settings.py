@@ -89,7 +89,10 @@ class TradingConfig:
     slippage: float = 0.001  # 슬리피지 0.1%
     max_position_pct: float = 0.10  # 단일 종목 최대 비중 10%
     max_turnover_pct: float = 0.50  # 월간 최대 교체율 50%
-    max_drawdown_pct: float = 0.30  # MDD 서킷 브레이커 (-30% 이하 시 리밸런싱 중단)
+    max_drawdown_pct: float = 0.30  # MDD 서킷 브레이커 (-30% 이하 시 전량 매도)
+    trailing_stop_pct: float = 0.20  # 종목별 트레일링 스톱 (매수가 대비 -20%)
+    vol_target: float = 0.12  # 변동성 타겟팅 (연환산 12%)
+    vol_lookback_days: int = 60  # 변동성 계산 기간 (거래일)
 
 
 # --- YAML 로드 / 적용 / 검증 ---
@@ -163,6 +166,8 @@ def validate_settings(s: "Settings") -> None:
         ("max_position_pct", s.trading.max_position_pct),
         ("max_turnover_pct", s.trading.max_turnover_pct),
         ("max_drawdown_pct", s.trading.max_drawdown_pct),
+        ("trailing_stop_pct", s.trading.trailing_stop_pct),
+        ("vol_target", s.trading.vol_target),
     ]
     for name, val in rate_fields:
         if not (0.0 <= val <= 1.0):

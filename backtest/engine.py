@@ -1,4 +1,5 @@
 # backtest/engine.py
+import numpy as np
 import pandas as pd
 from typing import Optional
 import logging
@@ -18,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 class MultiFactorBacktest:
     """멀티팩터 전략 월별 리밸런싱 백테스트 엔진
+
+    리스크 관리 계층:
+      1. 변동성 타겟팅: 실현 변동성 > 목표 시 투자 비중 자동 축소
+      2. 시장 레짐 필터: 하락장 시 투자 비중 축소
+      3. 종목별 트레일링 스톱: 매수가 대비 -N% 하락 시 강제 매도
+      4. MDD 서킷브레이커: 고점 대비 -N% 하락 시 전량 매도 → 현금 대피
 
     흐름:
       리밸런싱일(T, 월 마지막 영업일) → 팩터 계산 → 포트폴리오 결정
@@ -108,7 +115,39 @@ class MultiFactorBacktest:
                             f" — 보유 {shares}주 자산 평가에서 제외"
                         )
 
-                # MDD 서킷브레이커: 고점 대비 max_drawdown_pct 초과 시 리밸런싱 중단
+                # ── 종목별 트레일링 스톱: 매수가 대비 -N% 하락 종목 강제 매도 ──
+                trailing_stop_pct = settings.trading.trailing_stop_pct
+                if trailing_stop_pct > 0 and holdings:
+                    stop_sells: list[str] = []
+                    for ticker, shares in list(holdings.items()):
+                        if shares <= 0:
+                            continue
+                        price = prices.get(ticker)
+                        avg_cost = cost_basis.get(ticker)
+                        if price is None or avg_cost is None or avg_cost <= 0:
+                            continue
+                        loss_pct = (price - avg_cost) / avg_cost
+                        if loss_pct < -trailing_stop_pct:
+                            proceed = self.rebalancer.calc_sell_proceed(price, shares)
+                            cash += proceed
+                            stop_sells.append(
+                                f"{ticker}({self._get_ticker_name(ticker)}) "
+                                f"{loss_pct:.1%}"
+                            )
+                            holdings.pop(ticker)
+                            cost_basis.pop(ticker, None)
+                    if stop_sells:
+                        # 전량 매도 후 총 자산 재평가
+                        total_value = cash
+                        for t, s in holdings.items():
+                            if t in prices:
+                                total_value += prices[t] * s
+                        logger.warning(
+                            f"[{date_str}] 트레일링 스톱 발동: "
+                            f"{len(stop_sells)}종목 강제 매도 — {', '.join(stop_sells)}"
+                        )
+
+                # ── MDD 서킷브레이커: 고점 대비 -N% → 전량 매도 → 현금 대피 ──
                 peak_value = max(peak_value, total_value)
                 current_dd = (total_value - peak_value) / peak_value if peak_value > 0 else 0
                 max_dd_threshold = settings.trading.max_drawdown_pct
@@ -118,31 +157,68 @@ class MultiFactorBacktest:
                         logger.warning(
                             f"[{date_str}] MDD 서킷브레이커 발동: "
                             f"현재 DD={current_dd:.1%} < -{max_dd_threshold:.0%}"
-                            f" → 기존 보유 유지, 리밸런싱 중단"
+                            f" → 전량 매도, 현금 대피"
                         )
+                        # 보유 종목 전량 매도
+                        liquidation_details: list[dict] = []
+                        for ticker, shares in list(holdings.items()):
+                            if shares <= 0:
+                                continue
+                            price = prices.get(ticker)
+                            if price is None:
+                                continue
+                            proceed = self.rebalancer.calc_sell_proceed(price, shares)
+                            cash += proceed
+                            avg_cost = cost_basis.get(ticker)
+                            return_pct = (
+                                (price - avg_cost) / avg_cost
+                                if avg_cost and avg_cost > 0
+                                else None
+                            )
+                            liquidation_details.append({
+                                "ticker": ticker,
+                                "name": self._get_ticker_name(ticker),
+                                "quantity": shares,
+                                "price": price,
+                                "amount": proceed,
+                                "buy_price": avg_cost,
+                                "return_pct": return_pct,
+                            })
+                        holdings.clear()
+                        cost_basis.clear()
                         circuit_breaker_active = True
+
+                        turnover_log.append({
+                            "date": date_str,
+                            "sells": len(liquidation_details),
+                            "buys": 0,
+                            "turnover_rate": 1.0,
+                            "n_holdings_before": len(liquidation_details),
+                            "n_holdings_after": 0,
+                            "sell_details": liquidation_details,
+                            "buy_details": [],
+                            "note": f"서킷브레이커 전량 매도 (DD={current_dd:.1%})",
+                        })
+
                 elif circuit_breaker_active:
-                    logger.info(
-                        f"[{date_str}] MDD 서킷브레이커 해제: "
-                        f"현재 DD={current_dd:.1%}"
-                    )
-                    circuit_breaker_active = False
+                    # 레짐 필터가 강세("100% 투자")를 제시할 때만 복귀
+                    regime_ratio = self.regime_filter.get_invest_ratio(date_str)
+                    if regime_ratio >= 1.0:
+                        logger.info(
+                            f"[{date_str}] MDD 서킷브레이커 해제: "
+                            f"DD={current_dd:.1%}, 레짐=강세 → 재진입 허용"
+                        )
+                        circuit_breaker_active = False
+                        # 고점을 현재 자산(현금)으로 리셋
+                        peak_value = total_value
+                    else:
+                        logger.info(
+                            f"[{date_str}] 서킷브레이커 유지: "
+                            f"DD={current_dd:.1%}, 레짐 비중={regime_ratio:.0%} (강세 아님)"
+                        )
 
                 if circuit_breaker_active:
-                    # 리밸런싱 스킵, 기존 보유 유지하면서 일별 가치만 기록
-                    turnover_log.append({
-                        "date": date_str,
-                        "sells": 0,
-                        "buys": 0,
-                        "turnover_rate": 0.0,
-                        "n_holdings_before": len(holdings),
-                        "n_holdings_after": len(holdings),
-                        "sell_details": [],
-                        "buy_details": [],
-                        "note": f"서킷브레이커 발동 (DD={current_dd:.1%})",
-                    })
-
-                    # 일별 가치 기록만 수행 (리밸런싱 없이)
+                    # 현금 100% 상태로 일별 가치만 기록 (포지션 없음)
                     period_end = (
                         rebal_dates[i + 1]
                         if i + 1 < len(rebal_dates)
@@ -151,54 +227,30 @@ class MultiFactorBacktest:
                     if trade_dt > period_end:
                         period_end = trade_dt + pd.Timedelta(days=20)
 
-                    sd = trade_dt.date() if hasattr(trade_dt, "date") else trade_dt
-                    ed = period_end.date() if hasattr(period_end, "date") else period_end
-
-                    close_price_cache_cb: dict[tuple[str, str], float] = {}
-                    holding_tickers = list(holdings.keys())
-                    if holding_tickers:
-                        bulk_df = self.krx.storage.load_daily_prices_bulk(
-                            holding_tickers, sd, ed
-                        )
-                        if not bulk_df.empty:
-                            valid = bulk_df[bulk_df["close"].notna() & (bulk_df["close"] > 0)]
-                            for _, row in valid.iterrows():
-                                dt_key = row["date"].strftime("%Y%m%d") if hasattr(row["date"], "strftime") else str(row["date"])
-                                close_price_cache_cb[(row["ticker"], dt_key)] = float(row["close"])
-
-                    last_known_price_cb: dict[str, float] = {}
-                    for ticker in holdings:
-                        if ticker in prices:
-                            last_known_price_cb[ticker] = prices[ticker]
-
                     dates = get_krx_sessions(
                         trade_dt.strftime("%Y%m%d"), period_end.strftime("%Y%m%d")
                     )
                     for dt in dates:
-                        dt_str_val = dt.strftime("%Y%m%d")
-                        total = cash
-                        for ticker, shares in holdings.items():
-                            if shares <= 0:
-                                continue
-                            price = close_price_cache_cb.get((ticker, dt_str_val))
-                            if price is not None:
-                                last_known_price_cb[ticker] = price
-                            else:
-                                price = last_known_price_cb.get(ticker)
-                            if price is not None:
-                                total += price * shares
                         history.append({
                             "date": dt,
-                            "portfolio_value": total,
+                            "portfolio_value": cash,
                             "cash": cash,
-                            "n_holdings": len(holdings),
+                            "n_holdings": 0,
                         })
-
                     continue  # 다음 리밸런싱 날짜로
+
+                # ── 변동성 타겟팅: 실현 변동성 > 목표 시 투자 비중 축소 ──
+                vol_scale = self._calc_vol_target_scale(history)
 
                 # 시장 레짐 필터: 하락장 시 투자 비중 축소
                 invest_ratio = self.regime_filter.get_invest_ratio(date_str)
-                rebal_value = total_value * invest_ratio
+                rebal_value = total_value * invest_ratio * vol_scale
+
+                if vol_scale < 1.0:
+                    logger.info(
+                        f"[{date_str}] 변동성 타겟팅: 투자 비중 ×{vol_scale:.0%} "
+                        f"(레짐 {invest_ratio:.0%} → 최종 {invest_ratio * vol_scale:.0%})"
+                    )
 
                 # 고정 금액 모드: 리밸런싱 기준 금액 제한
                 max_inv = settings.portfolio.max_investment_amount
@@ -602,6 +654,41 @@ class MultiFactorBacktest:
                 prices[ticker] = p
 
         return prices
+
+    def _calc_vol_target_scale(self, history: list[dict]) -> float:
+        """변동성 타겟팅 — 실현 변동성 대비 목표 비율 계산
+
+        최근 N거래일 포트폴리오 수익률의 연환산 변동성을 계산하고,
+        목표 변동성 대비 비율로 투자 비중을 조절합니다.
+
+        Args:
+            history: 지금까지의 일별 기록 리스트
+
+        Returns:
+            투자 비중 배율 (0.0 ~ 1.0, 1.0 = 변동성 타겟 이하)
+        """
+        vol_target = settings.trading.vol_target
+        lookback = settings.trading.vol_lookback_days
+
+        if vol_target <= 0 or len(history) < max(lookback, 20):
+            return 1.0
+
+        recent = history[-lookback:]
+        values = [h["portfolio_value"] for h in recent]
+        returns = []
+        for j in range(1, len(values)):
+            if values[j - 1] > 0:
+                returns.append(values[j] / values[j - 1] - 1)
+
+        if len(returns) < 10:
+            return 1.0
+
+        realized_vol = float(np.std(returns)) * np.sqrt(252)
+        if realized_vol <= 0:
+            return 1.0
+
+        scale = vol_target / realized_vol
+        return min(1.0, max(0.2, scale))  # 최소 20%, 최대 100%
 
     def _get_open_price(self, ticker: str, date_str: str) -> Optional[float]:
         """특정 날짜 시가 조회 (개별 폴백용)
