@@ -781,6 +781,50 @@ class ReportGenerator:
                             <div style="color:#555;font-size:11px;padding:10px">매수 없음</div>
                         </div>"""
 
+                    # 자금 흐름 요약 바
+                    fund_flow_html = ""
+                    ff = t.get("fund_flow")
+                    if ff:
+                        tv_before = ff["total_value_before"]
+                        cash_bef = ff["cash_before"]
+                        sell_amt = ff["sell_amount"]
+                        cash_as = ff["cash_after_sell"]
+                        buy_amt = ff["buy_amount"]
+                        cash_ab = ff["cash_after_buy"]
+                        stock_val = ff["stock_value_after"]
+                        tv_after = ff["total_value_after"]
+                        inv_ratio = ff["invest_ratio"]
+                        fund_flow_html = f"""
+                        <div class="fund-flow-bar">
+                            <div class="fund-flow-row">
+                                <span class="fund-label">총자산</span>
+                                <span class="fund-value">{tv_before:,.0f}</span>
+                                <span class="fund-arrow">→</span>
+                                <span class="fund-label">매도</span>
+                                <span class="fund-value" style="color:#ff6b6b">+{sell_amt:,.0f}</span>
+                                <span class="fund-arrow">→</span>
+                                <span class="fund-label">매수</span>
+                                <span class="fund-value" style="color:#4ecdc4">-{buy_amt:,.0f}</span>
+                                <span class="fund-arrow">→</span>
+                                <span class="fund-label">총자산</span>
+                                <span class="fund-value">{tv_after:,.0f}</span>
+                            </div>
+                            <div class="fund-flow-row">
+                                <span class="fund-label">현금</span>
+                                <span class="fund-value">{cash_bef:,.0f}</span>
+                                <span class="fund-arrow">→</span>
+                                <span class="fund-value">{cash_as:,.0f}</span>
+                                <span class="fund-arrow">→</span>
+                                <span class="fund-value">{cash_ab:,.0f}</span>
+                                <span class="fund-sep">|</span>
+                                <span class="fund-label">주식</span>
+                                <span class="fund-value">{stock_val:,.0f}</span>
+                                <span class="fund-sep">|</span>
+                                <span class="fund-label">투자비율</span>
+                                <span class="fund-value" style="color:#ffd93d">{inv_ratio:.0%}</span>
+                            </div>
+                        </div>"""
+
                     detail_sub = f"""
                     <tr id="{toggle_id}" class="trade-detail" style="display:none">
                         <td colspan="6" style="padding:0">
@@ -788,6 +832,7 @@ class ReportGenerator:
                                 {sell_panel}
                                 {buy_panel}
                             </div>
+                            {fund_flow_html}
                         </td>
                     </tr>"""
 
@@ -1019,6 +1064,12 @@ td:first-child {{ text-align: left; }}
 .trade-panel {{ background: #12122a; border-radius: 6px; padding: 8px 10px; border: 1px solid #2a2a4a; }}
 .trade-panel-header {{ font-size: 12px; font-weight: bold; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #2a2a4a; }}
 .trade-panel table {{ margin: 0; }}
+.fund-flow-bar {{ background: #0a0a1a; border-top: 1px solid #2a2a4a; padding: 8px 14px; font-size: 11px; }}
+.fund-flow-row {{ display: flex; align-items: center; gap: 6px; margin: 3px 0; flex-wrap: wrap; }}
+.fund-label {{ color: #888; }}
+.fund-value {{ color: #ddd; font-weight: bold; font-family: monospace; }}
+.fund-arrow {{ color: #555; }}
+.fund-sep {{ color: #333; margin: 0 2px; }}
 @media (max-width: 900px) {{
     .cards {{ grid-template-columns: repeat(2, 1fr); }}
     .grid-2 {{ grid-template-columns: 1fr; }}

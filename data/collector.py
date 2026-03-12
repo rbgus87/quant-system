@@ -27,21 +27,6 @@ OHLCV_COLUMNS = {
     "거래대금": "trading_value",
 }
 
-# pykrx Fundamental 컬럼 매핑
-FUNDAMENTAL_COLUMNS = {
-    "BPS": "BPS",
-    "PER": "PER",
-    "PBR": "PBR",
-    "EPS": "EPS",
-    "DIV": "DIV",
-}
-
-# 시가총액 컬럼 매핑
-MARKET_CAP_COLUMNS = {
-    "시가총액": "market_cap",
-    "상장주식수": "shares",
-}
-
 # KRX Open API 응답 필드 매핑 (stk_isu_base_info)
 KRX_API_BASE_INFO_COLUMNS = {
     "ISU_SRT_CD": "ticker",
@@ -217,21 +202,9 @@ class KRXDataCollector:
             except Exception as e:
                 logger.warning(f"KRX API 종목 조회 실패: {e}")
 
-        # pykrx 폴백
-        try:
-            tickers = stock.get_market_ticker_list(date, market=market)
-            rows = []
-            for ticker in tickers:
-                try:
-                    name = stock.get_market_ticker_name(ticker)
-                    rows.append({"ticker": ticker, "name": name, "market": market})
-                except Exception:
-                    rows.append({"ticker": ticker, "name": "", "market": market})
-            logger.info(f"[{date}] {market} 종목 수: {len(rows)} (pykrx)")
-            return pd.DataFrame(rows)
-        except Exception as e:
-            logger.warning(f"pykrx 종목 조회 실패: {e}")
-            return pd.DataFrame()
+        # pykrx 배치 API는 KRX Data Marketplace 로그인 필수화(2025-12-27~)로 차단됨
+        logger.warning(f"[{date}] {market} 종목 조회 실패: KRX API 미사용 가능")
+        return pd.DataFrame()
 
     # ───────────────────────────────────────────────
     # OHLCV
@@ -346,20 +319,7 @@ class KRXDataCollector:
             )
             return dart_df
 
-        # 4. pykrx 폴백
-        try:
-            df = stock.get_market_fundamental(date, market=market)
-            if not df.empty:
-                df.index.name = "ticker"
-                df = df.rename(columns=FUNDAMENTAL_COLUMNS)
-                cols = [c for c in ["BPS", "PER", "PBR", "EPS", "DIV"] if c in df.columns]
-                df = df[cols]
-                self.storage.save_fundamentals(dt, df)
-                logger.info(f"[{date}] 기본 지표: {len(df)}건 (pykrx → 캐시 저장)")
-                return df
-        except Exception as e:
-            logger.warning(f"[{date}] pykrx 기본 지표 실패: {e}")
-
+        # pykrx 배치 API는 KRX Data Marketplace 로그인 필수화(2025-12-27~)로 차단됨
         logger.warning(f"[{date}] 기본 지표 데이터 없음")
         return pd.DataFrame()
 
@@ -406,20 +366,7 @@ class KRXDataCollector:
             except Exception as e:
                 logger.warning(f"[{date}] KRX API 시가총액 실패: {e}")
 
-        # 3. pykrx 폴백
-        try:
-            df = stock.get_market_cap(date, market=market)
-            if not df.empty:
-                df.index.name = "ticker"
-                df = df.rename(columns=MARKET_CAP_COLUMNS)
-                cols = [c for c in ["market_cap", "shares"] if c in df.columns]
-                df = df[cols]
-                self.storage.save_market_caps(dt, df)
-                logger.info(f"[{date}] 시가총액: {len(df)}건 (pykrx → 캐시 저장)")
-                return df
-        except Exception as e:
-            logger.warning(f"[{date}] pykrx 시가총액 실패: {e}")
-
+        # pykrx 배치 API는 KRX Data Marketplace 로그인 필수화(2025-12-27~)로 차단됨
         return pd.DataFrame()
 
     # ───────────────────────────────────────────────

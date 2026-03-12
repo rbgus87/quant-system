@@ -2,9 +2,11 @@
 import json
 import logging
 import time
+from datetime import date
 from pathlib import Path
 from trading.kiwoom_api import KiwoomRestClient
 from config.settings import settings
+from data.storage import DataStorage
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ class OrderExecutor:
     def __init__(self, initial_value: float = 0) -> None:
         self.api = KiwoomRestClient()
         self.cfg = settings.trading
+        self.storage = DataStorage()
         self._peak_value: float = self._load_peak_value(initial_value)
 
         if not settings.is_paper_trading:
@@ -237,6 +240,21 @@ class OrderExecutor:
                     ord_no = result.get("ord_no", "")
                     if ord_no:
                         sell_order_nos.append(ord_no)
+                    # 거래 이력 DB 저장
+                    sell_price = holding.get("current_price", 0)
+                    sell_qty = holding["qty"]
+                    sell_amount = sell_price * sell_qty
+                    self.storage.save_trade(
+                        trade_date=date.today(),
+                        ticker=ticker,
+                        side="SELL",
+                        quantity=sell_qty,
+                        price=sell_price,
+                        amount=sell_amount,
+                        commission=sell_amount * self.cfg.commission_rate,
+                        tax=sell_amount * self.cfg.tax_rate,
+                        is_paper=settings.is_paper_trading,
+                    )
             else:
                 logger.warning(f"잔고에 {ticker} 없음, 매도 스킵")
 
@@ -336,6 +354,19 @@ class OrderExecutor:
             )
             if result.get("return_code") == 0:
                 buy_done.append(ticker)
+                # 거래 이력 DB 저장
+                buy_amount = price * qty
+                self.storage.save_trade(
+                    trade_date=date.today(),
+                    ticker=ticker,
+                    side="BUY",
+                    quantity=qty,
+                    price=price,
+                    amount=buy_amount,
+                    commission=buy_amount * self.cfg.commission_rate,
+                    tax=0.0,  # 매수 시 거래세 없음
+                    is_paper=settings.is_paper_trading,
+                )
 
         logger.info(
             f"리밸런싱 완료 — 매도: {len(sell_done)}/{len(sell_list)}, "

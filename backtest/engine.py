@@ -9,6 +9,7 @@ from config.calendar import (
     next_krx_business_day,
 )
 from config.settings import settings
+from strategy.market_regime import MarketRegimeFilter
 from strategy.rebalancer import Rebalancer
 from strategy.screener import MultiFactorScreener
 
@@ -31,6 +32,7 @@ class MultiFactorBacktest:
         self.screener = MultiFactorScreener()
         self.krx = self.screener.collector  # OHLCV 조회용 collector 공유
         self.rebalancer = Rebalancer()
+        self.regime_filter = MarketRegimeFilter(self.krx)
 
     def run(
         self,
@@ -89,13 +91,11 @@ class MultiFactorBacktest:
                 # T+1일 전체 OHLCV 프리페치 (개별 조회 대신 배치)
                 self.krx.prefetch_daily_trade(trade_date_str, market)
 
-                # 전체 목표 종목 + 기존 보유 종목 시가 조회
+                # 전체 목표 종목 + 기존 보유 종목 시가 벌크 조회
                 all_tickers = set(new_tickers) | set(holdings.keys())
-                prices: dict[str, float] = {}
-                for ticker in all_tickers:
-                    p = self._get_open_price(ticker, trade_date_str)
-                    if p is not None:
-                        prices[ticker] = p
+                prices = self._get_open_prices_bulk(
+                    list(all_tickers), trade_date_str
+                )
 
                 # 총 자산 평가 (시가 없으면 이전 history에서 마지막 종가 사용)
                 total_value = cash
@@ -196,10 +196,13 @@ class MultiFactorBacktest:
 
                     continue  # 다음 리밸런싱 날짜로
 
+                # 시장 레짐 필터: 하락장 시 투자 비중 축소
+                invest_ratio = self.regime_filter.get_invest_ratio(date_str)
+                rebal_value = total_value * invest_ratio
+
                 # 고정 금액 모드: 리밸런싱 기준 금액 제한
                 max_inv = settings.portfolio.max_investment_amount
-                rebal_value = total_value
-                if max_inv > 0 and total_value > max_inv:
+                if max_inv > 0 and rebal_value > max_inv:
                     rebal_value = max_inv
 
                 # 비중 리밸런싱 주문 계산 (기존 보유종목 포함 재조정)
@@ -224,6 +227,9 @@ class MultiFactorBacktest:
                     "sell_details": [],
                     "buy_details": [],
                 })
+
+                # 자금 흐름 추적: 매매 전 현금
+                cash_before_trade = cash
 
                 # 매도 먼저 실행 (예수금 확보)
                 sell_details: list[dict] = []
@@ -257,6 +263,9 @@ class MultiFactorBacktest:
                         holdings.pop(ticker, None)
                         cost_basis.pop(ticker, None)
 
+                # 자금 흐름 추적: 매도 후 현금
+                cash_after_sell = cash
+
                 # 매수 실행
                 buy_details: list[dict] = []
                 skipped_buys: list[str] = []
@@ -289,10 +298,29 @@ class MultiFactorBacktest:
                     else:
                         skipped_buys.append(ticker)
 
+                # 자금 흐름 추적: 매수 후 현금 및 평가액
+                cash_after_buy = cash
+                stock_value_after = sum(
+                    prices.get(t, 0) * s for t, s in holdings.items() if s > 0
+                )
+                sell_total_amount = sum(s["amount"] for s in sell_details)
+                buy_total_amount = sum(b["amount"] for b in buy_details)
+
                 # 매매 상세 내역을 턴오버 로그에 반영
                 if turnover_log:
                     turnover_log[-1]["sell_details"] = sell_details
                     turnover_log[-1]["buy_details"] = buy_details
+                    turnover_log[-1]["fund_flow"] = {
+                        "total_value_before": total_value,
+                        "cash_before": cash_before_trade,
+                        "sell_amount": sell_total_amount,
+                        "cash_after_sell": cash_after_sell,
+                        "buy_amount": buy_total_amount,
+                        "cash_after_buy": cash_after_buy,
+                        "stock_value_after": stock_value_after,
+                        "total_value_after": cash_after_buy + stock_value_after,
+                        "invest_ratio": stock_value_after / (cash_after_buy + stock_value_after) if (cash_after_buy + stock_value_after) > 0 else 0,
+                    }
 
                 if skipped_buys:
                     logger.warning(
@@ -540,8 +568,43 @@ class MultiFactorBacktest:
         """종목코드로 종목명 조회 (collector 캐시 활용)"""
         return self.krx.get_ticker_name(ticker)
 
+    def _get_open_prices_bulk(
+        self, tickers: list[str], date_str: str
+    ) -> dict[str, float]:
+        """여러 종목의 시가를 벌크 DB 조회로 한 번에 가져오기
+
+        Args:
+            tickers: 종목코드 리스트
+            date_str: 날짜 (YYYYMMDD)
+
+        Returns:
+            {ticker: open_price} 딕셔너리
+        """
+        from data.collector import _parse_date
+
+        dt = _parse_date(date_str)
+        prices: dict[str, float] = {}
+
+        # 벌크 DB 조회 (1회 쿼리)
+        bulk_df = self.krx.storage.load_daily_prices_bulk(tickers, dt, dt)
+        if not bulk_df.empty:
+            for _, row in bulk_df.iterrows():
+                ticker = str(row["ticker"])
+                val = row.get("open")
+                if val is not None and val > 0:
+                    prices[ticker] = float(val)
+
+        # DB 미스 종목만 개별 폴백
+        missing = [t for t in tickers if t not in prices]
+        for ticker in missing:
+            p = self._get_open_price(ticker, date_str)
+            if p is not None:
+                prices[ticker] = p
+
+        return prices
+
     def _get_open_price(self, ticker: str, date_str: str) -> Optional[float]:
-        """특정 날짜 시가 조회 (매매 체결용)
+        """특정 날짜 시가 조회 (개별 폴백용)
 
         Args:
             ticker: 종목코드

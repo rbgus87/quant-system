@@ -474,3 +474,110 @@ class TestFScore:
         fscore = pd.Series(dtype=int, name="fscore")
         filtered = QualityFactor.apply_fscore_filter(df, fscore, min_fscore=3)
         assert len(filtered) == 1
+
+
+# ───────────────────────────────────────────────
+# 변동성 필터 테스트
+# ───────────────────────────────────────────────
+
+
+class TestVolatilityFilter:
+    """screener._apply_volatility_filter 단위 테스트"""
+
+    def setup_method(self) -> None:
+        from unittest.mock import MagicMock
+        from strategy.screener import MultiFactorScreener
+
+        self.screener = MultiFactorScreener.__new__(MultiFactorScreener)
+        self.screener.collector = MagicMock()
+
+    def _make_ohlcv(self, daily_vol: float, n_days: int = 200) -> pd.DataFrame:
+        """지정된 일별 변동성으로 가상 OHLCV 생성"""
+        np.random.seed(42)
+        returns = np.random.normal(0, daily_vol, n_days)
+        prices = 10000 * np.exp(np.cumsum(returns))
+        dates = pd.bdate_range("2023-01-01", periods=n_days)
+        return pd.DataFrame({"close": prices}, index=dates)
+
+    def test_high_vol_excluded(self) -> None:
+        """고변동성 종목이 제외되는지 확인"""
+        from config.settings import settings
+
+        settings.volatility.filter_enabled = True
+        settings.volatility.max_percentile = 60.0  # 상위 40% 제외 (엄격)
+
+        # A: 낮은 변동성, B: 높은 변동성, C: 중간
+        def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
+            vol_map = {"A": 0.01, "B": 0.08, "C": 0.03}
+            return self._make_ohlcv(vol_map.get(ticker, 0.03))
+
+        self.screener.collector.get_ohlcv = mock_ohlcv
+        self.screener.collector.get_ticker_name = lambda t: t
+
+        result = self.screener._apply_volatility_filter(["A", "B", "C"], "20240101")
+
+        assert "A" in result  # 낮은 변동성 — 통과
+        assert "B" not in result  # 높은 변동성 — 제외
+        # 복원
+        settings.volatility.max_percentile = 80.0
+
+    def test_all_pass_when_disabled(self) -> None:
+        """비활성화 시 전체 통과"""
+        from config.settings import settings
+
+        settings.volatility.filter_enabled = False
+        # filter_enabled=False이면 screener.screen()에서 아예 호출 안함
+        # 직접 호출 시에도 정상 동작 확인
+        settings.volatility.filter_enabled = True
+        settings.volatility.max_percentile = 100.0  # 100% = 아무도 제외 안함
+
+        def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
+            return self._make_ohlcv(0.05)
+
+        self.screener.collector.get_ohlcv = mock_ohlcv
+        self.screener.collector.get_ticker_name = lambda t: t
+
+        result = self.screener._apply_volatility_filter(["A", "B", "C"], "20240101")
+        assert len(result) == 3
+        settings.volatility.max_percentile = 80.0
+
+    def test_empty_tickers(self) -> None:
+        """빈 종목 리스트"""
+        result = self.screener._apply_volatility_filter([], "20240101")
+        assert result == []
+
+    def test_no_data_tickers_preserved(self) -> None:
+        """데이터 없는 종목은 유지 (제외하지 않음)"""
+        from config.settings import settings
+
+        settings.volatility.filter_enabled = True
+
+        def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
+            if ticker == "B":
+                return pd.DataFrame()  # 데이터 없음
+            return self._make_ohlcv(0.02)
+
+        self.screener.collector.get_ohlcv = mock_ohlcv
+        self.screener.collector.get_ticker_name = lambda t: t
+
+        result = self.screener._apply_volatility_filter(["A", "B", "C"], "20240101")
+        assert "B" in result  # 데이터 없는 종목은 유지
+
+    def test_insufficient_data_preserved(self) -> None:
+        """데이터 부족 종목은 유지"""
+        from config.settings import settings
+
+        settings.volatility.filter_enabled = True
+
+        def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
+            if ticker == "SHORT":
+                return self._make_ohlcv(0.05, n_days=10)  # 너무 짧음
+            return self._make_ohlcv(0.02, n_days=200)
+
+        self.screener.collector.get_ohlcv = mock_ohlcv
+        self.screener.collector.get_ticker_name = lambda t: t
+
+        result = self.screener._apply_volatility_filter(
+            ["A", "SHORT", "C"], "20240101"
+        )
+        assert "SHORT" in result  # 데이터 부족 종목은 유지

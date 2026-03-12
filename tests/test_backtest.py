@@ -11,6 +11,7 @@ from config.calendar import (
     get_krx_month_end_sessions,
     next_krx_business_day,
 )
+from config.settings import settings
 from strategy.rebalancer import Rebalancer
 
 # ───────────────────────────────────────────────
@@ -65,12 +66,16 @@ class TestRebalancer:
         assert buys == []
 
     def test_sell_cost(self) -> None:
-        """매도 비용: 수수료(0.015%) + 세금(0.18%) + 슬리피지(0.1%)"""
+        """매도 비용: 수수료 + 세금 + 슬리피지 (settings 기반)"""
         price = 10000.0
         shares = 100
         proceed = self.rebalancer.calc_sell_proceed(price, shares)
         gross = price * shares  # 1,000,000
-        cost_rate = 0.00015 + 0.0018 + 0.001  # 0.00295
+        cost_rate = (
+            settings.trading.commission_rate
+            + settings.trading.tax_rate
+            + settings.trading.slippage
+        )
         expected = gross * (1 - cost_rate)
         assert abs(proceed - expected) < 0.01
 

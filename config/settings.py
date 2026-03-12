@@ -56,6 +56,25 @@ class QualityConfig:
 
 
 @dataclass
+class VolatilityConfig:
+    """변동성 필터 설정"""
+
+    filter_enabled: bool = True  # 변동성 필터 활성화
+    lookback_days: int = 252  # 변동성 계산 기간 (영업일)
+    max_percentile: float = 80.0  # 상위 N% 이상 변동성 종목 제외 (80 = 상위 20% 제외)
+
+
+@dataclass
+class MarketRegimeConfig:
+    """시장 레짐 필터 설정 (하락장 방어)"""
+
+    enabled: bool = True  # 시장 레짐 필터 활성화
+    ma_days: int = 200  # 이동평균 기간 (기본 200일)
+    partial_ratio: float = 0.5  # 중립 시장 투자 비중 (50%)
+    defensive_ratio: float = 0.3  # 약세 시장 투자 비중 (30%)
+
+
+@dataclass
 class PortfolioConfig:
     n_stocks: int = 30
     weight_method: str = "equal"  # equal / value_weighted
@@ -98,6 +117,8 @@ _YAML_SECTIONS = {
     "value_weights": ValueWeights,
     "momentum": MomentumConfig,
     "quality": QualityConfig,
+    "volatility": VolatilityConfig,
+    "market_regime": MarketRegimeConfig,
     "universe": UniverseConfig,
     "portfolio": PortfolioConfig,
     "trading": TradingConfig,
@@ -184,6 +205,8 @@ class Settings:
     value_weights: ValueWeights = field(default_factory=ValueWeights)
     momentum: MomentumConfig = field(default_factory=MomentumConfig)
     quality: QualityConfig = field(default_factory=QualityConfig)
+    volatility: VolatilityConfig = field(default_factory=VolatilityConfig)
+    market_regime: MarketRegimeConfig = field(default_factory=MarketRegimeConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)

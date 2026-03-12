@@ -68,10 +68,17 @@ class TestKRXDataCollector:
         self.collector._dart_client = None
         self.collector._dart_client_checked = True
 
-    @patch("data.collector.stock")
-    def test_get_universe(self, mock_stock: MagicMock) -> None:
-        mock_stock.get_market_ticker_list.return_value = ["005930", "000660"]
-        mock_stock.get_market_ticker_name.side_effect = ["삼성전자", "SK하이닉스"]
+    def test_get_universe(self) -> None:
+        """KRX API mock으로 유니버스 조회 테스트"""
+        mock_api = MagicMock()
+        mock_api.get_stock_daily_trade.return_value = {
+            "OutBlock_1": [
+                {"ISU_CD": "005930", "ISU_NM": "삼성전자"},
+                {"ISU_CD": "000660", "ISU_NM": "SK하이닉스"},
+            ]
+        }
+        self.collector._krx_api = mock_api
+        self.collector._krx_api_checked = True
 
         df = self.collector.get_universe("20240102", market="KOSPI")
 
@@ -80,9 +87,8 @@ class TestKRXDataCollector:
         assert df.iloc[0]["ticker"] == "005930"
         assert df.iloc[0]["name"] == "삼성전자"
 
-    @patch("data.collector.stock")
-    def test_get_universe_empty(self, mock_stock: MagicMock) -> None:
-        mock_stock.get_market_ticker_list.return_value = []
+    def test_get_universe_empty(self) -> None:
+        """KRX API 없으면 빈 결과 반환"""
         df = self.collector.get_universe("20240102")
         assert df.empty
 
@@ -138,9 +144,11 @@ class TestKRXDataCollector:
         # pykrx는 첫 호출에서만 호출됨
         assert mock_stock.get_market_ohlcv.call_count == 1
 
-    @patch("data.collector.stock")
-    def test_get_fundamentals_all(self, mock_stock: MagicMock) -> None:
-        mock_data = pd.DataFrame(
+    def test_get_fundamentals_all_cache(self) -> None:
+        """DB 캐시에 데이터를 넣고 캐시 히트 확인"""
+        from datetime import date
+
+        fund_df = pd.DataFrame(
             {
                 "BPS": [50000, 80000],
                 "PER": [12.5, 8.3],
@@ -150,7 +158,8 @@ class TestKRXDataCollector:
             },
             index=["005930", "000660"],
         )
-        mock_stock.get_market_fundamental.return_value = mock_data
+        fund_df.index.name = "ticker"
+        self.collector.storage.save_fundamentals(date(2024, 1, 2), fund_df)
 
         df = self.collector.get_fundamentals_all("20240102", "KOSPI")
 
@@ -158,45 +167,36 @@ class TestKRXDataCollector:
         assert df.index.name == "ticker"
         assert len(df) == 2
 
-    @patch("data.collector.stock")
-    def test_get_fundamentals_cache_hit(self, mock_stock: MagicMock) -> None:
-        """두 번째 호출은 캐시에서 반환"""
-        mock_data = pd.DataFrame(
-            {
-                "BPS": [50000],
-                "PER": [12.5],
-                "PBR": [1.4],
-                "EPS": [5600],
-                "DIV": [1.8],
-            },
-            index=["005930"],
-        )
-        mock_stock.get_market_fundamental.return_value = mock_data
-
-        self.collector.get_fundamentals_all("20240102", "KOSPI")
+    def test_get_fundamentals_all_empty(self) -> None:
+        """캐시도 API도 없으면 빈 결과"""
         df = self.collector.get_fundamentals_all("20240102", "KOSPI")
+        assert df.empty
 
-        assert len(df) == 1
-        assert mock_stock.get_market_fundamental.call_count == 1
+    def test_get_market_cap_cache(self) -> None:
+        """DB 캐시에서 시가총액 조회"""
+        from datetime import date
 
-    @patch("data.collector.stock")
-    def test_get_market_cap(self, mock_stock: MagicMock) -> None:
-        mock_data = pd.DataFrame(
+        cap_df = pd.DataFrame(
             {
-                "시가총액": [400_000_000_000_000, 80_000_000_000_000],
-                "상장주식수": [5_969_782_550, 728_002_365],
-                "거래량": [10000000, 5000000],
-                "거래대금": [710000000000, 640000000000],
+                "market_cap": [400_000_000_000_000, 80_000_000_000_000],
+                "shares": [5_969_782_550, 728_002_365],
             },
             index=["005930", "000660"],
         )
-        mock_stock.get_market_cap.return_value = mock_data
+        cap_df.index.name = "ticker"
+        self.collector.storage.save_market_caps(date(2024, 1, 2), cap_df)
 
         df = self.collector.get_market_cap("20240102", "KOSPI")
 
         assert "market_cap" in df.columns
         assert "shares" in df.columns
         assert df.index.name == "ticker"
+        assert len(df) == 2
+
+    def test_get_market_cap_empty(self) -> None:
+        """캐시도 API도 없으면 빈 결과"""
+        df = self.collector.get_market_cap("20240102", "KOSPI")
+        assert df.empty
 
 
 # ───────────────────────────────────────────────

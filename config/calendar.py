@@ -84,6 +84,28 @@ def is_last_krx_business_day_of_month(dt: Optional[date] = None) -> bool:
     return ts == last_bday
 
 
+def previous_krx_business_day(dt: date) -> pd.Timestamp:
+    """직전 KRX 거래일 반환
+
+    Args:
+        dt: 기준 날짜
+
+    Returns:
+        직전 거래일 Timestamp
+    """
+    ts = pd.Timestamp(dt)
+
+    cal = _get_krx_calendar()
+    if cal is not None:
+        try:
+            prev_day = ts - pd.Timedelta(days=1)
+            return cal.date_to_session(prev_day, direction="previous")
+        except Exception:
+            pass
+
+    return ts - pd.offsets.BDay(1)
+
+
 def next_krx_business_day(dt: date) -> pd.Timestamp:
     """다음 KRX 거래일 반환
 
