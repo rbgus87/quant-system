@@ -201,20 +201,21 @@ class MultiFactorBacktest:
                         })
 
                 elif circuit_breaker_active:
-                    # 레짐 필터가 강세("100% 투자")를 제시할 때만 복귀
-                    regime_ratio = self.regime_filter.get_invest_ratio(date_str)
-                    if regime_ratio >= 1.0:
+                    # 재진입 조건: DD가 발동 기준의 절반 이내로 회복
+                    # (예: -20% 발동 → -10% 이내 회복 시 해제)
+                    reentry_threshold = -max_dd_threshold * 0.5
+                    if current_dd >= reentry_threshold:
                         logger.info(
                             f"[{date_str}] MDD 서킷브레이커 해제: "
-                            f"DD={current_dd:.1%}, 레짐=강세 → 재진입 허용"
+                            f"DD={current_dd:.1%} >= {reentry_threshold:.1%} → 재진입 허용"
                         )
                         circuit_breaker_active = False
-                        # 고점을 현재 자산(현금)으로 리셋
+                        # 고점을 현재 자산(현금)으로 리셋하여 재발동 방지
                         peak_value = total_value
                     else:
                         logger.info(
                             f"[{date_str}] 서킷브레이커 유지: "
-                            f"DD={current_dd:.1%}, 레짐 비중={regime_ratio:.0%} (강세 아님)"
+                            f"DD={current_dd:.1%} (해제 기준: {reentry_threshold:.1%})"
                         )
 
                 if circuit_breaker_active:
