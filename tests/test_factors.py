@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import pytest
 
+from config.settings import settings
 from factors.value import ValueFactor
 from factors.momentum import MomentumFactor
 from factors.quality import QualityFactor
@@ -297,13 +298,14 @@ class TestMultiFactorComposite:
         assert result.empty  # 각각 1개 팩터만 → 최소 2개 미충족
 
     def test_weights_applied(self) -> None:
-        """가중치 적용 검증: V=0.4, M=0.4, Q=0.2"""
+        """가중치 적용 검증: settings의 실제 가중치 사용"""
         value = pd.Series({"A": 100.0})
         momentum = pd.Series({"A": 50.0})
         quality = pd.Series({"A": 0.0})
 
         result = self.composite.calculate(value, momentum, quality)
-        expected = 100.0 * 0.4 + 50.0 * 0.4 + 0.0 * 0.2
+        w = settings.factor_weights
+        expected = 100.0 * w.value + 50.0 * w.momentum + 0.0 * w.quality
         assert abs(result.loc["A", "composite_score"] - expected) < 0.01
 
     def test_select_top(self) -> None:
