@@ -295,10 +295,13 @@ def main() -> None:
         if portfolio_df.empty:
             logger.info("스크리닝 결과 없음")
         else:
+            from pykrx import stock as pykrx_stock
+
             logger.info(f"선정 종목 ({len(portfolio_df)}개):")
             for ticker in portfolio_df.index:
+                name = pykrx_stock.get_market_ticker_name(ticker) or ticker
                 score = portfolio_df.loc[ticker, "composite_score"]
-                logger.info(f"  {ticker}: 복합스코어 {score:.1f}")
+                logger.info(f"  {ticker} {name}: 복합스코어 {score:.1f}")
         return
 
     if args.now:
