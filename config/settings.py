@@ -128,9 +128,9 @@ _YAML_SECTIONS = {
 }
 
 
-def _apply_yaml(settings_obj: "Settings", data: dict) -> None:
-    """YAML dict 값을 Settings 객체에 적용한다."""
-    for section, cls in _YAML_SECTIONS.items():
+def _apply_section_data(settings_obj: "Settings", data: dict) -> None:
+    """YAML dict의 섹션별 값을 Settings 객체에 적용한다."""
+    for section in _YAML_SECTIONS:
         if section not in data:
             continue
         sub = data[section]
@@ -143,6 +143,37 @@ def _apply_yaml(settings_obj: "Settings", data: dict) -> None:
                 setattr(target, key, val)
             else:
                 logger.warning("알 수 없는 설정: %s.%s (무시)", section, key)
+
+
+def _apply_yaml(settings_obj: "Settings", data: dict) -> None:
+    """YAML dict 값을 Settings 객체에 적용한다.
+
+    적용 순서: 전략 프리셋 → 금액 프리셋 → 개별 설정 덮어쓰기
+    """
+    presets = data.get("presets", {})
+    preset_name = data.get("preset")
+    sizing_name = data.get("sizing")
+
+    # 1단계: 전략 프리셋 적용
+    if preset_name and presets:
+        if preset_name in presets:
+            logger.info("전략 프리셋 적용: %s", preset_name)
+            _apply_section_data(settings_obj, presets[preset_name])
+        else:
+            logger.warning("존재하지 않는 전략 프리셋: %s (무시)", preset_name)
+
+    # 2단계: 금액 프리셋 적용 (전략 프리셋 위에 덮어쓰기)
+    if sizing_name and presets:
+        if sizing_name in presets:
+            logger.info("금액 프리셋 적용: %s", sizing_name)
+            _apply_section_data(settings_obj, presets[sizing_name])
+        else:
+            logger.warning("존재하지 않는 금액 프리셋: %s (무시)", sizing_name)
+
+    # 3단계: 개별 설정 덮어쓰기 (preset, sizing, presets 키 제외)
+    individual = {k: v for k, v in data.items() if k not in ("preset", "sizing", "presets")}
+    if individual:
+        _apply_section_data(settings_obj, individual)
 
 
 def validate_settings(s: "Settings") -> None:
