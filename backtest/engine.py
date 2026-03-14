@@ -1,8 +1,12 @@
 # backtest/engine.py
+from __future__ import annotations
+
+import logging
+from datetime import date as date_type
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-from typing import Optional
-import logging
 
 from config.calendar import (
     get_krx_month_end_sessions,
@@ -59,18 +63,7 @@ class MultiFactorBacktest:
         """
         logger.info(f"백테스트 시작: {start_date} ~ {end_date}")
 
-        rebal_dates = get_krx_month_end_sessions(start_date, end_date)
-        logger.info(f"리밸런싱 횟수: {len(rebal_dates)}회")
-
-        # ── 사전 데이터 수집: 모든 T+1 매매일 OHLCV 일괄 프리페치 ──
-        trade_dates_for_prefetch = []
-        for rdt in rebal_dates:
-            tdt = next_krx_business_day(rdt)
-            trade_dates_for_prefetch.append(tdt.strftime("%Y%m%d"))
-
-        logger.info(f"사전 프리페치: {len(trade_dates_for_prefetch)}개 매매일 OHLCV 일괄 수집")
-        for td_str in trade_dates_for_prefetch:
-            self.krx.prefetch_daily_trade(td_str, market)
+        rebal_dates = self._generate_rebalance_dates(start_date, end_date, market)
 
         cash = self.initial_cash
         holdings: dict[str, int] = {}  # {ticker: shares}
@@ -115,108 +108,19 @@ class MultiFactorBacktest:
                             f" — 보유 {shares}주 자산 평가에서 제외"
                         )
 
-                # ── 종목별 트레일링 스톱: 매수가 대비 -N% 하락 종목 강제 매도 ──
-                trailing_stop_pct = settings.trading.trailing_stop_pct
-                if trailing_stop_pct > 0 and holdings:
-                    stop_sells: list[str] = []
-                    for ticker, shares in list(holdings.items()):
-                        if shares <= 0:
-                            continue
-                        price = prices.get(ticker)
-                        avg_cost = cost_basis.get(ticker)
-                        if price is None or avg_cost is None or avg_cost <= 0:
-                            continue
-                        loss_pct = (price - avg_cost) / avg_cost
-                        if loss_pct < -trailing_stop_pct:
-                            proceed = self.rebalancer.calc_sell_proceed(price, shares)
-                            cash += proceed
-                            stop_sells.append(
-                                f"{ticker}({self._get_ticker_name(ticker)}) "
-                                f"{loss_pct:.1%}"
-                            )
-                            holdings.pop(ticker)
-                            cost_basis.pop(ticker, None)
-                    if stop_sells:
-                        # 전량 매도 후 총 자산 재평가
-                        total_value = cash
-                        for t, s in holdings.items():
-                            if t in prices:
-                                total_value += prices[t] * s
-                        logger.warning(
-                            f"[{date_str}] 트레일링 스톱 발동: "
-                            f"{len(stop_sells)}종목 강제 매도 — {', '.join(stop_sells)}"
-                        )
+                # ── 종목별 트레일링 스톱 ──
+                cash, total_value = self._execute_trailing_stops(
+                    holdings, cost_basis, prices, cash, total_value, date_str,
+                )
 
-                # ── MDD 서킷브레이커: 고점 대비 -N% → 전량 매도 → 현금 대피 ──
-                peak_value = max(peak_value, total_value)
-                current_dd = (total_value - peak_value) / peak_value if peak_value > 0 else 0
-                max_dd_threshold = settings.trading.max_drawdown_pct
-
-                if current_dd < -max_dd_threshold:
-                    if not circuit_breaker_active:
-                        logger.warning(
-                            f"[{date_str}] MDD 서킷브레이커 발동: "
-                            f"현재 DD={current_dd:.1%} < -{max_dd_threshold:.0%}"
-                            f" → 전량 매도, 현금 대피"
-                        )
-                        # 보유 종목 전량 매도
-                        liquidation_details: list[dict] = []
-                        for ticker, shares in list(holdings.items()):
-                            if shares <= 0:
-                                continue
-                            price = prices.get(ticker)
-                            if price is None:
-                                continue
-                            proceed = self.rebalancer.calc_sell_proceed(price, shares)
-                            cash += proceed
-                            avg_cost = cost_basis.get(ticker)
-                            return_pct = (
-                                (price - avg_cost) / avg_cost
-                                if avg_cost and avg_cost > 0
-                                else None
-                            )
-                            liquidation_details.append({
-                                "ticker": ticker,
-                                "name": self._get_ticker_name(ticker),
-                                "quantity": shares,
-                                "price": price,
-                                "amount": proceed,
-                                "buy_price": avg_cost,
-                                "return_pct": return_pct,
-                            })
-                        holdings.clear()
-                        cost_basis.clear()
-                        circuit_breaker_active = True
-
-                        turnover_log.append({
-                            "date": date_str,
-                            "sells": len(liquidation_details),
-                            "buys": 0,
-                            "turnover_rate": 1.0,
-                            "n_holdings_before": len(liquidation_details),
-                            "n_holdings_after": 0,
-                            "sell_details": liquidation_details,
-                            "buy_details": [],
-                            "note": f"서킷브레이커 전량 매도 (DD={current_dd:.1%})",
-                        })
-
-                elif circuit_breaker_active:
-                    # 재진입 조건: DD가 발동 기준의 절반 이내로 회복
-                    # (예: -20% 발동 → -10% 이내 회복 시 해제)
-                    reentry_threshold = -max_dd_threshold * 0.5
-                    if current_dd >= reentry_threshold:
-                        logger.info(
-                            f"[{date_str}] MDD 서킷브레이커 해제: "
-                            f"DD={current_dd:.1%} >= {reentry_threshold:.1%} → 재진입 허용"
-                        )
-                        circuit_breaker_active = False
-                        # 고점을 현재 자산(현금)으로 리셋하여 재발동 방지
-                        peak_value = total_value
-                    else:
-                        logger.info(
-                            f"[{date_str}] 서킷브레이커 유지: "
-                            f"DD={current_dd:.1%} (해제 기준: {reentry_threshold:.1%})"
-                        )
+                # ── MDD 서킷브레이커 ──
+                circuit_breaker_active, peak_value, cash = (
+                    self._apply_circuit_breaker(
+                        holdings, cost_basis, prices, cash,
+                        total_value, peak_value, circuit_breaker_active,
+                        date_str, turnover_log,
+                    )
+                )
 
                 if circuit_breaker_active:
                     # 현금 100% 상태로 일별 가치만 기록 (포지션 없음)
@@ -240,216 +144,22 @@ class MultiFactorBacktest:
                         })
                     continue  # 다음 리밸런싱 날짜로
 
-                # ── 변동성 타겟팅: 실현 변동성 > 목표 시 투자 비중 축소 ──
-                vol_scale = self._calc_vol_target_scale(history)
-
-                # 시장 레짐 필터: 하락장 시 투자 비중 축소
-                invest_ratio = self.regime_filter.get_invest_ratio(date_str)
-                rebal_value = total_value * invest_ratio * vol_scale
-
-                if vol_scale < 1.0:
-                    logger.info(
-                        f"[{date_str}] 변동성 타겟팅: 투자 비중 ×{vol_scale:.0%} "
-                        f"(레짐 {invest_ratio:.0%} → 최종 {invest_ratio * vol_scale:.0%})"
-                    )
-
-                # 고정 금액 모드: 리밸런싱 기준 금액 제한
-                max_inv = settings.portfolio.max_investment_amount
-                if max_inv > 0 and rebal_value > max_inv:
-                    rebal_value = max_inv
-
-                # 비중 리밸런싱 주문 계산 (기존 보유종목 포함 재조정)
-                old_tickers = set(holdings.keys())
-                orders = self.rebalancer.compute_weight_rebalance(
-                    holdings, new_tickers, prices, rebal_value
+                # ── 변동성 타겟팅 + 시장 레짐 → 투자 금액 결정 ──
+                rebal_value = self._calc_rebalance_value(
+                    history, total_value, date_str,
                 )
 
-                # 턴오버 기록
-                new_set = set(new_tickers)
-                sells_count = len(old_tickers - new_set)
-                buys_count = len(new_set - old_tickers)
-                n_prev = len(old_tickers) if old_tickers else 1
-                turnover_rate = (sells_count + buys_count) / (2 * max(n_prev, len(new_set), 1))
-                turnover_log.append({
-                    "date": date_str,
-                    "sells": sells_count,
-                    "buys": buys_count,
-                    "turnover_rate": turnover_rate,
-                    "n_holdings_before": len(old_tickers),
-                    "n_holdings_after": len(new_set),
-                    "sell_details": [],
-                    "buy_details": [],
-                })
-
-                # 자금 흐름 추적: 매매 전 현금
-                cash_before_trade = cash
-
-                # 매도 먼저 실행 (예수금 확보)
-                sell_details: list[dict] = []
-                for ticker, delta in sorted(orders.items()):
-                    if delta >= 0:
-                        continue
-                    sell_shares = min(-delta, holdings.get(ticker, 0))
-                    if sell_shares <= 0:
-                        continue
-                    price = prices.get(ticker)
-                    if price is None:
-                        continue
-                    proceed = self.rebalancer.calc_sell_proceed(price, sell_shares)
-                    cash += proceed
-                    holdings[ticker] = holdings.get(ticker, 0) - sell_shares
-                    # 종목별 수익률 계산 (매수 평균단가 대비)
-                    avg_cost = cost_basis.get(ticker)
-                    return_pct = (
-                        (price - avg_cost) / avg_cost if avg_cost and avg_cost > 0 else None
-                    )
-                    sell_details.append({
-                        "ticker": ticker,
-                        "name": self._get_ticker_name(ticker),
-                        "quantity": sell_shares,
-                        "price": price,
-                        "amount": proceed,
-                        "buy_price": avg_cost,
-                        "return_pct": return_pct,
-                    })
-                    if holdings[ticker] <= 0:
-                        holdings.pop(ticker, None)
-                        cost_basis.pop(ticker, None)
-
-                # 자금 흐름 추적: 매도 후 현금
-                cash_after_sell = cash
-
-                # 매수 실행
-                buy_details: list[dict] = []
-                skipped_buys: list[str] = []
-                for ticker, delta in sorted(orders.items()):
-                    if delta <= 0:
-                        continue
-                    price = prices.get(ticker)
-                    if price is None:
-                        continue
-                    cost = self.rebalancer.calc_buy_cost(price, delta)
-                    if cash >= cost:
-                        cash -= cost
-                        # 평균 매수단가 업데이트 (가중 평균)
-                        prev_shares = holdings.get(ticker, 0)
-                        prev_cost = cost_basis.get(ticker, 0.0)
-                        new_total_shares = prev_shares + delta
-                        if new_total_shares > 0:
-                            cost_basis[ticker] = (
-                                (prev_cost * prev_shares + price * delta)
-                                / new_total_shares
-                            )
-                        holdings[ticker] = new_total_shares
-                        buy_details.append({
-                            "ticker": ticker,
-                            "name": self._get_ticker_name(ticker),
-                            "quantity": delta,
-                            "price": price,
-                            "amount": cost,
-                        })
-                    else:
-                        skipped_buys.append(ticker)
-
-                # 자금 흐름 추적: 매수 후 현금 및 평가액
-                cash_after_buy = cash
-                stock_value_after = sum(
-                    prices.get(t, 0) * s for t, s in holdings.items() if s > 0
+                # ── 매매 실행 (매도 → 매수) ──
+                cash = self._execute_trades(
+                    holdings, cost_basis, new_tickers, prices,
+                    cash, total_value, rebal_value, date_str, turnover_log,
                 )
-                sell_total_amount = sum(s["amount"] for s in sell_details)
-                buy_total_amount = sum(b["amount"] for b in buy_details)
 
-                # 매매 상세 내역을 턴오버 로그에 반영
-                if turnover_log:
-                    turnover_log[-1]["sell_details"] = sell_details
-                    turnover_log[-1]["buy_details"] = buy_details
-                    turnover_log[-1]["fund_flow"] = {
-                        "total_value_before": total_value,
-                        "cash_before": cash_before_trade,
-                        "sell_amount": sell_total_amount,
-                        "cash_after_sell": cash_after_sell,
-                        "buy_amount": buy_total_amount,
-                        "cash_after_buy": cash_after_buy,
-                        "stock_value_after": stock_value_after,
-                        "total_value_after": cash_after_buy + stock_value_after,
-                        "invest_ratio": stock_value_after / (cash_after_buy + stock_value_after) if (cash_after_buy + stock_value_after) > 0 else 0,
-                    }
-
-                if skipped_buys:
-                    logger.warning(
-                        f"[{date_str}] 현금 부족으로 매수 스킵: "
-                        f"{len(skipped_buys)}개 종목 {skipped_buys}"
-                    )
-
-                # 보유 종목 OHLCV 기간 일괄 프리페치 (벌크 DB 조회)
-                period_end = (
-                    rebal_dates[i + 1]
-                    if i + 1 < len(rebal_dates)
-                    else pd.Timestamp(end_date)
+                # ── 일별 포트폴리오 가치 기록 ──
+                self._record_daily_values(
+                    holdings, prices, cash, history,
+                    trade_dt, rebal_dates, i, end_date,
                 )
-                if trade_dt > period_end:
-                    period_end = trade_dt + pd.Timedelta(days=20)
-
-                from datetime import date as date_type
-
-                sd = trade_dt.date() if hasattr(trade_dt, "date") else trade_dt
-                ed = period_end.date() if hasattr(period_end, "date") else period_end
-
-                # 벌크 DB 조회 → {(ticker, date_str): close_price}
-                close_price_cache: dict[tuple[str, str], float] = {}
-                holding_tickers = list(holdings.keys())
-                if holding_tickers:
-                    bulk_df = self.krx.storage.load_daily_prices_bulk(
-                        holding_tickers, sd, ed
-                    )
-                    if not bulk_df.empty:
-                        valid = bulk_df[bulk_df["close"].notna() & (bulk_df["close"] > 0)]
-                        for _, row in valid.iterrows():
-                            dt_key = row["date"].strftime("%Y%m%d") if hasattr(row["date"], "strftime") else str(row["date"])
-                            close_price_cache[(row["ticker"], dt_key)] = float(row["close"])
-
-                # 일별 포트폴리오 가치 기록 (KRX 거래일만)
-                # 마지막 알려진 가격을 보관하여 데이터 갭 시 대체 사용
-                last_known_price: dict[str, float] = {}
-                # 매매 체결가를 초기값으로 설정
-                for ticker in holdings:
-                    if ticker in prices:
-                        last_known_price[ticker] = prices[ticker]
-
-                dates = get_krx_sessions(
-                    trade_dt.strftime("%Y%m%d"), period_end.strftime("%Y%m%d")
-                )
-                for dt in dates:
-                    dt_str_val = dt.strftime("%Y%m%d")
-                    total = cash
-                    missing_count = 0
-                    for ticker, shares in holdings.items():
-                        if shares <= 0:
-                            continue
-                        price = close_price_cache.get((ticker, dt_str_val))
-                        if price is not None:
-                            last_known_price[ticker] = price
-                        else:
-                            price = last_known_price.get(ticker)
-                            if price is not None:
-                                missing_count += 1
-                        if price is not None:
-                            total += price * shares
-
-                    if missing_count > 0:
-                        logger.debug(
-                            f"[{dt_str_val}] {missing_count}개 종목 가격 데이터 없음"
-                            f" — 마지막 알려진 가격으로 대체"
-                        )
-
-                    history.append(
-                        {
-                            "date": dt,
-                            "portfolio_value": total,
-                            "cash": cash,
-                            "n_holdings": len(holdings),
-                        }
-                    )
 
             except Exception as e:
                 logger.error(f"리밸런싱 실패 ({date_str}): {e}", exc_info=True)
@@ -475,6 +185,495 @@ class MultiFactorBacktest:
         total_ret = result["portfolio_value"].iloc[-1] / self.initial_cash - 1
         logger.info(f"백테스트 완료 | 총 수익률: {total_ret * 100:.2f}%")
         return result
+
+    # ─────────────────────────────────────────────
+    # run() 서브 메서드: 책임별 분리
+    # ─────────────────────────────────────────────
+
+    def _generate_rebalance_dates(
+        self, start_date: str, end_date: str, market: str,
+    ) -> list[pd.Timestamp]:
+        """리밸런싱 날짜 목록 생성 및 T+1 매매일 OHLCV 사전 프리페치
+
+        Args:
+            start_date: 시작일 (YYYY-MM-DD)
+            end_date: 종료일 (YYYY-MM-DD)
+            market: 대상 시장
+
+        Returns:
+            KRX 월말 영업일 리스트
+        """
+        rebal_dates = get_krx_month_end_sessions(start_date, end_date)
+        logger.info(f"리밸런싱 횟수: {len(rebal_dates)}회")
+
+        trade_dates_for_prefetch: list[str] = []
+        for rdt in rebal_dates:
+            tdt = next_krx_business_day(rdt)
+            trade_dates_for_prefetch.append(tdt.strftime("%Y%m%d"))
+
+        logger.info(
+            f"사전 프리페치: {len(trade_dates_for_prefetch)}개 매매일 OHLCV 일괄 수집"
+        )
+        for td_str in trade_dates_for_prefetch:
+            self.krx.prefetch_daily_trade(td_str, market)
+
+        return rebal_dates
+
+    def _execute_trailing_stops(
+        self,
+        holdings: dict[str, int],
+        cost_basis: dict[str, float],
+        prices: dict[str, float],
+        cash: float,
+        total_value: float,
+        date_str: str,
+    ) -> tuple[float, float]:
+        """종목별 트레일링 스톱: 매수가 대비 -N% 하락 종목 강제 매도
+
+        holdings, cost_basis는 in-place로 변경됩니다.
+
+        Args:
+            holdings: 보유 종목 {ticker: shares}
+            cost_basis: 평균 매수단가 {ticker: price}
+            prices: 당일 시가 {ticker: price}
+            cash: 현재 현금
+            total_value: 현재 총 자산 평가액
+            date_str: 기준 날짜 (YYYYMMDD)
+
+        Returns:
+            (갱신된 cash, 갱신된 total_value)
+        """
+        trailing_stop_pct = settings.trading.trailing_stop_pct
+        if trailing_stop_pct <= 0 or not holdings:
+            return cash, total_value
+
+        stop_sells: list[str] = []
+        for ticker, shares in list(holdings.items()):
+            if shares <= 0:
+                continue
+            price = prices.get(ticker)
+            avg_cost = cost_basis.get(ticker)
+            if price is None or avg_cost is None or avg_cost <= 0:
+                continue
+            loss_pct = (price - avg_cost) / avg_cost
+            if loss_pct < -trailing_stop_pct:
+                proceed = self.rebalancer.calc_sell_proceed(price, shares)
+                cash += proceed
+                stop_sells.append(
+                    f"{ticker}({self._get_ticker_name(ticker)}) "
+                    f"{loss_pct:.1%}"
+                )
+                holdings.pop(ticker)
+                cost_basis.pop(ticker, None)
+
+        if stop_sells:
+            # 전량 매도 후 총 자산 재평가
+            total_value = cash
+            for t, s in holdings.items():
+                if t in prices:
+                    total_value += prices[t] * s
+            logger.warning(
+                f"[{date_str}] 트레일링 스톱 발동: "
+                f"{len(stop_sells)}종목 강제 매도 — {', '.join(stop_sells)}"
+            )
+
+        return cash, total_value
+
+    def _apply_circuit_breaker(
+        self,
+        holdings: dict[str, int],
+        cost_basis: dict[str, float],
+        prices: dict[str, float],
+        cash: float,
+        total_value: float,
+        peak_value: float,
+        circuit_breaker_active: bool,
+        date_str: str,
+        turnover_log: list[dict],
+    ) -> tuple[bool, float, float]:
+        """MDD 서킷브레이커: 고점 대비 -N% → 전량 매도 → 현금 대피
+
+        holdings, cost_basis, turnover_log는 in-place로 변경됩니다.
+
+        Args:
+            holdings: 보유 종목 {ticker: shares}
+            cost_basis: 평균 매수단가 {ticker: price}
+            prices: 당일 시가 {ticker: price}
+            cash: 현재 현금
+            total_value: 현재 총 자산 평가액
+            peak_value: 역대 최고 자산 평가액
+            circuit_breaker_active: 서킷브레이커 활성 여부
+            date_str: 기준 날짜 (YYYYMMDD)
+            turnover_log: 턴오버 로그 리스트
+
+        Returns:
+            (circuit_breaker_active, peak_value, cash)
+        """
+        peak_value = max(peak_value, total_value)
+        current_dd = (
+            (total_value - peak_value) / peak_value if peak_value > 0 else 0
+        )
+        max_dd_threshold = settings.trading.max_drawdown_pct
+
+        if current_dd < -max_dd_threshold:
+            if not circuit_breaker_active:
+                logger.warning(
+                    f"[{date_str}] MDD 서킷브레이커 발동: "
+                    f"현재 DD={current_dd:.1%} < -{max_dd_threshold:.0%}"
+                    f" → 전량 매도, 현금 대피"
+                )
+                # 보유 종목 전량 매도
+                liquidation_details: list[dict] = []
+                for ticker, shares in list(holdings.items()):
+                    if shares <= 0:
+                        continue
+                    price = prices.get(ticker)
+                    if price is None:
+                        continue
+                    proceed = self.rebalancer.calc_sell_proceed(price, shares)
+                    cash += proceed
+                    avg_cost = cost_basis.get(ticker)
+                    return_pct = (
+                        (price - avg_cost) / avg_cost
+                        if avg_cost and avg_cost > 0
+                        else None
+                    )
+                    liquidation_details.append({
+                        "ticker": ticker,
+                        "name": self._get_ticker_name(ticker),
+                        "quantity": shares,
+                        "price": price,
+                        "amount": proceed,
+                        "buy_price": avg_cost,
+                        "return_pct": return_pct,
+                    })
+                holdings.clear()
+                cost_basis.clear()
+                circuit_breaker_active = True
+
+                turnover_log.append({
+                    "date": date_str,
+                    "sells": len(liquidation_details),
+                    "buys": 0,
+                    "turnover_rate": 1.0,
+                    "n_holdings_before": len(liquidation_details),
+                    "n_holdings_after": 0,
+                    "sell_details": liquidation_details,
+                    "buy_details": [],
+                    "note": f"서킷브레이커 전량 매도 (DD={current_dd:.1%})",
+                })
+
+        elif circuit_breaker_active:
+            # 재진입 조건: DD가 발동 기준의 절반 이내로 회복
+            reentry_threshold = -max_dd_threshold * 0.5
+            if current_dd >= reentry_threshold:
+                logger.info(
+                    f"[{date_str}] MDD 서킷브레이커 해제: "
+                    f"DD={current_dd:.1%} >= {reentry_threshold:.1%} → 재진입 허용"
+                )
+                circuit_breaker_active = False
+                # 고점을 현재 자산(현금)으로 리셋하여 재발동 방지
+                peak_value = total_value
+            else:
+                logger.info(
+                    f"[{date_str}] 서킷브레이커 유지: "
+                    f"DD={current_dd:.1%} (해제 기준: {reentry_threshold:.1%})"
+                )
+
+        return circuit_breaker_active, peak_value, cash
+
+    def _calc_rebalance_value(
+        self,
+        history: list[dict],
+        total_value: float,
+        date_str: str,
+    ) -> float:
+        """변동성 타겟팅 + 시장 레짐 필터를 적용한 리밸런싱 투자 금액 계산
+
+        Args:
+            history: 지금까지의 일별 기록 리스트
+            total_value: 현재 총 자산 평가액
+            date_str: 기준 날짜 (YYYYMMDD)
+
+        Returns:
+            리밸런싱에 사용할 투자 금액
+        """
+        vol_scale = self._calc_vol_target_scale(history)
+        invest_ratio = self.regime_filter.get_invest_ratio(date_str)
+        rebal_value = total_value * invest_ratio * vol_scale
+
+        if vol_scale < 1.0:
+            logger.info(
+                f"[{date_str}] 변동성 타겟팅: 투자 비중 ×{vol_scale:.0%} "
+                f"(레짐 {invest_ratio:.0%} → 최종 {invest_ratio * vol_scale:.0%})"
+            )
+
+        # 고정 금액 모드: 리밸런싱 기준 금액 제한
+        max_inv = settings.portfolio.max_investment_amount
+        if max_inv > 0 and rebal_value > max_inv:
+            rebal_value = max_inv
+
+        return rebal_value
+
+    def _execute_trades(
+        self,
+        holdings: dict[str, int],
+        cost_basis: dict[str, float],
+        new_tickers: list[str],
+        prices: dict[str, float],
+        cash: float,
+        total_value: float,
+        rebal_value: float,
+        date_str: str,
+        turnover_log: list[dict],
+    ) -> float:
+        """매도 → 매수 순서로 리밸런싱 매매 실행
+
+        holdings, cost_basis, turnover_log는 in-place로 변경됩니다.
+
+        Args:
+            holdings: 보유 종목 {ticker: shares}
+            cost_basis: 평균 매수단가 {ticker: price}
+            new_tickers: 신규 목표 포트폴리오 종목 리스트
+            prices: 당일 시가 {ticker: price}
+            cash: 현재 현금
+            total_value: 매매 전 총 자산 평가액
+            rebal_value: 리밸런싱 투자 금액
+            date_str: 기준 날짜 (YYYYMMDD)
+            turnover_log: 턴오버 로그 리스트
+
+        Returns:
+            매매 후 현금 잔액
+        """
+        # 비중 리밸런싱 주문 계산 (기존 보유종목 포함 재조정)
+        old_tickers = set(holdings.keys())
+        orders = self.rebalancer.compute_weight_rebalance(
+            holdings, new_tickers, prices, rebal_value
+        )
+
+        # 턴오버 기록
+        new_set = set(new_tickers)
+        sells_count = len(old_tickers - new_set)
+        buys_count = len(new_set - old_tickers)
+        n_prev = len(old_tickers) if old_tickers else 1
+        turnover_rate = (sells_count + buys_count) / (
+            2 * max(n_prev, len(new_set), 1)
+        )
+        turnover_log.append({
+            "date": date_str,
+            "sells": sells_count,
+            "buys": buys_count,
+            "turnover_rate": turnover_rate,
+            "n_holdings_before": len(old_tickers),
+            "n_holdings_after": len(new_set),
+            "sell_details": [],
+            "buy_details": [],
+        })
+
+        # 자금 흐름 추적: 매매 전 현금
+        cash_before_trade = cash
+
+        # 매도 먼저 실행 (예수금 확보)
+        sell_details: list[dict] = []
+        for ticker, delta in sorted(orders.items()):
+            if delta >= 0:
+                continue
+            sell_shares = min(-delta, holdings.get(ticker, 0))
+            if sell_shares <= 0:
+                continue
+            price = prices.get(ticker)
+            if price is None:
+                continue
+            proceed = self.rebalancer.calc_sell_proceed(price, sell_shares)
+            cash += proceed
+            holdings[ticker] = holdings.get(ticker, 0) - sell_shares
+            # 종목별 수익률 계산 (매수 평균단가 대비)
+            avg_cost = cost_basis.get(ticker)
+            return_pct = (
+                (price - avg_cost) / avg_cost
+                if avg_cost and avg_cost > 0
+                else None
+            )
+            sell_details.append({
+                "ticker": ticker,
+                "name": self._get_ticker_name(ticker),
+                "quantity": sell_shares,
+                "price": price,
+                "amount": proceed,
+                "buy_price": avg_cost,
+                "return_pct": return_pct,
+            })
+            if holdings[ticker] <= 0:
+                holdings.pop(ticker, None)
+                cost_basis.pop(ticker, None)
+
+        # 자금 흐름 추적: 매도 후 현금
+        cash_after_sell = cash
+
+        # 매수 실행
+        buy_details: list[dict] = []
+        skipped_buys: list[str] = []
+        for ticker, delta in sorted(orders.items()):
+            if delta <= 0:
+                continue
+            price = prices.get(ticker)
+            if price is None:
+                continue
+            cost = self.rebalancer.calc_buy_cost(price, delta)
+            if cash >= cost:
+                cash -= cost
+                # 평균 매수단가 업데이트 (가중 평균)
+                prev_shares = holdings.get(ticker, 0)
+                prev_cost = cost_basis.get(ticker, 0.0)
+                new_total_shares = prev_shares + delta
+                if new_total_shares > 0:
+                    cost_basis[ticker] = (
+                        (prev_cost * prev_shares + price * delta)
+                        / new_total_shares
+                    )
+                holdings[ticker] = new_total_shares
+                buy_details.append({
+                    "ticker": ticker,
+                    "name": self._get_ticker_name(ticker),
+                    "quantity": delta,
+                    "price": price,
+                    "amount": cost,
+                })
+            else:
+                skipped_buys.append(ticker)
+
+        # 자금 흐름 추적: 매수 후 현금 및 평가액
+        cash_after_buy = cash
+        stock_value_after = sum(
+            prices.get(t, 0) * s for t, s in holdings.items() if s > 0
+        )
+        sell_total_amount = sum(s["amount"] for s in sell_details)
+        buy_total_amount = sum(b["amount"] for b in buy_details)
+
+        # 매매 상세 내역을 턴오버 로그에 반영
+        if turnover_log:
+            turnover_log[-1]["sell_details"] = sell_details
+            turnover_log[-1]["buy_details"] = buy_details
+            turnover_log[-1]["fund_flow"] = {
+                "total_value_before": total_value,
+                "cash_before": cash_before_trade,
+                "sell_amount": sell_total_amount,
+                "cash_after_sell": cash_after_sell,
+                "buy_amount": buy_total_amount,
+                "cash_after_buy": cash_after_buy,
+                "stock_value_after": stock_value_after,
+                "total_value_after": cash_after_buy + stock_value_after,
+                "invest_ratio": (
+                    stock_value_after / (cash_after_buy + stock_value_after)
+                    if (cash_after_buy + stock_value_after) > 0
+                    else 0
+                ),
+            }
+
+        if skipped_buys:
+            logger.warning(
+                f"[{date_str}] 현금 부족으로 매수 스킵: "
+                f"{len(skipped_buys)}개 종목 {skipped_buys}"
+            )
+
+        return cash
+
+    def _record_daily_values(
+        self,
+        holdings: dict[str, int],
+        open_prices: dict[str, float],
+        cash: float,
+        history: list[dict],
+        trade_dt: pd.Timestamp,
+        rebal_dates: list[pd.Timestamp],
+        rebal_idx: int,
+        end_date: str,
+    ) -> None:
+        """보유 종목의 일별 종가로 포트폴리오 가치를 기록
+
+        history는 in-place로 변경됩니다.
+
+        Args:
+            holdings: 보유 종목 {ticker: shares}
+            open_prices: 매매 체결 시가 {ticker: price} (초기 가격용)
+            cash: 현재 현금
+            history: 일별 기록 리스트
+            trade_dt: 매매 체결일
+            rebal_dates: 전체 리밸런싱 날짜 리스트
+            rebal_idx: 현재 리밸런싱 인덱스
+            end_date: 백테스트 종료일 (YYYY-MM-DD)
+        """
+        period_end = (
+            rebal_dates[rebal_idx + 1]
+            if rebal_idx + 1 < len(rebal_dates)
+            else pd.Timestamp(end_date)
+        )
+        if trade_dt > period_end:
+            period_end = trade_dt + pd.Timedelta(days=20)
+
+        sd = trade_dt.date() if hasattr(trade_dt, "date") else trade_dt
+        ed = period_end.date() if hasattr(period_end, "date") else period_end
+
+        # 벌크 DB 조회 → {(ticker, date_str): close_price}
+        close_price_cache: dict[tuple[str, str], float] = {}
+        holding_tickers = list(holdings.keys())
+        if holding_tickers:
+            bulk_df = self.krx.storage.load_daily_prices_bulk(
+                holding_tickers, sd, ed
+            )
+            if not bulk_df.empty:
+                valid = bulk_df[
+                    bulk_df["close"].notna() & (bulk_df["close"] > 0)
+                ]
+                for t, d, c in zip(
+                    valid["ticker"], valid["date"], valid["close"]
+                ):
+                    dt_key = (
+                        d.strftime("%Y%m%d")
+                        if hasattr(d, "strftime")
+                        else str(d)
+                    )
+                    close_price_cache[(t, dt_key)] = float(c)
+
+        # 마지막 알려진 가격을 보관하여 데이터 갭 시 대체 사용
+        last_known_price: dict[str, float] = {}
+        # 매매 체결가를 초기값으로 설정
+        for ticker in holdings:
+            if ticker in open_prices:
+                last_known_price[ticker] = open_prices[ticker]
+
+        dates = get_krx_sessions(
+            trade_dt.strftime("%Y%m%d"), period_end.strftime("%Y%m%d")
+        )
+        for dt in dates:
+            dt_str_val = dt.strftime("%Y%m%d")
+            total = cash
+            missing_count = 0
+            for ticker, shares in holdings.items():
+                if shares <= 0:
+                    continue
+                price = close_price_cache.get((ticker, dt_str_val))
+                if price is not None:
+                    last_known_price[ticker] = price
+                else:
+                    price = last_known_price.get(ticker)
+                    if price is not None:
+                        missing_count += 1
+                if price is not None:
+                    total += price * shares
+
+            if missing_count > 0:
+                logger.debug(
+                    f"[{dt_str_val}] {missing_count}개 종목 가격 데이터 없음"
+                    f" — 마지막 알려진 가격으로 대체"
+                )
+
+            history.append({
+                "date": dt,
+                "portfolio_value": total,
+                "cash": cash,
+                "n_holdings": len(holdings),
+            })
 
     def walk_forward(
         self,
@@ -641,11 +840,10 @@ class MultiFactorBacktest:
         # 벌크 DB 조회 (1회 쿼리)
         bulk_df = self.krx.storage.load_daily_prices_bulk(tickers, dt, dt)
         if not bulk_df.empty:
-            for _, row in bulk_df.iterrows():
-                ticker = str(row["ticker"])
-                val = row.get("open")
-                if val is not None and val > 0:
-                    prices[ticker] = float(val)
+            valid_open = bulk_df[bulk_df["open"].notna() & (bulk_df["open"] > 0)]
+            if not valid_open.empty:
+                price_map = valid_open.set_index("ticker")["open"].to_dict()
+                prices.update({str(k): float(v) for k, v in price_map.items()})
 
         # DB 미스 종목만 개별 폴백
         missing = [t for t in tickers if t not in prices]

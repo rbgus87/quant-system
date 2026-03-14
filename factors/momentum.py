@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from config.settings import settings
+from factors.utils import weighted_average_nan_safe
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +55,7 @@ class MomentumFactor:
             if not score_3m.empty:
                 score_parts["3m"] = (score_3m, 0.10)
 
-        # union 인덱스 + 가중치 정규화
-        union_idx = score_12m.index
-        for _, (s, _) in score_parts.items():
-            union_idx = union_idx.union(s.index)
-
-        composite = pd.Series(0.0, index=union_idx)
-        weight_sum = pd.Series(0.0, index=union_idx)
-        for name, (score, weight) in score_parts.items():
-            aligned = score.reindex(union_idx)
-            mask = aligned.notna()
-            composite[mask] += aligned[mask] * weight
-            weight_sum[mask] += weight
-
-        valid = weight_sum > 0
-        composite[valid] /= weight_sum[valid]
-        result = composite[valid]
-
+        result = weighted_average_nan_safe(score_parts)
         result.name = "momentum_score"
         logger.info(f"모멘텀 스코어 계산 완료: {len(result)}개 종목")
         return result

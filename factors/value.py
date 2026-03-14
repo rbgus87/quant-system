@@ -2,6 +2,7 @@
 import pandas as pd
 import logging
 from config.settings import settings
+from factors.utils import weighted_average_nan_safe
 
 logger = logging.getLogger(__name__)
 
@@ -52,25 +53,7 @@ class ValueFactor:
             logger.warning("밸류 팩터: 유효한 지표 없음")
             return pd.Series(dtype=float, name="value_score")
 
-        # 가중 평균 (union + NaN-aware: 지표가 일부 없는 종목도 포함)
-        all_scores = [s for s, _ in score_parts.values()]
-        union_idx = all_scores[0].index
-        for s in all_scores[1:]:
-            union_idx = union_idx.union(s.index)
-
-        composite = pd.Series(0.0, index=union_idx)
-        weight_sum = pd.Series(0.0, index=union_idx)
-        for name, (score, weight) in score_parts.items():
-            aligned = score.reindex(union_idx)
-            mask = aligned.notna()
-            composite[mask] += aligned[mask] * weight
-            weight_sum[mask] += weight
-
-        # 유효 가중합으로 정규화
-        valid = weight_sum > 0
-        composite[valid] /= weight_sum[valid]
-        composite = composite[valid]
-
+        composite = weighted_average_nan_safe(score_parts)
         composite.name = "value_score"
         logger.info(f"밸류 스코어 계산 완료: {len(composite)}개 종목")
         return composite.sort_values(ascending=False)

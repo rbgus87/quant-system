@@ -3,6 +3,7 @@ import pandas as pd
 import logging
 from typing import Optional
 from config.settings import settings
+from factors.utils import weighted_average_nan_safe
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +89,12 @@ class MultiFactorComposite:
         )
 
         # 가중 합산 (NaN 팩터 가중치 재분배)
-        weights = {
-            "value_score": self.w.value,
-            "momentum_score": self.w.momentum,
-            "quality_score": self.w.quality,
+        score_parts: dict[str, tuple[pd.Series, float]] = {
+            "value": (df["value_score"], self.w.value),
+            "momentum": (df["momentum_score"], self.w.momentum),
+            "quality": (df["quality_score"], self.w.quality),
         }
-        weighted_sum = pd.Series(0.0, index=df.index)
-        weight_sum = pd.Series(0.0, index=df.index)
-
-        for col, w in weights.items():
-            mask = df[col].notna()
-            weighted_sum[mask] += df.loc[mask, col] * w
-            weight_sum[mask] += w
-
-        df["composite_score"] = weighted_sum / weight_sum
+        df["composite_score"] = weighted_average_nan_safe(score_parts)
         df = df.dropna(subset=["composite_score"])
         return df.sort_values("composite_score", ascending=False)
 

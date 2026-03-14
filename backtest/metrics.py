@@ -3,9 +3,12 @@ import pandas as pd
 import numpy as np
 import logging
 
+from config.settings import settings
+
 logger = logging.getLogger(__name__)
 
-RF_ANNUAL = 0.03  # 무위험 수익률 연 3% (한국 국고채 기준)
+# 무위험 수익률: config/settings.py의 momentum.risk_free_rate를 단일 소스로 사용
+RF_ANNUAL: float = settings.momentum.risk_free_rate
 
 
 class PerformanceAnalyzer:

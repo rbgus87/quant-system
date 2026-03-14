@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from config.settings import settings
+from factors.utils import weighted_average_nan_safe
 
 logger = logging.getLogger(__name__)
 
@@ -62,28 +63,7 @@ class QualityFactor:
             logger.warning("퀄리티 팩터: 유효한 지표 없음")
             return pd.Series(dtype=float, name="quality_score")
 
-        # 가중 합산 (NaN-aware: 종목별 가용 가중치 정규화)
-        all_tickers = sorted(
-            set().union(*(s.index for s, _ in score_parts.values()))
-        )
-        df = pd.DataFrame(index=all_tickers)
-        weights: dict[str, float] = {}
-        for name, (score, weight) in score_parts.items():
-            df[name] = score.reindex(all_tickers)
-            weights[name] = weight
-
-        weighted_sum = pd.Series(0.0, index=all_tickers)
-        weight_sum = pd.Series(0.0, index=all_tickers)
-        for col, w in weights.items():
-            mask = df[col].notna()
-            weighted_sum[mask] += df.loc[mask, col] * w
-            weight_sum[mask] += w
-
-        # 최소 1개 지표 필요
-        valid_mask = weight_sum > 0
-        result = pd.Series(dtype=float, index=all_tickers)
-        result[valid_mask] = weighted_sum[valid_mask] / weight_sum[valid_mask]
-        result = result.dropna()
+        result = weighted_average_nan_safe(score_parts)
         result.name = "quality_score"
         logger.info(f"퀄리티 스코어 계산 완료: {len(result)}개 종목")
         return result

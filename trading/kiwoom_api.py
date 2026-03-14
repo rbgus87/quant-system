@@ -184,6 +184,43 @@ class KiwoomRestClient:
             logger.error(f"현재가 조회 실패 ({ticker}): {e}")
             return {}
 
+    def _request_with_retry(
+        self, method: str, url: str, api_id: str, **kwargs: object
+    ) -> dict:
+        """HTTP 요청 + 지수 백오프 재시도
+
+        Args:
+            method: HTTP 메서드 ('GET' 또는 'POST')
+            url: 요청 URL
+            api_id: TR 코드
+            **kwargs: requests.request()에 전달할 추가 인자 (params, json 등)
+
+        Returns:
+            응답 JSON dict
+        """
+        last_exc: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                self._throttle()
+                resp = requests.request(
+                    method,
+                    url,
+                    headers=self._headers(api_id),
+                    timeout=10,
+                    **kwargs,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except (requests.RequestException, ConnectionError) as e:
+                last_exc = e
+                if attempt < MAX_RETRIES - 1:
+                    delay = RETRY_BASE_DELAY * (2**attempt)
+                    logger.warning(
+                        f"{method} 재시도 ({attempt + 1}/{MAX_RETRIES}): {e}"
+                    )
+                    time.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
     def _get_with_retry(self, url: str, api_id: str, params: dict) -> dict:
         """GET 요청 + 재시도
 
@@ -195,25 +232,7 @@ class KiwoomRestClient:
         Returns:
             응답 JSON dict
         """
-        last_exc = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                self._throttle()
-                resp = requests.get(
-                    url,
-                    headers=self._headers(api_id),
-                    params=params,
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                return resp.json()
-            except (requests.RequestException, ConnectionError) as e:
-                last_exc = e
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_BASE_DELAY * (2**attempt)
-                    logger.warning(f"GET 재시도 ({attempt + 1}/{MAX_RETRIES}): {e}")
-                    time.sleep(delay)
-        raise last_exc
+        return self._request_with_retry("GET", url, api_id, params=params)
 
     def _post_with_retry(self, url: str, api_id: str, body: dict) -> dict:
         """POST 요청 + 재시도
@@ -226,31 +245,14 @@ class KiwoomRestClient:
         Returns:
             응답 JSON dict
         """
-        last_exc = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                self._throttle()
-                resp = requests.post(
-                    url,
-                    headers=self._headers(api_id),
-                    json=body,
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                return resp.json()
-            except (requests.RequestException, ConnectionError) as e:
-                last_exc = e
-                if attempt < MAX_RETRIES - 1:
-                    delay = RETRY_BASE_DELAY * (2**attempt)
-                    logger.warning(f"POST 재시도 ({attempt + 1}/{MAX_RETRIES}): {e}")
-                    time.sleep(delay)
-        raise last_exc
+        return self._request_with_retry("POST", url, api_id, json=body)
 
     def _post_order(self, url: str, api_id: str, body: dict) -> dict:
         """주문 전용 POST 요청 (재시도 없음 — 중복 주문 방지)
 
         주문(매수/매도)은 서버가 처리 후 응답 전 네트워크 끊김 시
         재시도하면 동일 주문이 중복 체결될 위험이 있으므로 단 1회만 시도합니다.
+        단, HTTP 401(토큰 만료)은 토큰 갱신 후 1회 재시도합니다.
 
         Args:
             url: 요청 URL
@@ -267,6 +269,16 @@ class KiwoomRestClient:
             json=body,
             timeout=10,
         )
+        if resp.status_code == 401:
+            logger.warning("주문 중 401 수신 — 토큰 강제 갱신 후 1회 재시도")
+            self._token = None
+            self._token_expires_at = None
+            resp = requests.post(
+                url,
+                headers=self._headers(api_id),
+                json=body,
+                timeout=10,
+            )
         resp.raise_for_status()
         return resp.json()
 
@@ -387,7 +399,7 @@ class KiwoomRestClient:
             "acnt_no": self.account_no,
         }
         try:
-            data = self._post_with_retry(url, "kt10002", body)
+            data = self._post_order(url, "kt10002", body)
             logger.info(f"주문 취소: {orig_order_no} → {data.get('return_msg')}")
             return data
         except Exception as e:

@@ -211,33 +211,60 @@ class DartClient:
             f"(캐시 히트: {len(tickers) - len(missing)}개)"
         )
 
-        # alotMatter API 개별 호출
+        # alotMatter API 병렬 호출 (ThreadPoolExecutor)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
         fetched = 0
         total = len(missing)
+        rate_semaphore = threading.Semaphore(2)  # 초당 최대 2개 요청
+
+        def _rate_limited_fetch(ticker: str) -> tuple[str, Optional[float]]:
+            """Rate-limited 단일 종목 DPS 조회"""
+            corp_code = self.corp_code_map.get(ticker)
+            if not corp_code:
+                return ticker, None
+            rate_semaphore.acquire()
+            try:
+                dps = self._fetch_dps_single(corp_code, bsns_year, reprt_code)
+                return ticker, dps
+            finally:
+                # 0.5초 후 세마포어 해제 (초당 요청 수 제한)
+                threading.Timer(0.5, rate_semaphore.release).start()
+
         pbar = tqdm(
-            missing,
+            total=total,
             desc=f"[{bsns_year}] DPS 조회",
             unit="종목",
             bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]",
         )
-        for i, ticker in enumerate(pbar):
-            corp_code = self.corp_code_map.get(ticker)
-            if not corp_code:
-                continue
+        completed = 0
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {
+                executor.submit(_rate_limited_fetch, ticker): ticker
+                for ticker in missing
+            }
+            for future in as_completed(futures):
+                try:
+                    ticker, dps = future.result()
+                    year_cache[ticker] = dps if dps is not None else 0.0
+                    if dps is not None and dps > 0:
+                        result[ticker] = dps
+                        fetched += 1
+                except Exception:
+                    logger.warning(
+                        f"DPS 조회 실패: {futures[future]}", exc_info=True
+                    )
 
-            dps = self._fetch_dps_single(corp_code, bsns_year, reprt_code)
-            year_cache[ticker] = dps if dps is not None else 0.0
-            if dps is not None and dps > 0:
-                result[ticker] = dps
-                fetched += 1
+                completed += 1
+                pbar.update(1)
+                pbar.set_postfix(유효=fetched, refresh=False)
 
-            pbar.set_postfix(유효=fetched, refresh=False)
+                if completed % 50 == 0:
+                    self.dps_cache[cache_key] = year_cache
+                    self._save_dps_cache()
 
-            if (i + 1) % 50 == 0:
-                self.dps_cache[cache_key] = year_cache
-                self._save_dps_cache()
-
-            time.sleep(self.delay)
+        pbar.close()
 
         # 캐시 저장
         self.dps_cache[cache_key] = year_cache

@@ -501,12 +501,12 @@ class TestVolatilityFilter:
         dates = pd.bdate_range("2023-01-01", periods=n_days)
         return pd.DataFrame({"close": prices}, index=dates)
 
-    def test_high_vol_excluded(self) -> None:
+    def test_high_vol_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """고변동성 종목이 제외되는지 확인"""
         from config.settings import settings
 
-        settings.volatility.filter_enabled = True
-        settings.volatility.max_percentile = 60.0  # 상위 40% 제외 (엄격)
+        monkeypatch.setattr(settings.volatility, "filter_enabled", True)
+        monkeypatch.setattr(settings.volatility, "max_percentile", 60.0)  # 상위 40% 제외 (엄격)
 
         # A: 낮은 변동성, B: 높은 변동성, C: 중간
         def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
@@ -520,18 +520,13 @@ class TestVolatilityFilter:
 
         assert "A" in result  # 낮은 변동성 — 통과
         assert "B" not in result  # 높은 변동성 — 제외
-        # 복원
-        settings.volatility.max_percentile = 80.0
 
-    def test_all_pass_when_disabled(self) -> None:
+    def test_all_pass_when_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """비활성화 시 전체 통과"""
         from config.settings import settings
 
-        settings.volatility.filter_enabled = False
-        # filter_enabled=False이면 screener.screen()에서 아예 호출 안함
-        # 직접 호출 시에도 정상 동작 확인
-        settings.volatility.filter_enabled = True
-        settings.volatility.max_percentile = 100.0  # 100% = 아무도 제외 안함
+        monkeypatch.setattr(settings.volatility, "filter_enabled", True)
+        monkeypatch.setattr(settings.volatility, "max_percentile", 100.0)  # 100% = 아무도 제외 안함
 
         def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
             return self._make_ohlcv(0.05)
@@ -541,18 +536,17 @@ class TestVolatilityFilter:
 
         result = self.screener._apply_volatility_filter(["A", "B", "C"], "20240101")
         assert len(result) == 3
-        settings.volatility.max_percentile = 80.0
 
     def test_empty_tickers(self) -> None:
         """빈 종목 리스트"""
         result = self.screener._apply_volatility_filter([], "20240101")
         assert result == []
 
-    def test_no_data_tickers_preserved(self) -> None:
+    def test_no_data_tickers_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """데이터 없는 종목은 유지 (제외하지 않음)"""
         from config.settings import settings
 
-        settings.volatility.filter_enabled = True
+        monkeypatch.setattr(settings.volatility, "filter_enabled", True)
 
         def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
             if ticker == "B":
@@ -565,11 +559,11 @@ class TestVolatilityFilter:
         result = self.screener._apply_volatility_filter(["A", "B", "C"], "20240101")
         assert "B" in result  # 데이터 없는 종목은 유지
 
-    def test_insufficient_data_preserved(self) -> None:
+    def test_insufficient_data_preserved(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """데이터 부족 종목은 유지"""
         from config.settings import settings
 
-        settings.volatility.filter_enabled = True
+        monkeypatch.setattr(settings.volatility, "filter_enabled", True)
 
         def mock_ohlcv(ticker: str, start: str, end: str) -> pd.DataFrame:
             if ticker == "SHORT":

@@ -13,6 +13,26 @@ import sys
 
 DB_PATH = "data/quant.db"
 
+ALLOWED_TABLES = {
+    "daily_price", "fundamental", "market_cap",
+    "factor_score", "portfolio", "trade",
+}
+ALLOWED_COLUMNS = {"eps", "bps", "per", "pbr", "div"}
+
+
+def _validate_table(table: str) -> str:
+    """테이블명 화이트리스트 검증"""
+    if table not in ALLOWED_TABLES:
+        raise ValueError(f"허용되지 않은 테이블: {table}")
+    return table
+
+
+def _validate_column(col: str) -> str:
+    """컬럼명 화이트리스트 검증"""
+    if col not in ALLOWED_COLUMNS:
+        raise ValueError(f"허용되지 않은 컬럼: {col}")
+    return col
+
 
 def show_summary(cur: sqlite3.Cursor) -> None:
     """전체 데이터 요약"""
@@ -31,11 +51,12 @@ def show_summary(cur: sqlite3.Cursor) -> None:
 
     for table, desc in tables.items():
         try:
-            cur.execute(f"SELECT COUNT(*) FROM {table}")
+            safe_table = _validate_table(table)
+            cur.execute(f"SELECT COUNT(*) FROM {safe_table}")
             count = cur.fetchone()[0]
             if count > 0:
                 cur.execute(
-                    f"SELECT MIN(date), MAX(date), COUNT(DISTINCT ticker) FROM {table}"
+                    f"SELECT MIN(date), MAX(date), COUNT(DISTINCT ticker) FROM {safe_table}"
                 )
                 row = cur.fetchone()
                 print(
@@ -61,7 +82,8 @@ def show_summary(cur: sqlite3.Cursor) -> None:
             ("pbr", "PBR"),
             ("div", "DIV"),
         ]:
-            cur.execute(f"SELECT COUNT(*) FROM fundamental WHERE {col} IS NOT NULL")
+            safe_col = _validate_column(col)
+            cur.execute(f"SELECT COUNT(*) FROM fundamental WHERE {safe_col} IS NOT NULL")
             valid = cur.fetchone()[0]
             bar = "#" * int(valid / max(total, 1) * 30)
             print(f"    {label}: {valid:>7,} / {total:,} ({valid/max(total,1)*100:5.1f}%) {bar}")

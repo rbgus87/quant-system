@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     event,
+    text,
 )
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -167,6 +168,57 @@ class DataStorage:
         logger.info(f"DB 연결: {path}")
 
     # ───────────────────────────────────────────────
+    # 내부 헬퍼
+    # ───────────────────────────────────────────────
+
+    def _upsert(
+        self,
+        model: type[Base],
+        rows: list[dict],
+        conflict_cols: list[str],
+        update_cols: list[str],
+    ) -> None:
+        """공통 upsert 실행
+
+        Args:
+            model: SQLAlchemy ORM 모델 클래스
+            rows: 삽입할 딕셔너리 리스트
+            conflict_cols: 충돌 판단 컬럼 (index_elements)
+            update_cols: 충돌 시 갱신할 컬럼
+        """
+        with self.SessionLocal() as session:
+            stmt = sqlite_insert(model).values(rows)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=conflict_cols,
+                set_={col: getattr(stmt.excluded, col) for col in update_cols},
+            )
+            session.execute(stmt)
+            session.commit()
+
+    def _df_to_rows(
+        self,
+        df: pd.DataFrame,
+        dt: date,
+        columns: list[str],
+        index_name: str = "ticker",
+    ) -> list[dict]:
+        """DataFrame을 rows 딕셔너리 리스트로 변환
+
+        Args:
+            df: 변환할 DataFrame (index가 ticker 등)
+            dt: 기준 날짜 (date 컬럼으로 추가)
+            columns: 추출할 컬럼 리스트 (index_name, date 포함)
+            index_name: reset_index 후 첫 컬럼에 부여할 이름
+
+        Returns:
+            딕셔너리 리스트
+        """
+        tmp = df.reset_index()
+        tmp = tmp.rename(columns={tmp.columns[0]: index_name})
+        tmp["date"] = dt
+        return tmp[columns].to_dict("records")
+
+    # ───────────────────────────────────────────────
     # 일별 가격
     # ───────────────────────────────────────────────
 
@@ -189,20 +241,11 @@ class DataStorage:
         tmp["date"] = pd.to_datetime(tmp["date"]).dt.date
         rows = tmp[["ticker", "date", "open", "high", "low", "close", "volume"]].to_dict("records")
 
-        with self.SessionLocal() as session:
-            stmt = sqlite_insert(DailyPrice).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["ticker", "date"],
-                set_={
-                    "open": stmt.excluded.open,
-                    "high": stmt.excluded.high,
-                    "low": stmt.excluded.low,
-                    "close": stmt.excluded.close,
-                    "volume": stmt.excluded.volume,
-                },
-            )
-            session.execute(stmt)
-            session.commit()
+        self._upsert(
+            DailyPrice, rows,
+            conflict_cols=["ticker", "date"],
+            update_cols=["open", "high", "low", "close", "volume"],
+        )
 
         logger.debug(f"일별 가격 저장: {ticker} ({len(rows)}건)")
         return len(rows)
@@ -236,8 +279,6 @@ class DataStorage:
             params["ed"] = str(end_date)
         sql += " ORDER BY date"
 
-        from sqlalchemy import text
-
         with self.engine.connect() as conn:
             df = pd.read_sql(text(sql), conn, params=params, parse_dates=["date"])
 
@@ -256,8 +297,6 @@ class DataStorage:
         Returns:
             해당 날짜에 저장된 종목 수
         """
-        from sqlalchemy import text
-
         with self.engine.connect() as conn:
             result = conn.execute(
                 text("SELECT COUNT(*) FROM daily_price WHERE date = :dt"),
@@ -293,20 +332,11 @@ class DataStorage:
                 tmp[new] = None
         rows = tmp[["ticker", "date", "bps", "per", "pbr", "eps", "div"]].to_dict("records")
 
-        with self.SessionLocal() as session:
-            stmt = sqlite_insert(Fundamental).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["ticker", "date"],
-                set_={
-                    "bps": stmt.excluded.bps,
-                    "per": stmt.excluded.per,
-                    "pbr": stmt.excluded.pbr,
-                    "eps": stmt.excluded.eps,
-                    "div": stmt.excluded.div,
-                },
-            )
-            session.execute(stmt)
-            session.commit()
+        self._upsert(
+            Fundamental, rows,
+            conflict_cols=["ticker", "date"],
+            update_cols=["bps", "per", "pbr", "eps", "div"],
+        )
 
         logger.info(f"기본 지표 저장: {dt} ({len(rows)}건)")
         return len(rows)
@@ -320,23 +350,17 @@ class DataStorage:
         Returns:
             DataFrame(index=ticker, columns=[BPS, PER, PBR, EPS, DIV])
         """
-        with self.SessionLocal() as session:
-            rows = [
-                {
-                    "ticker": r.ticker,
-                    "BPS": r.bps,
-                    "PER": r.per,
-                    "PBR": r.pbr,
-                    "EPS": r.eps,
-                    "DIV": r.div,
-                }
-                for r in session.query(Fundamental).filter_by(date=dt).all()
-            ]
+        sql = (
+            "SELECT ticker, bps AS BPS, per AS PER, pbr AS PBR, eps AS EPS, div AS DIV "
+            "FROM fundamental WHERE date = :dt"
+        )
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params={"dt": str(dt)})
 
-        if not rows:
+        if df.empty:
             return pd.DataFrame()
 
-        return pd.DataFrame(rows).set_index("ticker")
+        return df.set_index("ticker")
 
     # ───────────────────────────────────────────────
     # 시가총액
@@ -355,22 +379,16 @@ class DataStorage:
         if df.empty:
             return 0
 
-        tmp = df.reset_index()
-        tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
-        tmp["date"] = dt
-        rows = tmp[["ticker", "date", "market_cap", "shares"]].to_dict("records")
+        rows = self._df_to_rows(
+            df, dt,
+            columns=["ticker", "date", "market_cap", "shares"],
+        )
 
-        with self.SessionLocal() as session:
-            stmt = sqlite_insert(MarketCap).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["ticker", "date"],
-                set_={
-                    "market_cap": stmt.excluded.market_cap,
-                    "shares": stmt.excluded.shares,
-                },
-            )
-            session.execute(stmt)
-            session.commit()
+        self._upsert(
+            MarketCap, rows,
+            conflict_cols=["ticker", "date"],
+            update_cols=["market_cap", "shares"],
+        )
 
         logger.info(f"시가총액 저장: {dt} ({len(rows)}건)")
         return len(rows)
@@ -384,20 +402,17 @@ class DataStorage:
         Returns:
             DataFrame(index=ticker, columns=[market_cap, shares])
         """
-        with self.SessionLocal() as session:
-            rows = [
-                {
-                    "ticker": r.ticker,
-                    "market_cap": r.market_cap,
-                    "shares": r.shares,
-                }
-                for r in session.query(MarketCap).filter_by(date=dt).all()
-            ]
+        sql = (
+            "SELECT ticker, market_cap, shares "
+            "FROM market_cap WHERE date = :dt"
+        )
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params={"dt": str(dt)})
 
-        if not rows:
+        if df.empty:
             return pd.DataFrame()
 
-        return pd.DataFrame(rows).set_index("ticker")
+        return df.set_index("ticker")
 
     # ───────────────────────────────────────────────
     # 일별 가격 (벌크)
@@ -421,8 +436,6 @@ class DataStorage:
         """
         if not tickers:
             return pd.DataFrame()
-
-        from sqlalchemy import text
 
         # SQLite IN clause 변수 제한 (기본 999) 대응: 청크 분할
         chunk_size = 900
@@ -470,25 +483,16 @@ class DataStorage:
         if df.empty:
             return 0
 
-        tmp = df.reset_index()
-        tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
-        tmp["date"] = dt
-        rows = tmp[["ticker", "date", "open", "high", "low", "close", "volume"]].to_dict("records")
+        rows = self._df_to_rows(
+            df, dt,
+            columns=["ticker", "date", "open", "high", "low", "close", "volume"],
+        )
 
-        with self.SessionLocal() as session:
-            stmt = sqlite_insert(DailyPrice).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["ticker", "date"],
-                set_={
-                    "open": stmt.excluded.open,
-                    "high": stmt.excluded.high,
-                    "low": stmt.excluded.low,
-                    "close": stmt.excluded.close,
-                    "volume": stmt.excluded.volume,
-                },
-            )
-            session.execute(stmt)
-            session.commit()
+        self._upsert(
+            DailyPrice, rows,
+            conflict_cols=["ticker", "date"],
+            update_cols=["open", "high", "low", "close", "volume"],
+        )
 
         logger.info(f"일별 가격 일괄 저장: {dt} ({len(rows)}건)")
         return len(rows)
@@ -510,24 +514,16 @@ class DataStorage:
         if df.empty:
             return 0
 
-        tmp = df.reset_index()
-        tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
-        tmp["date"] = dt
-        rows = tmp[["ticker", "date", "value_score", "momentum_score", "quality_score", "composite_score"]].to_dict("records")
+        rows = self._df_to_rows(
+            df, dt,
+            columns=["ticker", "date", "value_score", "momentum_score", "quality_score", "composite_score"],
+        )
 
-        with self.SessionLocal() as session:
-            stmt = sqlite_insert(FactorScore).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["ticker", "date"],
-                set_={
-                    "value_score": stmt.excluded.value_score,
-                    "momentum_score": stmt.excluded.momentum_score,
-                    "quality_score": stmt.excluded.quality_score,
-                    "composite_score": stmt.excluded.composite_score,
-                },
-            )
-            session.execute(stmt)
-            session.commit()
+        self._upsert(
+            FactorScore, rows,
+            conflict_cols=["ticker", "date"],
+            update_cols=["value_score", "momentum_score", "quality_score", "composite_score"],
+        )
 
         logger.info(f"팩터 스코어 저장: {dt} ({len(rows)}건)")
         return len(rows)
@@ -553,18 +549,11 @@ class DataStorage:
         tmp["rebalance_date"] = rebalance_date
         rows = tmp[["rebalance_date", "ticker", "name", "weight", "composite_score"]].to_dict("records")
 
-        with self.SessionLocal() as session:
-            stmt = sqlite_insert(Portfolio).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["ticker", "rebalance_date"],
-                set_={
-                    "name": stmt.excluded.name,
-                    "weight": stmt.excluded.weight,
-                    "composite_score": stmt.excluded.composite_score,
-                },
-            )
-            session.execute(stmt)
-            session.commit()
+        self._upsert(
+            Portfolio, rows,
+            conflict_cols=["ticker", "rebalance_date"],
+            update_cols=["name", "weight", "composite_score"],
+        )
 
         logger.info(f"포트폴리오 저장: {rebalance_date} ({len(rows)}건)")
         return len(rows)

@@ -77,7 +77,7 @@ class TelegramNotifier:
                     return True
                 elif resp.status_code == 429:
                     # Rate limit — Retry-After 헤더 존재 시 대기
-                    retry_after = int(resp.headers.get("Retry-After", 5))
+                    retry_after = min(int(resp.headers.get("Retry-After", 5)), 10)
                     logger.warning(
                         f"텔레그램 Rate Limit, {retry_after}초 대기 "
                         f"(시도 {attempt + 1}/{max_retries})"
@@ -202,7 +202,6 @@ class TelegramNotifier:
         cash = balance.get("cash", 0)
         total_eval = balance.get("total_eval_amount", 0)
         total_profit = balance.get("total_profit", 0)
-        initial_cash = settings.trading.max_drawdown_pct  # fallback
         # 원금은 평가-손익으로 역산
         invested = total_eval - total_profit if total_profit else total_eval
 
@@ -285,20 +284,23 @@ class TelegramNotifier:
 
     # ── peak / prev value 추적 (MDD + 당일수익률) ──
 
-    PEAK_VALUE_PATH = "data/peak_value.json"
+    @property
+    def _peak_value_path(self) -> str:
+        mode = "paper" if settings.is_paper_trading else "live"
+        return f"data/peak_value_{mode}.json"
 
     def _load_peak_value(self) -> float:
         """고점 값 로드"""
         try:
-            data = json.loads(Path(self.PEAK_VALUE_PATH).read_text())
-            return float(data.get("peak", 0))
+            data = json.loads(Path(self._peak_value_path).read_text())
+            return float(data.get("peak_value") or data.get("peak") or 0)
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             return 0.0
 
     def _load_prev_value(self) -> float:
         """전일 평가금액 로드"""
         try:
-            data = json.loads(Path(self.PEAK_VALUE_PATH).read_text())
+            data = json.loads(Path(self._peak_value_path).read_text())
             return float(data.get("prev_value", 0))
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             return 0.0
@@ -306,8 +308,8 @@ class TelegramNotifier:
     def _save_peak_value(self, peak: float, current: float) -> None:
         """고점 + 현재값 저장"""
         try:
-            Path(self.PEAK_VALUE_PATH).write_text(
-                json.dumps({"peak": peak, "prev_value": current})
+            Path(self._peak_value_path).write_text(
+                json.dumps({"peak_value": peak, "prev_value": current})
             )
         except Exception as e:
             logger.error(f"peak_value 저장 실패: {e}")

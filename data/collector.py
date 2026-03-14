@@ -679,7 +679,17 @@ class KRXDataCollector:
         if ticker in self._ticker_names:
             return self._ticker_names[ticker]
         try:
-            name = stock.get_market_ticker_name(ticker)
+            # pykrx 내부 버그: 상폐 종목 조회 실패 시 logging.info(args, kwargs)를
+            # 잘못 호출하여 "--- Logging error ---"가 stderr에 출력됨.
+            # 이를 억제하기 위해 일시적으로 stderr를 /dev/null로 리다이렉트.
+            import io
+            import sys
+            old_stderr = sys.stderr
+            sys.stderr = io.StringIO()
+            try:
+                name = stock.get_market_ticker_name(ticker)
+            finally:
+                sys.stderr = old_stderr
             self._ticker_names[ticker] = name or ticker
         except Exception:
             self._ticker_names[ticker] = ticker
@@ -851,8 +861,10 @@ class ReturnCalculator:
                     remaining, sd, ed
                 )
                 if not bulk_df2.empty:
+                    bulk_df2["date"] = pd.to_datetime(bulk_df2["date"])
                     bulk_df2 = bulk_df2.sort_values(["ticker", "date"])
                     filled = 0
+                    remaining_set = set(remaining)
                     for ticker, group in bulk_df2.groupby("ticker"):
                         if len(group) < 2:
                             continue
@@ -860,8 +872,9 @@ class ReturnCalculator:
                         ep = group["close"].iloc[-1]
                         if sp > 0:
                             results[str(ticker)] = float(ep / sp - 1)
-                            remaining.remove(str(ticker))
+                            remaining_set.discard(str(ticker))
                             filled += 1
+                    remaining = list(remaining_set)
                     logger.info(
                         f"모멘텀 벌크 프리페치 완료: {filled}개 성공, "
                         f"{len(remaining)}개 미스"
@@ -890,3 +903,125 @@ class ReturnCalculator:
 
         logger.info(f"수익률 계산 완료: {len(results)}/{total}개")
         return pd.Series(results, name=f"return_{lookback_months}m")
+
+    def get_returns_multi_period(
+        self,
+        tickers: list[str],
+        base_date: str,
+        lookback_months_list: list[int],
+        skip_months: int = 1,
+    ) -> dict[int, pd.Series]:
+        """여러 기간의 수익률을 단일 DB 조회로 계산
+
+        가장 긴 lookback 기간으로 한 번 조회한 뒤,
+        짧은 기간은 동일 데이터를 슬라이싱하여 계산합니다.
+
+        Args:
+            tickers: 종목코드 리스트
+            base_date: 기준 날짜 (YYYYMMDD)
+            lookback_months_list: 되돌아볼 기간 목록 (예: [12, 6])
+            skip_months: 최근 제외 기간 (월)
+
+        Returns:
+            {lookback_months: Series(index=ticker, values=return_rate)} 매핑
+        """
+        max_lookback = max(lookback_months_list)
+
+        # 가장 긴 기간으로 벌크 데이터 조회
+        base_dt = datetime.strptime(base_date, "%Y%m%d")
+        end_dt = base_dt - relativedelta(months=skip_months)
+        start_dt = base_dt - relativedelta(months=max_lookback)
+        end_str = end_dt.strftime("%Y%m%d")
+        start_str = start_dt.strftime("%Y%m%d")
+        sd = _parse_date(start_str)
+        ed = _parse_date(end_str)
+
+        bulk_df = self.collector.storage.load_daily_prices_bulk(tickers, sd, ed)
+
+        # 기간별 시작일 계산 (pd.Timestamp으로 통일 — DB date 컬럼과 비교 호환)
+        period_starts: dict[int, pd.Timestamp] = {}
+        for months in lookback_months_list:
+            period_starts[months] = pd.Timestamp(base_dt - relativedelta(months=months))
+
+        all_results: dict[int, dict[str, float]] = {
+            m: {} for m in lookback_months_list
+        }
+        remaining: list[str] = []
+
+        if not bulk_df.empty:
+            bulk_df["date"] = pd.to_datetime(bulk_df["date"])
+            bulk_df = bulk_df.sort_values(["ticker", "date"])
+
+            for ticker, group in bulk_df.groupby("ticker"):
+                tk = str(ticker)
+                end_price_row = group.iloc[-1]
+                ep = end_price_row["close"]
+
+                for months in lookback_months_list:
+                    ps = period_starts[months]
+                    period_data = group[group["date"] >= ps]
+                    if len(period_data) < 10:
+                        continue
+                    sp = period_data["close"].iloc[0]
+                    if sp > 0:
+                        all_results[months][tk] = float(ep / sp - 1)
+
+            found = set(bulk_df["ticker"].unique())
+            remaining = [t for t in tickers if t not in found]
+        else:
+            remaining = list(tickers)
+
+        # 프리페치 및 폴백: 가장 긴 기간 기준
+        if remaining:
+            from config.calendar import get_krx_sessions
+
+            sessions = get_krx_sessions(start_str, end_str)
+            if len(sessions) >= 2:
+                first_day = sessions[0].strftime("%Y%m%d")
+                last_day = sessions[-1].strftime("%Y%m%d")
+                self.collector.prefetch_daily_trade(first_day)
+                self.collector.prefetch_daily_trade(last_day)
+
+                bulk_df2 = self.collector.storage.load_daily_prices_bulk(
+                    remaining, sd, ed
+                )
+                if not bulk_df2.empty:
+                    bulk_df2["date"] = pd.to_datetime(bulk_df2["date"])
+                    bulk_df2 = bulk_df2.sort_values(["ticker", "date"])
+                    remaining_set = set(remaining)
+                    for ticker, group in bulk_df2.groupby("ticker"):
+                        tk = str(ticker)
+                        if len(group) < 2:
+                            continue
+                        ep = group["close"].iloc[-1]
+                        for months in lookback_months_list:
+                            ps = period_starts[months]
+                            period_data = group[group["date"] >= ps]
+                            if len(period_data) < 2:
+                                continue
+                            sp = period_data["close"].iloc[0]
+                            if sp > 0:
+                                all_results[months][tk] = float(ep / sp - 1)
+                        remaining_set.discard(tk)
+                    remaining = list(remaining_set)
+
+            # 개별 폴백은 가장 긴 기간으로만 (짧은 기간은 포함됨)
+            if remaining:
+                for ticker in remaining:
+                    for months in lookback_months_list:
+                        ret = self.get_momentum_return(
+                            ticker, base_date, months, skip_months
+                        )
+                        if ret is not None:
+                            all_results[months][ticker] = ret
+
+        output: dict[int, pd.Series] = {}
+        for months in lookback_months_list:
+            output[months] = pd.Series(
+                all_results[months], name=f"return_{months}m"
+            )
+            logger.info(
+                f"수익률 계산 완료 ({months}M): "
+                f"{len(all_results[months])}/{len(tickers)}개"
+            )
+        return output

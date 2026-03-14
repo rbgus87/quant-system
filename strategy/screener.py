@@ -165,12 +165,12 @@ class MultiFactorScreener:
                 quality_score = self.quality_factor.calculate(filtered_fund)
 
             # 모멘텀 (멀티기간: 12M 60% + 6M 30% + 3M 10%)
-            returns_12m = self.return_calc.get_returns_for_universe(
-                tickers, date, lookback_months=12, skip_months=1
+            # 12M 데이터로 한 번 조회 후 6M은 슬라이싱으로 재사용
+            multi_returns = self.return_calc.get_returns_multi_period(
+                tickers, date, lookback_months_list=[12, 6], skip_months=1
             )
-            returns_6m = self.return_calc.get_returns_for_universe(
-                tickers, date, lookback_months=6, skip_months=1
-            )
+            returns_12m = multi_returns[12]
+            returns_6m = multi_returns[6]
 
             # 듀얼 모멘텀: 절대 모멘텀 필터 (하락장 방어, 12M 기준)
             if settings.momentum.absolute_momentum_enabled:
