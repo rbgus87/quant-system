@@ -102,172 +102,64 @@ class TelegramNotifier:
 
 ## 7-2. scheduler/main.py
 
+> 아래는 현재 구현의 핵심 구조를 요약한 것입니다. 전체 코드는 `scheduler/main.py`를 참조하세요.
+
+### 실행 모드
+
+```bash
+python scheduler/main.py              # 스케줄러 상주 실행
+python scheduler/main.py --dry-run    # 설정만 확인 (실행 안 함)
+python scheduler/main.py --now        # 월말 체크 무시, 즉시 리밸런싱 1회
+python scheduler/main.py --screen-only # 스크리닝만 실행 (매매 없이 종목 목록 확인)
+```
+
+### 스케줄 (3개 작업)
+
+| 시간 | 작업 | 함수 | 설명 |
+|------|------|------|------|
+| 08:50 | 월말 리밸런싱 | `run_monthly_rebalancing()` | 월말 영업일에만 실행 |
+| 15:15 | 일별 방어 체크 | `run_daily_defense_check()` | MDD 서킷브레이커 + 트레일링 스톱 |
+| 15:35 | 일별 리포트 | `run_daily_report()` | 장 마감 후 상세 수익 리포트 |
+
+### KRX 영업일 캘린더
+
+`config/calendar.py` 기반으로 한국 공휴일을 인식합니다:
+
 ```python
-# scheduler/main.py
-"""
-자동매매 스케줄러 (APScheduler 3.x 기반)
-
-실행:
-  python scheduler/main.py
-
-스케줄:
-  - 매 영업일 08:50  → 월말이면 리밸런싱 신호 계산 실행
-  - 매 영업일 15:35  → 일별 수익 리포트 발송
-"""
-import logging
-from datetime import datetime
-
-import pandas as pd
-from apscheduler.schedulers.blocking import BlockingScheduler
-
-from config.logging_config import setup_logging
-from config.settings import settings
-from trading.kiwoom_api import KiwoomRestClient
-from trading.order import OrderExecutor
-from notify.telegram import TelegramNotifier
-
-setup_logging()
-logger = logging.getLogger(__name__)
-
-
-# ────────────────────────────────────────────
-# 유틸리티
-# ────────────────────────────────────────────
+from config.calendar import is_krx_business_day, is_last_krx_business_day_of_month
 
 def is_business_day() -> bool:
-    """오늘이 주중 영업일인지 확인 (공휴일 미처리 → 추후 workalendar 도입 가능)"""
-    return datetime.now().weekday() < 5  # 0=월 ~ 4=금
-
+    return is_krx_business_day()
 
 def is_last_business_day_of_month() -> bool:
-    """
-    오늘이 이번 달 마지막 영업일인지 확인
-
-    pd.offsets.BMonthEnd(0): 현재 날짜를 기준으로 이번 달 마지막 영업일 반환
-    (당일이 영업일이면 당일, 아니면 직전 영업일)
-    """
-    today = pd.Timestamp.today().normalize()
-    last_bday = today + pd.offsets.BMonthEnd(0)
-    return today == last_bday
-
-
-# ────────────────────────────────────────────
-# 작업 함수
-# ────────────────────────────────────────────
-
-def run_monthly_rebalancing():
-    """
-    월말 리밸런싱 실행
-    - 영업일이 아니거나 월말이 아니면 스킵
-    - 신호 계산 시점: T (월말 영업일)
-    - 주문 실행 시점: T+1 시가 (실제 주문 → 다음날 시장가)
-    """
-    if not is_business_day() or not is_last_business_day_of_month():
-        return
-
-    logger.info("=" * 50)
-    logger.info("월말 리밸런싱 시작")
-    notifier = TelegramNotifier()
-    notifier.send("🔄 월말 리밸런싱을 시작합니다...")
-
-    try:
-        from strategy.screener import MultiFactorScreener   # 순환 임포트 방지
-
-        api = KiwoomRestClient()
-        screener = MultiFactorScreener()
-        executor = OrderExecutor()
-
-        # ① 새 포트폴리오 계산
-        today_str = datetime.now().strftime("%Y%m%d")
-        new_portfolio = screener.get_portfolio(today_str)
-        logger.info(f"신규 포트폴리오: {len(new_portfolio)}개 종목")
-
-        # ② 현재 보유 종목 조회
-        balance = api.get_balance()
-        current_holdings = [h["ticker"] for h in balance["holdings"] if h["qty"] > 0]
-        total_value = balance.get("total_eval_amount", 0)
-
-        # ③ 리밸런싱 주문 실행
-        sell_done, buy_done = executor.execute_rebalancing(current_holdings, new_portfolio)
-
-        # ④ 결과 알림
-        updated_balance = api.get_balance()
-        notifier.send_rebalancing_report(
-            sell_done=sell_done,
-            buy_done=buy_done,
-            total_value=updated_balance.get("total_eval_amount", total_value),
-            sell_total=len([t for t in current_holdings if t not in new_portfolio]),
-            buy_total=len([t for t in new_portfolio if t not in current_holdings]),
-        )
-        logger.info("월말 리밸런싱 완료")
-
-    except Exception as e:
-        logger.error(f"리밸런싱 오류: {e}", exc_info=True)
-        notifier.send_error(str(e))
-
-
-def run_daily_report():
-    """장 마감 후 일별 수익 리포트 발송"""
-    if not is_business_day():
-        return
-
-    notifier = TelegramNotifier()
-    try:
-        api = KiwoomRestClient()   # ← KISApiClient 아님 (수정됨)
-        balance = api.get_balance()
-        total_value = balance.get("total_eval_amount", 0)
-
-        # 단순 수익률은 DB에서 어제 총자산과 비교해야 정확
-        # 여기서는 간단히 오늘 총자산만 리포트
-        notifier.send(
-            f"📊 *일별 리포트*\n\n"
-            f"총 평가금액: `{total_value:,.0f}원`\n"
-            f"보유 종목: `{len(balance['holdings'])}개`"
-        )
-    except Exception as e:
-        logger.error(f"일별 리포트 오류: {e}")
-        notifier.send_error(str(e))
-
-
-# ────────────────────────────────────────────
-# 스케줄러 설정 및 실행
-# ────────────────────────────────────────────
-
-if __name__ == "__main__":
-    # ⚠️ IS_PAPER_TRADING 확인
-    if not settings.is_paper_trading:
-        logger.warning("⚠️⚠️⚠️  실전투자 모드입니다! 신중하게 진행하세요  ⚠️⚠️⚠️")
-
-    scheduler = BlockingScheduler(timezone="Asia/Seoul")
-
-    # 매 영업일 08:50 — 리밸런싱 신호 확인 (월말이면 실행)
-    scheduler.add_job(
-        run_monthly_rebalancing,
-        trigger="cron",
-        day_of_week="mon-fri",
-        hour=8,
-        minute=50,
-        id="monthly_rebalancing",
-    )
-
-    # 매 영업일 15:35 — 일별 리포트 (장 마감 15:30 이후)
-    scheduler.add_job(
-        run_daily_report,
-        trigger="cron",
-        day_of_week="mon-fri",
-        hour=15,
-        minute=35,
-        id="daily_report",
-    )
-
-    logger.info("스케줄러 시작 (Ctrl+C로 종료)")
-    TelegramNotifier().send("🚀 퀀트 스케줄러가 시작되었습니다.")
-
-    try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("스케줄러 종료")
+    return is_last_krx_business_day_of_month()
 ```
+
+### 리밸런싱 흐름 (`_execute_rebalancing_core`)
+
+```
+잔고 조회 → 잔고 검증 (0원 감지) → 고정 금액 모드 체크
+  → 서킷브레이커 재진입 확인
+  → 스크리닝 (MultiFactorScreener.screen)
+  → 팩터 스코어 + 포트폴리오 DB 저장
+  → 시장 레짐 필터 (invest_ratio 산출)
+  → 변동성 타겟팅 (vol_scale 산출)
+  → 최종 투자 비중 = invest_ratio × vol_scale
+  → 리밸런싱 주문 실행
+  → 텔레그램 결과 알림
+```
+
+### systemd 서비스 등록 (서버 배포 시)
+
+```ini
+[Service]
+Type=simple
+ExecStart=/opt/quant-system/venv/bin/python scheduler/main.py
+Restart=always
+RestartSec=30
+```
+
+상세 배포 가이드: `docs/13_oracle_cloud_deployment.md` 참조
 
 ---
 

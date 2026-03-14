@@ -146,9 +146,10 @@
   ■ Fundamentals 없을 시 모멘텀 전용 폴백 모드
 
 ■ scheduler/main.py 작성
-  ■ APScheduler + KRX 캘린더 통합
-  ■ 08:50 월말 리밸런싱 / 15:35 일별 리포트
-  ■ --dry-run 모드 지원
+  ■ APScheduler + KRX 캘린더 통합 (config/calendar.py 기반 한국 공휴일 인식)
+  ■ 08:50 월말 리밸런싱 / 15:15 일별 방어 체크 (MDD 서킷브레이커 + 트레일링 스톱) / 15:35 일별 리포트
+  ■ --dry-run, --now (즉시 리밸런싱), --screen-only (스크리닝만) 모드 지원
+  ■ 리밸런싱: 잔고 검증 → 서킷브레이커 재진입 → 스크리닝 → 시장 레짐 → 변동성 타겟팅 → 주문
 
 ■ dashboard/app.py 작성
   ■ Streamlit KPI + 보유종목 + 손익 차트
