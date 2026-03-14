@@ -6,7 +6,6 @@ from trading.order import (
     OrderExecutor,
     BalanceValidationError,
     TurnoverLimitExceeded,
-    DrawdownCircuitBreaker,
 )
 
 
@@ -28,10 +27,18 @@ def executor(mock_api):
         mock_settings.trading.max_position_pct = 0.10
         mock_settings.trading.max_turnover_pct = 0.50
         mock_settings.trading.max_drawdown_pct = 0.30
+        mock_settings.trading.trailing_stop_pct = 0.20
         with patch("trading.order.KiwoomRestClient", return_value=mock_api):
             with patch.object(OrderExecutor, "_load_peak_value", return_value=0):
                 ex = OrderExecutor()
     return ex
+
+
+def _no_stop_balance(**overrides) -> dict:
+    """트레일링 스톱 미발동 잔고 (avg_price 없거나 손실 범위 내)"""
+    base = {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0}
+    base.update(overrides)
+    return base
 
 
 class TestCalculateOrders:
@@ -107,12 +114,13 @@ class TestBalanceValidation:
 
     def test_balance_validation_in_rebalancing(self, executor, mock_api) -> None:
         """리밸런싱 중 잔고 검증 실패 시 BalanceValidationError 발생"""
-        mock_api.get_balance.return_value = {
+        bad_balance = {
             "holdings": [{"ticker": "005930", "qty": 100}, {"ticker": "000660", "qty": 50}],
             "cash": 0,
             "total_eval_amount": 0,
             "total_profit": 0,
         }
+        mock_api.get_balance.return_value = bad_balance
         with pytest.raises(BalanceValidationError):
             # 매도 1/2 = 50% → 턴오버 통과, 잔고 검증에서 실패
             executor.execute_rebalancing(
@@ -139,7 +147,7 @@ class TestTurnoverLimit:
 
     def test_full_turnover_blocked(self, executor, mock_api) -> None:
         """100% 교체 시 리밸런싱 차단"""
-        mock_api.get_balance.return_value = {
+        balance = {
             "holdings": [
                 {"ticker": f"T{i:04d}", "qty": 100} for i in range(10)
             ],
@@ -147,6 +155,7 @@ class TestTurnoverLimit:
             "total_eval_amount": 50000000,
             "total_profit": 0,
         }
+        mock_api.get_balance.return_value = balance
         with pytest.raises(TurnoverLimitExceeded):
             executor.execute_rebalancing(
                 current_holdings=[f"T{i:04d}" for i in range(10)],
@@ -161,6 +170,15 @@ class TestExecuteRebalancing:
     def test_sell_before_buy(self, mock_sleep, executor, mock_api) -> None:
         """매도가 매수보다 먼저 실행"""
         mock_api.get_balance.side_effect = [
+            # ⓪ 트레일링 스톱 체크 (avg_price 없음 → 스톱 미발동)
+            _no_stop_balance(
+                holdings=[
+                    {"ticker": "005930", "qty": 100},
+                    {"ticker": "035720", "qty": 50},
+                ],
+                cash=1000000,
+                total_eval_amount=8000000,
+            ),
             # ① 매도 전 잔고 확인 (2종목 보유, 1개 매도 = 50%)
             {
                 "holdings": [
@@ -201,6 +219,7 @@ class TestExecuteRebalancing:
     def test_buy_uses_99_percent_cash(self, executor, mock_api) -> None:
         """매수 시 예수금의 99%만 사용"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
             {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
             {
                 "holdings": [],
@@ -226,6 +245,7 @@ class TestExecuteRebalancing:
     def test_no_buy_when_zero_price(self, executor, mock_api) -> None:
         """현재가 0이면 매수 스킵"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
             {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
             {
                 "holdings": [],
@@ -249,6 +269,12 @@ class TestExecuteRebalancing:
     ) -> None:
         """목표 포트폴리오 비어있으면 전량 매도 (턴오버 50% 이내인 경우)"""
         mock_api.get_balance.side_effect = [
+            # ⓪ 트레일링 스톱 체크
+            _no_stop_balance(
+                holdings=[{"ticker": "005930", "qty": 100}],
+                cash=1000000,
+                total_eval_amount=10000000,
+            ),
             # ① 매도 전
             {
                 "holdings": [
@@ -279,15 +305,22 @@ class TestExecuteRebalancing:
     @patch("time.sleep")
     def test_sell_failure_continues(self, mock_sleep, executor, mock_api) -> None:
         """매도 실패해도 나머지 계속 실행 (턴오버 50% 이내)"""
+        holdings_4 = [
+            {"ticker": "005930", "qty": 100},
+            {"ticker": "000660", "qty": 50},
+            {"ticker": "035720", "qty": 80},
+            {"ticker": "051910", "qty": 60},
+        ]
         mock_api.get_balance.side_effect = [
+            # ⓪ 트레일링 스톱 체크
+            _no_stop_balance(
+                holdings=holdings_4,
+                cash=1000000,
+                total_eval_amount=20000000,
+            ),
             # ① 매도 전 (4종목 보유, 2개 매도 = 50%)
             {
-                "holdings": [
-                    {"ticker": "005930", "qty": 100},
-                    {"ticker": "000660", "qty": 50},
-                    {"ticker": "035720", "qty": 80},
-                    {"ticker": "051910", "qty": 60},
-                ],
+                "holdings": holdings_4,
                 "cash": 1000000,
                 "total_eval_amount": 20000000,
                 "total_profit": 0,
@@ -326,6 +359,7 @@ class TestPositionSizeLimit:
     def test_position_limited_to_max_pct(self, executor, mock_api) -> None:
         """총평가 1억 + max_position_pct=10% → 종목당 최대 1000만원"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
             {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
             {
                 "holdings": [],
@@ -392,6 +426,7 @@ class TestPaperTradingGuard:
     def test_paper_trading_uses_krx_exchange(self, executor, mock_api) -> None:
         """모의투자 시 exchange=KRX 강제"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
             {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
             {
                 "holdings": [],
@@ -436,6 +471,7 @@ class TestCapitalAdaptiveAllocation:
     ) -> None:
         """비싼 종목 제외 후 남은 종목에 재분배"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
             {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
             {
                 "holdings": [],
@@ -469,6 +505,7 @@ class TestCapitalAdaptiveAllocation:
     def test_all_stocks_too_expensive(self, executor, mock_api) -> None:
         """모든 종목이 너무 비싸면 매수 0건"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
             {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
             {
                 "holdings": [],
@@ -493,6 +530,7 @@ class TestEdgeCases:
     def test_holding_not_found_in_balance(self, executor, mock_api) -> None:
         """잔고에 없는 종목 매도 시도 → 스킵"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(cash=5000000, total_eval_amount=5000000),  # ⓪ 트레일링 스톱 체크
             {
                 "holdings": [],
                 "cash": 5000000,
@@ -517,6 +555,7 @@ class TestEdgeCases:
     def test_insufficient_budget_per_stock(self, executor, mock_api) -> None:
         """예산 부족 시 매수 스킵"""
         mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
             {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
             {"holdings": [], "cash": 100, "total_eval_amount": 100, "total_profit": 0},
         ]
@@ -533,15 +572,14 @@ class TestDrawdownCircuitBreaker:
     """MDD 서킷 브레이커 테스트"""
 
     def test_drawdown_within_limit(self, executor) -> None:
-        """고점 대비 20% 하락 → 30% 한도 내 → 통과"""
+        """고점 대비 20% 하락 → 30% 한도 내 → 통과 (False)"""
         executor._peak_value = 10_000_000
-        executor._check_drawdown(8_000_000)  # -20% → 통과
+        assert executor._check_drawdown(8_000_000) is False  # -20% → 정상
 
     def test_drawdown_exceeds_limit(self, executor) -> None:
-        """고점 대비 35% 하락 → 30% 한도 초과 → 차단"""
+        """고점 대비 35% 하락 → 30% 한도 초과 → 발동 (True)"""
         executor._peak_value = 10_000_000
-        with pytest.raises(DrawdownCircuitBreaker, match="서킷 브레이커"):
-            executor._check_drawdown(6_500_000)  # -35%
+        assert executor._check_drawdown(6_500_000) is True  # -35%
 
     def test_drawdown_updates_peak(self, executor) -> None:
         """신고점 갱신"""
@@ -549,17 +587,254 @@ class TestDrawdownCircuitBreaker:
         executor._check_drawdown(12_000_000)
         assert executor._peak_value == 12_000_000
 
-    def test_drawdown_in_rebalancing(self, executor, mock_api) -> None:
-        """리밸런싱 중 MDD 초과 시 DrawdownCircuitBreaker 발생"""
+    @patch("time.sleep")
+    def test_drawdown_triggers_emergency_liquidation(
+        self, mock_sleep, executor, mock_api
+    ) -> None:
+        """리밸런싱 중 MDD 초과 → 전량 매도 후 빈 buy 반환"""
         executor._peak_value = 50_000_000  # 고점 5000만
-        mock_api.get_balance.return_value = {
-            "holdings": [{"ticker": "005930", "qty": 100}],
-            "cash": 1000000,
-            "total_eval_amount": 30_000_000,  # -40% 하락
-            "total_profit": -20_000_000,
+        mock_api.get_balance.side_effect = [
+            # ⓪ 트레일링 스톱 체크
+            _no_stop_balance(
+                holdings=[
+                    {"ticker": "005930", "qty": 100, "current_price": 150000},
+                ],
+                cash=1000000,
+                total_eval_amount=30_000_000,
+            ),
+            # ① 매도 전 잔고 (MDD 체크)
+            {
+                "holdings": [
+                    {"ticker": "005930", "qty": 100, "current_price": 150000},
+                ],
+                "cash": 1000000,
+                "total_eval_amount": 30_000_000,  # -40% 하락
+                "total_profit": -20_000_000,
+            },
+            # ② execute_emergency_liquidation 내부 get_balance
+            {
+                "holdings": [
+                    {"ticker": "005930", "qty": 100, "current_price": 150000},
+                ],
+                "cash": 1000000,
+                "total_eval_amount": 30_000_000,
+                "total_profit": -20_000_000,
+            },
+        ]
+        mock_api.sell_stock.return_value = {"return_code": 0, "ord_no": "S001"}
+        mock_api.get_unfilled_orders.return_value = []
+
+        sell_done, buy_done = executor.execute_rebalancing(
+            current_holdings=["005930"],
+            target_portfolio=["005930", "000660"],
+        )
+
+        # 전량 매도됨
+        assert "005930" in sell_done
+        # 매수 없음 (서킷브레이커 발동)
+        assert buy_done == []
+        # CB 상태 활성화 확인
+        assert executor._circuit_breaker_active is True
+
+
+class TestTrailingStop:
+    """트레일링 스톱 테스트"""
+
+    def test_no_stop_when_disabled(self, executor) -> None:
+        """trailing_stop_pct=0이면 발동 안 함"""
+        executor.cfg.trailing_stop_pct = 0
+        balance = {
+            "holdings": [
+                {"ticker": "005930", "qty": 100, "avg_price": 100000, "current_price": 50000},
+            ],
         }
-        with pytest.raises(DrawdownCircuitBreaker):
-            executor.execute_rebalancing(
-                current_holdings=["005930"],
-                target_portfolio=["005930", "000660"],
-            )
+        result = executor._check_trailing_stops(balance)
+        assert result == []
+
+    def test_stop_triggered(self, executor) -> None:
+        """매수가 대비 -25% 하락 → 20% 스톱 발동"""
+        balance = {
+            "holdings": [
+                {
+                    "ticker": "005930",
+                    "name": "삼성전자",
+                    "qty": 100,
+                    "avg_price": 100000,
+                    "current_price": 75000,  # -25%
+                },
+            ],
+        }
+        result = executor._check_trailing_stops(balance)
+        assert "005930" in result
+
+    def test_no_stop_within_threshold(self, executor) -> None:
+        """매수가 대비 -10% 하락 → 20% 한도 내 → 미발동"""
+        balance = {
+            "holdings": [
+                {
+                    "ticker": "005930",
+                    "qty": 100,
+                    "avg_price": 100000,
+                    "current_price": 90000,  # -10%
+                },
+            ],
+        }
+        result = executor._check_trailing_stops(balance)
+        assert result == []
+
+    def test_stop_skips_zero_avg_price(self, executor) -> None:
+        """avg_price가 0이면 스킵"""
+        balance = {
+            "holdings": [
+                {"ticker": "005930", "qty": 100, "avg_price": 0, "current_price": 50000},
+            ],
+        }
+        result = executor._check_trailing_stops(balance)
+        assert result == []
+
+    @patch("time.sleep")
+    def test_stop_ticker_removed_from_target(self, mock_sleep, executor, mock_api) -> None:
+        """스톱 발동 종목은 target에서 제거되어 재매수 안 됨"""
+        mock_api.get_balance.side_effect = [
+            # ⓪ 트레일링 스톱 체크 — 005930이 -25% 하락
+            {
+                "holdings": [
+                    {
+                        "ticker": "005930",
+                        "name": "삼성전자",
+                        "qty": 100,
+                        "avg_price": 100000,
+                        "current_price": 75000,  # -25% → 스톱 발동
+                    },
+                    {
+                        "ticker": "000660",
+                        "name": "SK하이닉스",
+                        "qty": 50,
+                        "avg_price": 150000,
+                        "current_price": 160000,  # +6.7% → 정상
+                    },
+                ],
+                "cash": 1000000,
+                "total_eval_amount": 16500000,
+                "total_profit": 0,
+            },
+            # ① 매도 전 잔고 (같은 상태)
+            {
+                "holdings": [
+                    {"ticker": "005930", "qty": 100},
+                    {"ticker": "000660", "qty": 50},
+                ],
+                "cash": 1000000,
+                "total_eval_amount": 16500000,
+                "total_profit": 0,
+            },
+            # ② 매수 전 잔고
+            {
+                "holdings": [{"ticker": "000660", "qty": 50}],
+                "cash": 9000000,
+                "total_eval_amount": 17000000,
+                "total_profit": 0,
+            },
+        ]
+        mock_api.sell_stock.return_value = {"return_code": 0, "ord_no": "S001"}
+        mock_api.get_unfilled_orders.return_value = []
+        mock_api.get_current_price.return_value = {"current_price": 50000}
+        mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
+
+        sell_done, buy_done = executor.execute_rebalancing(
+            current_holdings=["005930", "000660"],
+            # target에 005930이 있지만 스톱 발동으로 제거되어야 함
+            target_portfolio=["005930", "000660", "035720"],
+        )
+
+        # 005930은 스톱 발동으로 매도됨
+        assert "005930" in sell_done
+        # 005930은 재매수 대상이 아님 (target에서 제거됨)
+        assert "005930" not in buy_done
+        # 035720은 신규 매수됨
+        assert "035720" in buy_done
+
+
+class TestCircuitBreakerReentry:
+    """서킷브레이커 재진입 테스트"""
+
+    def test_reentry_when_dd_recovers(self, executor) -> None:
+        """DD가 발동 기준의 50% 이내로 회복 → 재진입 허용"""
+        executor._peak_value = 10_000_000
+        executor._circuit_breaker_active = True
+        # max_dd=0.30, reentry threshold = -0.30 * 0.5 = -0.15
+        # 현재 8_600_000 → DD = -14% > -15% → 재진입
+        assert executor.check_circuit_breaker_reentry(8_600_000) is True
+        assert executor._circuit_breaker_active is False
+
+    def test_no_reentry_when_still_deep(self, executor) -> None:
+        """DD가 여전히 깊으면 재진입 불허"""
+        executor._peak_value = 10_000_000
+        executor._circuit_breaker_active = True
+        # 현재 7_000_000 → DD = -30% < -15% → 유지
+        assert executor.check_circuit_breaker_reentry(7_000_000) is False
+        assert executor._circuit_breaker_active is True
+
+    def test_no_cb_always_allows(self, executor) -> None:
+        """CB 비활성이면 항상 True"""
+        executor._circuit_breaker_active = False
+        assert executor.check_circuit_breaker_reentry(5_000_000) is True
+
+
+class TestInvestRatio:
+    """투자 비중 (시장 레짐/변동성 타겟팅) 반영 테스트"""
+
+    def test_invest_ratio_scales_budget(self, executor, mock_api) -> None:
+        """invest_ratio=0.5 → 매수 예산 50%로 축소"""
+        mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # ⓪ 트레일링 스톱 체크
+            {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
+            {
+                "holdings": [],
+                "cash": 10_000_000,
+                "total_eval_amount": 10_000_000,
+                "total_profit": 0,
+            },
+        ]
+        mock_api.get_current_price.return_value = {"current_price": 50000}
+        mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
+
+        executor.execute_rebalancing(
+            current_holdings=[],
+            target_portfolio=["005930"],
+            invest_ratio=0.5,
+        )
+
+        buy_call = mock_api.buy_stock.call_args
+        qty = buy_call.kwargs.get("qty") or buy_call[1].get("qty")
+        # 10M * 0.99 * 0.5 = 4,950,000 / 50,000 ≈ 98주
+        # invest_ratio 없으면 약 197주
+        assert qty < 120
+        assert qty > 0
+
+    def test_invest_ratio_1_no_scaling(self, executor, mock_api) -> None:
+        """invest_ratio=1.0 → 스케일링 없음 (max_position_pct로 제한됨)"""
+        mock_api.get_balance.side_effect = [
+            _no_stop_balance(),
+            {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
+            {
+                "holdings": [],
+                "cash": 10_000_000,
+                "total_eval_amount": 10_000_000,
+                "total_profit": 0,
+            },
+        ]
+        mock_api.get_current_price.return_value = {"current_price": 50000}
+        mock_api.buy_stock.return_value = {"return_code": 0, "ord_no": "B001"}
+
+        executor.execute_rebalancing(
+            current_holdings=[],
+            target_portfolio=["005930"],
+            invest_ratio=1.0,
+        )
+
+        buy_call = mock_api.buy_stock.call_args
+        qty = buy_call.kwargs.get("qty") or buy_call[1].get("qty")
+        # max_position_pct=10% → 10M*10%=1M / 50,000 ≈ 19주
+        assert qty > 0
+        assert qty <= 20

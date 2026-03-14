@@ -75,6 +75,16 @@ class TestE2EPipeline:
         mock_api = MagicMock()
         mock_api.is_paper = True
         mock_api.get_balance.side_effect = [
+            # ⓪ 트레일링 스톱 체크 (avg_price 없음 → 미발동)
+            {
+                "holdings": [
+                    {"ticker": "005930", "qty": 100},
+                    {"ticker": "000660", "qty": 50},
+                ],
+                "cash": 5000000,
+                "total_eval_amount": 15000000,
+                "total_profit": 0,
+            },
             # ① 매도 전 잔고 확인
             {
                 "holdings": [
@@ -105,6 +115,7 @@ class TestE2EPipeline:
             mock_settings.trading.max_position_pct = 0.10
             mock_settings.trading.max_turnover_pct = 0.50
             mock_settings.trading.max_drawdown_pct = 0.30
+            mock_settings.trading.trailing_stop_pct = 0.20
             with patch("trading.order.KiwoomRestClient", return_value=mock_api):
                 from trading.order import OrderExecutor
 

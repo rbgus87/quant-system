@@ -35,13 +35,14 @@ class OrderExecutor:
     - 매도 체결 확인: get_unfilled_orders() 기반
     """
 
-    _PEAK_VALUE_PATH = Path("data/peak_value.json")
-
     def __init__(self, initial_value: float = 0) -> None:
         self.api = KiwoomRestClient()
         self.cfg = settings.trading
         self.storage = DataStorage()
+        mode = "paper" if settings.is_paper_trading else "live"
+        self._state_path = Path(f"data/peak_value_{mode}.json")
         self._peak_value: float = self._load_peak_value(initial_value)
+        self._circuit_breaker_active: bool = self._load_cb_state()
 
         if not settings.is_paper_trading:
             logger.warning(
@@ -49,28 +50,52 @@ class OrderExecutor:
                 "IS_PAPER_TRADING=false 확인 필요"
             )
 
+    def _load_state(self) -> dict:
+        """영속화된 상태 파일 로드"""
+        try:
+            if self._state_path.exists():
+                with open(self._state_path, "r") as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.warning(f"상태 파일 로드 실패: {e}")
+        return {}
+
+    def _save_state(self, updates: dict) -> None:
+        """상태 파일에 값 저장"""
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = self._load_state()
+            existing.update(updates)
+            with open(self._state_path, "w") as f:
+                json.dump(existing, f)
+        except Exception as e:
+            logger.error(f"상태 파일 저장 실패: {e}")
+
     def _load_peak_value(self, default: float) -> float:
         """영속화된 고점 값 로드"""
-        try:
-            if self._PEAK_VALUE_PATH.exists():
-                with open(self._PEAK_VALUE_PATH, "r") as f:
-                    data = json.load(f)
-                val = float(data.get("peak_value", default))
-                if val > 0:
-                    logger.info(f"MDD 고점 복원: {val:,.0f}원")
-                    return val
-        except Exception as e:
-            logger.warning(f"MDD 고점 로드 실패: {e}")
+        data = self._load_state()
+        val = float(data.get("peak_value", default))
+        if val > 0:
+            logger.info(f"MDD 고점 복원: {val:,.0f}원")
+            return val
         return default
 
     def _save_peak_value(self) -> None:
         """고점 값 영속화"""
-        try:
-            self._PEAK_VALUE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._PEAK_VALUE_PATH, "w") as f:
-                json.dump({"peak_value": self._peak_value}, f)
-        except Exception as e:
-            logger.error(f"MDD 고점 저장 실패: {e}")
+        self._save_state({"peak_value": self._peak_value})
+
+    def _load_cb_state(self) -> bool:
+        """서킷브레이커 활성 상태 로드"""
+        data = self._load_state()
+        active = data.get("circuit_breaker_active", False)
+        if active:
+            logger.warning("서킷브레이커 활성 상태 복원 — 재진입 조건 확인 필요")
+        return active
+
+    def _save_cb_state(self, active: bool) -> None:
+        """서킷브레이커 상태 영속화"""
+        self._circuit_breaker_active = active
+        self._save_state({"circuit_breaker_active": active})
 
     def _calculate_orders(
         self,
@@ -150,17 +175,17 @@ class OrderExecutor:
                 f"스크리너 데이터 이상 가능성 — 리밸런싱 중단."
             )
 
-    def _check_drawdown(self, total_value: float) -> None:
+    def _check_drawdown(self, total_value: float) -> bool:
         """MDD 서킷 브레이커 — 고점 대비 하락폭 검증
 
         Args:
             total_value: 현재 총 평가 금액
 
-        Raises:
-            DrawdownCircuitBreaker: MDD 서킷 브레이커 발동
+        Returns:
+            True = 서킷브레이커 발동 (전량 매도 필요), False = 정상
         """
         if total_value <= 0:
-            return
+            return False
 
         # 고점 갱신
         if total_value > self._peak_value:
@@ -168,35 +193,183 @@ class OrderExecutor:
             self._save_peak_value()
 
         if self._peak_value <= 0:
-            return
+            return False
 
         drawdown = (total_value - self._peak_value) / self._peak_value
         max_dd = self.cfg.max_drawdown_pct
 
         if drawdown < -max_dd:
-            raise DrawdownCircuitBreaker(
-                f"MDD 서킷 브레이커: {drawdown:.1%} < -{max_dd:.0%} "
-                f"(현재 {total_value:,.0f}원, 고점 {self._peak_value:,.0f}원). "
-                f"리밸런싱 중단."
+            logger.warning(
+                f"MDD 서킷 브레이커 발동: {drawdown:.1%} < -{max_dd:.0%} "
+                f"(현재 {total_value:,.0f}원, 고점 {self._peak_value:,.0f}원) "
+                f"→ 전량 매도 후 현금 대피"
             )
+            return True
+        return False
+
+    def check_circuit_breaker_reentry(self, total_value: float) -> bool:
+        """서킷브레이커 재진입 조건 확인
+
+        고점 대비 DD가 발동 기준의 절반 이내로 회복하면 재진입 허용.
+
+        Args:
+            total_value: 현재 총 평가 금액
+
+        Returns:
+            True = 재진입 허용 (서킷브레이커 해제), False = 계속 현금 유지
+        """
+        if not self._circuit_breaker_active:
+            return True
+
+        if self._peak_value <= 0 or total_value <= 0:
+            return False
+
+        drawdown = (total_value - self._peak_value) / self._peak_value
+        max_dd = self.cfg.max_drawdown_pct
+        reentry_threshold = -max_dd * 0.5
+
+        if drawdown >= reentry_threshold:
+            logger.info(
+                f"서킷브레이커 해제: DD={drawdown:.1%} >= {reentry_threshold:.1%} → 재진입 허용"
+            )
+            self._peak_value = total_value
+            self._save_peak_value()
+            self._save_cb_state(False)
+            return True
+
+        logger.warning(
+            f"서킷브레이커 유지: DD={drawdown:.1%} (해제 기준: {reentry_threshold:.1%})"
+        )
+        return False
+
+    def execute_emergency_liquidation(self) -> list[str]:
+        """서킷브레이커 전량 매도 — 모든 보유종목 시장가 매도
+
+        Returns:
+            매도 완료 종목 코드 리스트
+        """
+        exchange = "KRX" if self.api.is_paper else "SOR"
+        balance = self.api.get_balance()
+        self._validate_balance(balance, "서킷브레이커 전량 매도")
+
+        sell_done: list[str] = []
+        sell_order_nos: list[str] = []
+
+        for holding in balance.get("holdings", []):
+            ticker = holding.get("ticker", "")
+            qty = holding.get("qty", 0)
+            if qty <= 0:
+                continue
+
+            result = self.api.sell_stock(
+                ticker=ticker, qty=qty, order_type="3", exchange=exchange,
+            )
+            if result.get("return_code") == 0:
+                sell_done.append(ticker)
+                ord_no = result.get("ord_no", "")
+                if ord_no:
+                    sell_order_nos.append(ord_no)
+                # DB 기록
+                price = holding.get("current_price", 0)
+                amount = price * qty
+                self.storage.save_trade(
+                    trade_date=date.today(),
+                    ticker=ticker,
+                    side="SELL",
+                    quantity=qty,
+                    price=price,
+                    amount=amount,
+                    commission=amount * self.cfg.commission_rate,
+                    tax=amount * self.cfg.tax_rate,
+                    is_paper=settings.is_paper_trading,
+                )
+
+        if sell_done:
+            try:
+                self._wait_for_sells_to_settle(sell_done, sell_order_nos)
+            except TimeoutError:
+                logger.warning("서킷브레이커 매도 일부 미체결 가능성")
+
+        self._save_cb_state(True)
+        logger.warning(
+            f"서킷브레이커 전량 매도 완료: {len(sell_done)}종목 청산"
+        )
+        return sell_done
+
+    def _check_trailing_stops(
+        self,
+        balance: dict,
+    ) -> list[str]:
+        """보유종목 트레일링 스톱 체크: 매수가 대비 -N% 하락 종목 감지
+
+        Args:
+            balance: get_balance() 반환값
+
+        Returns:
+            트레일링 스톱 발동 종목 코드 리스트
+        """
+        trailing_stop_pct = self.cfg.trailing_stop_pct
+        if trailing_stop_pct <= 0:
+            return []
+
+        stop_tickers: list[str] = []
+        for holding in balance.get("holdings", []):
+            ticker = holding.get("ticker", "")
+            qty = holding.get("qty", 0)
+            avg_price = holding.get("avg_price", 0)
+            current_price = holding.get("current_price", 0)
+
+            if qty <= 0 or avg_price <= 0 or current_price <= 0:
+                continue
+
+            loss_pct = (current_price - avg_price) / avg_price
+            if loss_pct < -trailing_stop_pct:
+                name = holding.get("name", ticker)
+                logger.warning(
+                    f"트레일링 스톱 발동: {ticker}({name}) "
+                    f"매수가 {avg_price:,.0f}원 → 현재 {current_price:,.0f}원 "
+                    f"({loss_pct:.1%} < -{trailing_stop_pct:.0%})"
+                )
+                stop_tickers.append(ticker)
+
+        if stop_tickers:
+            logger.warning(
+                f"트레일링 스톱 대상: {len(stop_tickers)}종목 강제 매도 예정"
+            )
+        return stop_tickers
 
     def execute_rebalancing(
         self,
         current_holdings: list[str],
         target_portfolio: list[str],
+        invest_ratio: float = 1.0,
     ) -> tuple[list[str], list[str]]:
         """리밸런싱 주문 실행
 
-        순서: 매도 → 체결 확인 → 잔고 재확인 → 매수 (동일 비중)
+        순서: 트레일링 스톱 체크 → MDD 체크 → 매도 → 체결 확인 → 잔고 재확인 → 매수 (동일 비중)
 
         Args:
             current_holdings: 현재 보유 종목 코드 리스트
             target_portfolio: 목표 포트폴리오 코드 리스트
+            invest_ratio: 투자 비중 (0.0~1.0, 시장 레짐/변동성 타겟팅 반영)
 
         Returns:
             (매도 완료 리스트, 매수 완료 리스트)
         """
         exchange = "KRX" if self.api.is_paper else "SOR"
+
+        # ── 트레일링 스톱: 매수가 대비 -N% 하락 종목 강제 매도 ──
+        pre_balance = self.api.get_balance()
+        self._validate_balance(pre_balance, "트레일링 스톱 체크")
+        stop_tickers = self._check_trailing_stops(pre_balance)
+
+        if stop_tickers:
+            # 스톱 발동 종목을 target에서 제거 (재매수 방지)
+            target_portfolio = [t for t in target_portfolio if t not in stop_tickers]
+            # 스톱 발동 종목이 current_holdings에 없으면 추가 (매도 대상에 포함)
+            for t in stop_tickers:
+                if t not in current_holdings:
+                    current_holdings.append(t)
 
         sell_list, buy_list = self._calculate_orders(current_holdings, target_portfolio)
         logger.info(f"리밸런싱 계획: 매도 {len(sell_list)}개, 매수 {len(buy_list)}개")
@@ -218,10 +391,11 @@ class OrderExecutor:
         balance = self.api.get_balance()
         self._validate_balance(balance, "매도 전")
 
-        # MDD 서킷 브레이커
+        # MDD 서킷 브레이커: 고점 대비 하락폭 초과 → 전량 매도 후 종료
         total_eval = balance.get("total_eval_amount", 0)
-        if total_eval > 0:
-            self._check_drawdown(total_eval)
+        if total_eval > 0 and self._check_drawdown(total_eval):
+            sold = self.execute_emergency_liquidation()
+            return sold, []
 
         for ticker in sell_list:
             holding = next(
@@ -272,6 +446,15 @@ class OrderExecutor:
         self._validate_balance(updated_balance, "매수 전")
         available_cash = updated_balance.get("cash", 0) * 0.99
         total_eval = updated_balance.get("total_eval_amount", 0)
+
+        # 시장 레짐 / 변동성 타겟팅 반영: 투자 비중만큼만 매수
+        if 0.0 < invest_ratio < 1.0:
+            scaled_cash = available_cash * invest_ratio
+            logger.info(
+                f"투자 비중 적용: {invest_ratio:.0%} → "
+                f"매수 예산 {available_cash:,.0f}원 → {scaled_cash:,.0f}원"
+            )
+            available_cash = scaled_cash
 
         # 고정 금액 모드: 매수 예산 상한 적용
         max_inv = settings.portfolio.max_investment_amount
@@ -340,11 +523,18 @@ class OrderExecutor:
             )
 
         # ③ 매수 (동일 비중, 재분배 완료된 목록)
+        MAX_BUY_QTY = 10000  # 단일 종목 매수 수량 상한 (안전장치)
         for ticker in affordable_list:
             price = buy_prices[ticker]
             qty = int(budget_per_stock / (price * cost_rate))
             if qty <= 0:
                 continue
+
+            if qty > MAX_BUY_QTY:
+                logger.warning(
+                    f"매수 수량 상한 적용: {ticker} {qty}주 → {MAX_BUY_QTY}주"
+                )
+                qty = MAX_BUY_QTY
 
             result = self.api.buy_stock(
                 ticker=ticker,
@@ -379,7 +569,7 @@ class OrderExecutor:
         self,
         sold_tickers: list[str],
         order_nos: list[str],
-        max_wait_sec: int = 30,
+        max_wait_sec: int = 60,
         poll_interval: int = 3,
     ) -> None:
         """매도 주문 체결 대기 (주문번호 기반 + 잔고 폴백)

@@ -57,13 +57,171 @@ def is_last_business_day_of_month() -> bool:
 # ────────────────────────────────────────────
 
 
+def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
+    """변동성 타겟팅 — KODEX 200 실현 변동성 기반 투자 비중 산출
+
+    백테스트의 _calc_vol_target_scale과 동일 로직:
+    실현 변동성 > 목표 → 비중 축소 (최소 20%)
+
+    Args:
+        api: KiwoomRestClient 인스턴스
+
+    Returns:
+        투자 비중 배율 (0.2 ~ 1.0)
+    """
+    import numpy as np
+
+    vol_target = settings.trading.vol_target
+    lookback = settings.trading.vol_lookback_days
+
+    if vol_target <= 0:
+        return 1.0
+
+    try:
+        from data.collector import KRXDataCollector
+
+        collector = KRXDataCollector()
+        end_dt = datetime.now()
+        # 영업일 기준 lookback * 1.5 만큼 과거 데이터 확보
+        start_dt = end_dt - __import__("datetime").timedelta(
+            days=int(lookback * 1.5)
+        )
+        start_str = start_dt.strftime("%Y%m%d")
+        end_str = end_dt.strftime("%Y%m%d")
+
+        df = collector.get_ohlcv("069500", start_str, end_str)  # KODEX 200
+        if df is None or df.empty or len(df) < max(lookback, 20):
+            logger.info("변동성 타겟팅: 데이터 부족 → 비중 1.0")
+            return 1.0
+
+        closes = df["close"].iloc[-lookback:]
+        returns = closes.pct_change().dropna()
+        if len(returns) < 10:
+            return 1.0
+
+        realized_vol = float(np.std(returns)) * np.sqrt(252)
+        if realized_vol <= 0:
+            return 1.0
+
+        scale = vol_target / realized_vol
+        result = min(1.0, max(0.2, scale))
+        logger.info(
+            f"변동성 타겟팅: 실현={realized_vol:.1%}, "
+            f"목표={vol_target:.1%} → 비중 {result:.0%}"
+        )
+        return result
+
+    except Exception as e:
+        logger.warning(f"변동성 타겟팅 실패: {e} → 비중 1.0")
+        return 1.0
+
+
+def _execute_rebalancing_core(notifier: TelegramNotifier) -> None:
+    """리밸런싱 공통 로직
+
+    서킷브레이커 재진입 확인 → 스크리닝 → DB 저장 → 잔고 조회 →
+    시장 레짐/변동성 타겟팅 반영 → 주문 실행 → 결과 알림
+
+    Args:
+        notifier: 텔레그램 알림 발송기
+    """
+    from strategy.screener import MultiFactorScreener
+
+    # 현재 잔고 조회 후 OrderExecutor에 총 평가금액 전달 (MDD 기준값)
+    api = KiwoomRestClient()
+    balance = api.get_balance()
+
+    # 잔고 API 실패 감지: 총평가·현금 모두 0이면 비정상 → 리밸런싱 중단
+    if balance.get("total_eval_amount", 0) == 0 and balance.get("cash", 0) == 0:
+        logger.error(
+            "잔고 API 비정상 응답 (total_eval_amount=0, cash=0). "
+            "리밸런싱을 중단합니다."
+        )
+        notifier.send_error("잔고 API 비정상 응답으로 리밸런싱을 중단합니다.")
+        return
+
+    current_holdings = [h["ticker"] for h in balance["holdings"] if h["qty"] > 0]
+    total_value = balance.get("total_eval_amount", 0)
+
+    # 고정 금액 모드: max_investment_amount > 0이면 투자 금액 제한
+    max_inv = settings.portfolio.max_investment_amount
+    if max_inv > 0 and total_value > max_inv:
+        logger.info(
+            f"고정 금액 모드: 계좌 {total_value:,.0f}원 중 "
+            f"{max_inv:,.0f}원만 투자"
+        )
+        total_value = max_inv
+
+    executor = OrderExecutor(initial_value=total_value)
+
+    # ── 서킷브레이커 재진입 확인 ──
+    if not executor.check_circuit_breaker_reentry(total_value):
+        notifier.send(
+            f"서킷브레이커 유지 중 — 현금 대피 상태 "
+            f"(DD 회복 시 자동 재진입). 리밸런싱 건너뜀."
+        )
+        return
+
+    screener = MultiFactorScreener()
+
+    # 새 포트폴리오 계산
+    today_str = datetime.now().strftime("%Y%m%d")
+    portfolio_df = screener.screen(today_str)
+    new_portfolio = portfolio_df.index.tolist() if not portfolio_df.empty else []
+    logger.info(f"신규 포트폴리오: {len(new_portfolio)}개 종목")
+
+    if not new_portfolio:
+        notifier.send("스크리닝 결과가 비어 있어 리밸런싱을 건너뜁니다.")
+        return
+
+    # 팩터 스코어 & 포트폴리오 DB 저장
+    _save_screening_results(today_str, portfolio_df)
+
+    # ── 시장 레짐 필터 ──
+    invest_ratio = 1.0
+    try:
+        from data.collector import KRXDataCollector
+        from strategy.market_regime import MarketRegimeFilter
+
+        collector = KRXDataCollector()
+        regime_filter = MarketRegimeFilter(collector)
+        invest_ratio = regime_filter.get_invest_ratio(today_str)
+    except Exception as e:
+        logger.warning(f"시장 레짐 필터 실패: {e} → 투자 비중 100%")
+
+    # ── 변동성 타겟팅 ──
+    vol_scale = _calc_vol_target_scale(api)
+    invest_ratio *= vol_scale
+
+    if invest_ratio < 1.0:
+        logger.info(
+            f"최종 투자 비중: {invest_ratio:.0%} "
+            f"(레짐 × 변동성 스케일)"
+        )
+
+    # 리밸런싱 주문 실행
+    sell_done, buy_done = executor.execute_rebalancing(
+        current_holdings, new_portfolio, invest_ratio=invest_ratio
+    )
+
+    # 결과 알림
+    updated_balance = api.get_balance()
+    notifier.send_rebalancing_report(
+        sell_done=sell_done,
+        buy_done=buy_done,
+        total_value=updated_balance.get("total_eval_amount", total_value),
+        sell_total=len([t for t in current_holdings if t not in new_portfolio]),
+        buy_total=len([t for t in new_portfolio if t not in current_holdings]),
+    )
+
+
 def run_monthly_rebalancing() -> None:
-    """월말 리밸런싱 실행
+    """월말 리밸런싱 실행 (스케줄러 호출)
 
     - 영업일이 아니거나 월말이 아니면 스킵
     - 리밸런싱 실패 시 텔레그램 에러 알림
     """
-    if not is_business_day() or not is_last_business_day_of_month():
+    if not (is_business_day() and is_last_business_day_of_month()):
         return
 
     logger.info("=" * 50)
@@ -72,56 +230,8 @@ def run_monthly_rebalancing() -> None:
     notifier.send("월말 리밸런싱을 시작합니다...")
 
     try:
-        from strategy.screener import MultiFactorScreener
-
-        screener = MultiFactorScreener()
-
-        # 새 포트폴리오 계산
-        today_str = datetime.now().strftime("%Y%m%d")
-        portfolio_df = screener.screen(today_str)
-        new_portfolio = portfolio_df.index.tolist() if not portfolio_df.empty else []
-        logger.info(f"신규 포트폴리오: {len(new_portfolio)}개 종목")
-
-        if not new_portfolio:
-            notifier.send("스크리닝 결과가 비어 있어 리밸런싱을 건너뜁니다.")
-            return
-
-        # 팩터 스코어 & 포트폴리오 DB 저장
-        _save_screening_results(today_str, portfolio_df)
-
-        # 현재 잔고 조회 후 OrderExecutor에 총 평가금액 전달 (MDD 기준값)
-        api = KiwoomRestClient()
-        balance = api.get_balance()
-        current_holdings = [h["ticker"] for h in balance["holdings"] if h["qty"] > 0]
-        total_value = balance.get("total_eval_amount", 0)
-
-        # 고정 금액 모드: max_investment_amount > 0이면 투자 금액 제한
-        max_inv = settings.portfolio.max_investment_amount
-        if max_inv > 0 and total_value > max_inv:
-            logger.info(
-                f"고정 금액 모드: 계좌 {total_value:,.0f}원 중 "
-                f"{max_inv:,.0f}원만 투자"
-            )
-            total_value = max_inv
-
-        executor = OrderExecutor(initial_value=total_value)
-
-        # 리밸런싱 주문 실행
-        sell_done, buy_done = executor.execute_rebalancing(
-            current_holdings, new_portfolio
-        )
-
-        # 결과 알림
-        updated_balance = api.get_balance()
-        notifier.send_rebalancing_report(
-            sell_done=sell_done,
-            buy_done=buy_done,
-            total_value=updated_balance.get("total_eval_amount", total_value),
-            sell_total=len([t for t in current_holdings if t not in new_portfolio]),
-            buy_total=len([t for t in new_portfolio if t not in current_holdings]),
-        )
+        _execute_rebalancing_core(notifier)
         logger.info("월말 리밸런싱 완료")
-
     except Exception as e:
         logger.error(f"리밸런싱 오류: {e}", exc_info=True)
         notifier.send_error(str(e))
@@ -155,51 +265,8 @@ def _force_rebalancing() -> None:
     notifier.send("[수동] 리밸런싱을 즉시 실행합니다...")
 
     try:
-        from strategy.screener import MultiFactorScreener
-
-        screener = MultiFactorScreener()
-
-        today_str = datetime.now().strftime("%Y%m%d")
-        portfolio_df = screener.screen(today_str)
-        new_portfolio = portfolio_df.index.tolist() if not portfolio_df.empty else []
-        logger.info(f"신규 포트폴리오: {len(new_portfolio)}개 종목")
-
-        if not new_portfolio:
-            notifier.send("스크리닝 결과가 비어 있어 리밸런싱을 건너뜁니다.")
-            return
-
-        # 팩터 스코어 & 포트폴리오 DB 저장
-        _save_screening_results(today_str, portfolio_df)
-
-        api = KiwoomRestClient()
-        balance = api.get_balance()
-        current_holdings = [h["ticker"] for h in balance["holdings"] if h["qty"] > 0]
-        total_value = balance.get("total_eval_amount", 0)
-
-        max_inv = settings.portfolio.max_investment_amount
-        if max_inv > 0 and total_value > max_inv:
-            logger.info(
-                f"고정 금액 모드: 계좌 {total_value:,.0f}원 중 "
-                f"{max_inv:,.0f}원만 투자"
-            )
-            total_value = max_inv
-
-        executor = OrderExecutor(initial_value=total_value)
-
-        sell_done, buy_done = executor.execute_rebalancing(
-            current_holdings, new_portfolio
-        )
-
-        updated_balance = api.get_balance()
-        notifier.send_rebalancing_report(
-            sell_done=sell_done,
-            buy_done=buy_done,
-            total_value=updated_balance.get("total_eval_amount", total_value),
-            sell_total=len([t for t in current_holdings if t not in new_portfolio]),
-            buy_total=len([t for t in new_portfolio if t not in current_holdings]),
-        )
+        _execute_rebalancing_core(notifier)
         logger.info("수동 리밸런싱 완료")
-
     except Exception as e:
         logger.error(f"리밸런싱 오류: {e}", exc_info=True)
         notifier.send_error(str(e))
@@ -236,10 +303,11 @@ def _save_screening_results(date_str: str, portfolio_df: "pd.DataFrame") -> None
         port_df = portfolio_df.reset_index()
         port_df = port_df.rename(columns={port_df.columns[0]: "ticker"})
         # 종목명 추가
-        from pykrx import stock as pykrx_stock
+        from data.collector import KRXDataCollector
 
+        collector = KRXDataCollector()
         port_df["name"] = port_df["ticker"].apply(
-            lambda t: pykrx_stock.get_market_ticker_name(t) or t
+            lambda t: collector.get_ticker_name(t) or t
         )
         storage.save_portfolio(dt, port_df)
         logger.info(f"포트폴리오 DB 저장: {len(port_df)}건")
@@ -295,11 +363,12 @@ def main() -> None:
         if portfolio_df.empty:
             logger.info("스크리닝 결과 없음")
         else:
-            from pykrx import stock as pykrx_stock
+            from data.collector import KRXDataCollector
 
+            collector = KRXDataCollector()
             logger.info(f"선정 종목 ({len(portfolio_df)}개):")
             for ticker in portfolio_df.index:
-                name = pykrx_stock.get_market_ticker_name(ticker) or ticker
+                name = collector.get_ticker_name(ticker) or ticker
                 score = portfolio_df.loc[ticker, "composite_score"]
                 logger.info(f"  {ticker} {name}: 복합스코어 {score:.1f}")
         return
