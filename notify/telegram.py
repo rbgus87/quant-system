@@ -306,11 +306,15 @@ class TelegramNotifier:
             return 0.0
 
     def _save_peak_value(self, peak: float, current: float) -> None:
-        """고점 + 현재값 저장"""
+        """고점 + 현재값 저장 (기존 키 보존)"""
         try:
-            Path(self._peak_value_path).write_text(
-                json.dumps({"peak_value": peak, "prev_value": current})
-            )
+            path = Path(self._peak_value_path)
+            existing: dict = {}
+            if path.exists():
+                existing = json.loads(path.read_text())
+            existing["peak_value"] = peak
+            existing["prev_value"] = current
+            path.write_text(json.dumps(existing))
         except Exception as e:
             logger.error(f"peak_value 저장 실패: {e}")
 

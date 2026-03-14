@@ -15,7 +15,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -84,9 +84,7 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
         collector = KRXDataCollector()
         end_dt = datetime.now()
         # 영업일 기준 lookback * 1.5 만큼 과거 데이터 확보
-        start_dt = end_dt - __import__("datetime").timedelta(
-            days=int(lookback * 1.5)
-        )
+        start_dt = end_dt - timedelta(days=int(lookback * 1.5))
         start_str = start_dt.strftime("%Y%m%d")
         end_str = end_dt.strftime("%Y%m%d")
 
@@ -211,8 +209,8 @@ def _execute_rebalancing_core(notifier: TelegramNotifier) -> None:
         sell_done=sell_done,
         buy_done=buy_done,
         total_value=updated_balance.get("total_eval_amount", total_value),
-        sell_total=len([t for t in current_holdings if t not in new_portfolio]),
-        buy_total=len([t for t in new_portfolio if t not in current_holdings]),
+        sell_total=len(sell_done),
+        buy_total=len(buy_done),
     )
 
 
@@ -471,9 +469,8 @@ def main() -> None:
         if portfolio_df.empty:
             logger.info("스크리닝 결과 없음")
         else:
-            from data.collector import KRXDataCollector
-
-            collector = KRXDataCollector()
+            # 스크리너 내부 collector 재사용 (종목명 캐시 활용)
+            collector = screener.collector
             logger.info(f"선정 종목 ({len(portfolio_df)}개):")
             for ticker in portfolio_df.index:
                 name = collector.get_ticker_name(ticker) or ticker

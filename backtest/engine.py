@@ -123,6 +123,9 @@ class MultiFactorBacktest:
                 )
 
                 if circuit_breaker_active:
+                    # 체결일 기록
+                    if turnover_log:
+                        turnover_log[-1]["trade_date"] = trade_date_str
                     # 현금 100% 상태로 일별 가치만 기록 (포지션 없음)
                     period_end = (
                         rebal_dates[i + 1]
@@ -154,6 +157,10 @@ class MultiFactorBacktest:
                     holdings, cost_basis, new_tickers, prices,
                     cash, total_value, rebal_value, date_str, turnover_log,
                 )
+
+                # 체결일 기록
+                if turnover_log:
+                    turnover_log[-1]["trade_date"] = trade_date_str
 
                 # ── 일별 포트폴리오 가치 기록 ──
                 self._record_daily_values(

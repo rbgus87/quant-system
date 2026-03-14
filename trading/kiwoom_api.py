@@ -13,11 +13,11 @@ RETRY_BASE_DELAY = 0.5  # 초
 
 
 def _safe_int(val: object, default: int = 0) -> int:
-    """API 응답 값을 안전하게 int 변환 (쉼표, 대시, 빈값 처리)"""
+    """API 응답 값을 안전하게 int 변환 (쉼표, 빈값 처리, 음수 보존)"""
     if val is None:
         return default
-    s = str(val).replace(",", "").replace("-", "").strip()
-    if not s:
+    s = str(val).replace(",", "").strip()
+    if not s or s == "-":
         return default
     try:
         return int(s)

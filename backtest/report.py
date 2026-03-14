@@ -692,6 +692,11 @@ class ReportGenerator:
             rebal_detail = ""
             for idx, t in enumerate(turnover_log):
                 date_fmt = f"{t['date'][:4]}-{t['date'][4:6]}-{t['date'][6:]}"
+                trade_date_raw = t.get("trade_date", "")
+                trade_date_fmt = (
+                    f"{trade_date_raw[:4]}-{trade_date_raw[4:6]}-{trade_date_raw[6:]}"
+                    if len(trade_date_raw) == 8 else "-"
+                )
                 has_details = t.get("sell_details") or t.get("buy_details")
                 toggle_id = f"rebal_detail_{idx}"
 
@@ -827,7 +832,7 @@ class ReportGenerator:
 
                     detail_sub = f"""
                     <tr id="{toggle_id}" class="trade-detail" style="display:none">
-                        <td colspan="6" style="padding:0">
+                        <td colspan="7" style="padding:0">
                             <div class="trade-grid">
                                 {sell_panel}
                                 {buy_panel}
@@ -843,6 +848,7 @@ class ReportGenerator:
                 rebal_detail += f"""
                 <tr>
                     <td>{date_fmt}{toggle_btn}</td>
+                    <td style="color:#aaa">{trade_date_fmt}</td>
                     <td>{t['n_holdings_before']}</td>
                     <td>{t['n_holdings_after']}</td>
                     <td style="color:#ff6b6b">{t['sells']}</td>
@@ -859,7 +865,7 @@ class ReportGenerator:
         </table>
         <div style="margin-top:15px">
             <table>
-                <thead><tr><th>날짜</th><th>변경 전</th><th>변경 후</th><th>매도</th><th>매수</th><th>턴오버</th></tr></thead>
+                <thead><tr><th>신호일</th><th>체결일</th><th>변경 전</th><th>변경 후</th><th>매도</th><th>매수</th><th>턴오버</th></tr></thead>
                 <tbody>{rebal_detail}</tbody>
             </table>
         </div>
