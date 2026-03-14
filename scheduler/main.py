@@ -7,6 +7,7 @@
 
 스케줄:
   - 매 영업일 08:50  → 월말이면 리밸런싱 신호 계산 실행
+  - 매 영업일 15:15  → 일별 방어 체크 (MDD 서킷브레이커 + 트레일링 스톱)
   - 매 영업일 15:35  → 일별 수익 리포트 발송
 """
 
@@ -237,6 +238,113 @@ def run_monthly_rebalancing() -> None:
         notifier.send_error(str(e))
 
 
+def run_daily_defense_check() -> None:
+    """장 마감 전 일별 방어 체크 (15:15 실행)
+
+    MDD 서킷브레이커와 트레일링 스톱을 매일 체크하여
+    급락 시 당일 장중 시장가 매도로 대응합니다.
+    """
+    if not is_business_day():
+        return
+
+    logger.info("일별 방어 체크 시작 (15:15)")
+    notifier = TelegramNotifier()
+
+    try:
+        api = KiwoomRestClient()
+        balance = api.get_balance()
+
+        # 잔고 API 실패 감지
+        if balance.get("total_eval_amount", 0) == 0 and balance.get("cash", 0) == 0:
+            logger.warning("방어 체크: 잔고 API 비정상 응답 — 스킵")
+            return
+
+        holdings = balance.get("holdings", [])
+        if not holdings:
+            logger.info("방어 체크: 보유 종목 없음 — 스킵")
+            return
+
+        total_value = balance.get("total_eval_amount", 0)
+        executor = OrderExecutor(initial_value=total_value)
+
+        actions: list[str] = []
+
+        # ① MDD 서킷브레이커 체크
+        if executor._check_drawdown(total_value):
+            sold = executor.execute_emergency_liquidation()
+            actions.append(
+                f"서킷브레이커 발동: 전량 매도 {len(sold)}종목 "
+                f"({', '.join(sold)})"
+            )
+            notifier.send(
+                f"[방어 체크] 서킷브레이커 발동!\n"
+                f"전량 매도 완료: {len(sold)}종목\n"
+                f"매도 종목: {', '.join(sold)}"
+            )
+            logger.warning(f"방어 체크 완료: {'; '.join(actions)}")
+            return  # 전량 매도 후 트레일링 스톱 불필요
+
+        # ② 트레일링 스톱 체크
+        stop_tickers = executor._check_trailing_stops(balance)
+        if stop_tickers:
+            exchange = "KRX" if api.is_paper else "SOR"
+            sold_tickers: list[str] = []
+
+            for ticker in stop_tickers:
+                holding = next(
+                    (h for h in holdings if h.get("ticker") == ticker),
+                    None,
+                )
+                if not holding or holding.get("qty", 0) <= 0:
+                    continue
+
+                result = api.sell_stock(
+                    ticker=ticker,
+                    qty=holding["qty"],
+                    order_type="3",
+                    exchange=exchange,
+                )
+                if result.get("return_code") == 0:
+                    sold_tickers.append(ticker)
+                    # DB 기록
+                    from datetime import date as date_type
+
+                    price = holding.get("current_price", 0)
+                    qty = holding["qty"]
+                    amount = price * qty
+                    executor.storage.save_trade(
+                        trade_date=date_type.today(),
+                        ticker=ticker,
+                        side="SELL",
+                        quantity=qty,
+                        price=price,
+                        amount=amount,
+                        commission=amount * executor.cfg.commission_rate,
+                        tax=amount * executor.cfg.tax_rate,
+                        is_paper=settings.is_paper_trading,
+                    )
+
+            if sold_tickers:
+                actions.append(
+                    f"트레일링 스톱: {len(sold_tickers)}종목 매도 "
+                    f"({', '.join(sold_tickers)})"
+                )
+                notifier.send(
+                    f"[방어 체크] 트레일링 스톱 발동!\n"
+                    f"매도 완료: {len(sold_tickers)}종목\n"
+                    f"매도 종목: {', '.join(sold_tickers)}"
+                )
+
+        if actions:
+            logger.warning(f"방어 체크 완료: {'; '.join(actions)}")
+        else:
+            logger.info("방어 체크 완료: 이상 없음")
+
+    except Exception as e:
+        logger.error(f"방어 체크 오류: {e}", exc_info=True)
+        notifier.send_error(f"방어 체크 오류: {e}")
+
+
 def run_daily_report() -> None:
     """장 마감 후 상세 일별 수익 리포트 발송"""
     if not is_business_day():
@@ -391,6 +499,15 @@ def main() -> None:
     )
 
     scheduler.add_job(
+        run_daily_defense_check,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour=15,
+        minute=15,
+        id="daily_defense_check",
+    )
+
+    scheduler.add_job(
         run_daily_report,
         trigger="cron",
         day_of_week="mon-fri",
@@ -400,6 +517,7 @@ def main() -> None:
     )
 
     logger.info("스케줄러 시작 (Ctrl+C로 종료)")
+    logger.info("  08:50 월말 리밸런싱 | 15:15 방어 체크 | 15:35 일별 리포트")
     TelegramNotifier().send("퀀트 스케줄러가 시작되었습니다.")
 
     try:

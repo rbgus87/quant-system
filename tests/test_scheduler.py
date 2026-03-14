@@ -114,6 +114,145 @@ class TestRunMonthlyRebalancing:
                     assert "API 연결 실패" in error_arg
 
 
+class TestRunDailyDefenseCheck:
+    """일별 방어 체크 (15:15) 테스트"""
+
+    @patch("scheduler.main.is_business_day", return_value=False)
+    def test_skip_if_not_business_day(self, mock_bday) -> None:
+        """영업일이 아니면 스킵"""
+        from scheduler.main import run_daily_defense_check
+
+        with patch("scheduler.main.TelegramNotifier") as mock_notifier:
+            run_daily_defense_check()
+            mock_notifier.assert_not_called()
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_skip_if_no_holdings(self, mock_bday) -> None:
+        """보유 종목이 없으면 스킵"""
+        from scheduler.main import run_daily_defense_check
+
+        mock_api = MagicMock()
+        mock_api.get_balance.return_value = {
+            "holdings": [],
+            "cash": 10000000,
+            "total_eval_amount": 10000000,
+        }
+        mock_notifier = MagicMock()
+
+        with patch("scheduler.main.TelegramNotifier", return_value=mock_notifier):
+            with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
+                with patch("scheduler.main.OrderExecutor") as mock_exec_cls:
+                    run_daily_defense_check()
+                    # OrderExecutor가 생성되지 않아야 함
+                    mock_exec_cls.assert_not_called()
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_no_action_when_normal(self, mock_bday) -> None:
+        """이상 없으면 매도 없이 정상 종료"""
+        from scheduler.main import run_daily_defense_check
+
+        mock_api = MagicMock()
+        mock_api.get_balance.return_value = {
+            "holdings": [
+                {"ticker": "005930", "qty": 100, "avg_price": 70000, "current_price": 75000},
+            ],
+            "cash": 5000000,
+            "total_eval_amount": 12500000,
+        }
+        mock_notifier = MagicMock()
+        mock_executor = MagicMock()
+        mock_executor._check_drawdown.return_value = False
+        mock_executor._check_trailing_stops.return_value = []
+
+        with patch("scheduler.main.TelegramNotifier", return_value=mock_notifier):
+            with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
+                with patch("scheduler.main.OrderExecutor", return_value=mock_executor):
+                    run_daily_defense_check()
+                    # 매도 없음
+                    mock_api.sell_stock.assert_not_called()
+                    mock_notifier.send.assert_not_called()
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_circuit_breaker_triggers_liquidation(self, mock_bday) -> None:
+        """MDD 서킷브레이커 발동 → 전량 매도"""
+        from scheduler.main import run_daily_defense_check
+
+        mock_api = MagicMock()
+        mock_api.get_balance.return_value = {
+            "holdings": [
+                {"ticker": "005930", "qty": 100, "current_price": 50000},
+            ],
+            "cash": 1000000,
+            "total_eval_amount": 6000000,
+        }
+        mock_notifier = MagicMock()
+        mock_executor = MagicMock()
+        mock_executor._check_drawdown.return_value = True
+        mock_executor.execute_emergency_liquidation.return_value = ["005930"]
+
+        with patch("scheduler.main.TelegramNotifier", return_value=mock_notifier):
+            with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
+                with patch("scheduler.main.OrderExecutor", return_value=mock_executor):
+                    run_daily_defense_check()
+                    mock_executor.execute_emergency_liquidation.assert_called_once()
+                    # 텔레그램 알림
+                    mock_notifier.send.assert_called_once()
+                    msg = mock_notifier.send.call_args[0][0]
+                    assert "서킷브레이커" in msg
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_trailing_stop_sells_ticker(self, mock_bday) -> None:
+        """트레일링 스톱 발동 → 해당 종목 매도"""
+        from scheduler.main import run_daily_defense_check
+
+        mock_api = MagicMock()
+        mock_api.is_paper = True
+        mock_api.get_balance.return_value = {
+            "holdings": [
+                {"ticker": "005930", "qty": 100, "avg_price": 100000, "current_price": 75000},
+                {"ticker": "000660", "qty": 50, "avg_price": 150000, "current_price": 160000},
+            ],
+            "cash": 5000000,
+            "total_eval_amount": 20500000,
+        }
+        mock_api.sell_stock.return_value = {"return_code": 0, "ord_no": "S001"}
+        mock_notifier = MagicMock()
+        mock_executor = MagicMock()
+        mock_executor._check_drawdown.return_value = False
+        mock_executor._check_trailing_stops.return_value = ["005930"]
+        mock_executor.cfg = MagicMock()
+        mock_executor.cfg.commission_rate = 0.00015
+        mock_executor.cfg.tax_rate = 0.0018
+        mock_executor.storage = MagicMock()
+
+        with patch("scheduler.main.TelegramNotifier", return_value=mock_notifier):
+            with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
+                with patch("scheduler.main.OrderExecutor", return_value=mock_executor):
+                    run_daily_defense_check()
+                    # 005930만 매도
+                    mock_api.sell_stock.assert_called_once()
+                    sell_call = mock_api.sell_stock.call_args
+                    assert sell_call.kwargs.get("ticker") == "005930"
+                    # 텔레그램 알림
+                    mock_notifier.send.assert_called_once()
+                    msg = mock_notifier.send.call_args[0][0]
+                    assert "트레일링 스톱" in msg
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_error_sends_telegram(self, mock_bday) -> None:
+        """오류 발생 시 텔레그램 에러 알림"""
+        from scheduler.main import run_daily_defense_check
+
+        mock_notifier = MagicMock()
+        with patch("scheduler.main.TelegramNotifier", return_value=mock_notifier):
+            with patch(
+                "scheduler.main.KiwoomRestClient",
+                side_effect=RuntimeError("API 연결 실패"),
+            ):
+                run_daily_defense_check()
+                mock_notifier.send_error.assert_called_once()
+
+
 class TestRunDailyReport:
     """일별 리포트 작업 함수 테스트"""
 
