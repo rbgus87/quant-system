@@ -60,12 +60,13 @@ class Fundamental(Base):
 
     __tablename__ = "fundamental"
     __table_args__ = (
-        UniqueConstraint("ticker", "date", name="uq_fundamental_ticker_date"),
+        UniqueConstraint("ticker", "date", "market", name="uq_fundamental_ticker_date_market"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     ticker = Column(String(10), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
+    market = Column(String(10), nullable=False, default="KOSPI", server_default="KOSPI")
     bps = Column(Float)
     per = Column(Float)
     pbr = Column(Float)
@@ -164,8 +165,24 @@ class DataStorage:
             cursor.close()
 
         Base.metadata.create_all(self.engine)
+        self._migrate_fundamental_market_column()
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info(f"DB 연결: {path}")
+
+    def _migrate_fundamental_market_column(self) -> None:
+        """기존 DB에 fundamental.market 컬럼이 없으면 추가 (하위 호환)"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(fundamental)"))
+                columns = [row[1] for row in result]
+                if "market" not in columns:
+                    conn.execute(
+                        text("ALTER TABLE fundamental ADD COLUMN market VARCHAR(10) DEFAULT 'KOSPI'")
+                    )
+                    conn.commit()
+                    logger.info("DB 마이그레이션: fundamental.market 컬럼 추가 완료")
+        except Exception as e:
+            logger.debug(f"fundamental 마이그레이션 스킵: {e}")
 
     # ───────────────────────────────────────────────
     # 내부 헬퍼
@@ -308,12 +325,13 @@ class DataStorage:
     # 기본 지표
     # ───────────────────────────────────────────────
 
-    def save_fundamentals(self, dt: date, df: pd.DataFrame) -> int:
+    def save_fundamentals(self, dt: date, df: pd.DataFrame, market: str = "KOSPI") -> int:
         """기본 지표 upsert 저장
 
         Args:
             dt: 기준 날짜
             df: DataFrame(index=ticker, columns=[BPS, PER, PBR, EPS, DIV])
+            market: 시장 구분 (KOSPI/KOSDAQ)
 
         Returns:
             저장된 행 수
@@ -324,38 +342,40 @@ class DataStorage:
         tmp = df.reset_index()
         tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
         tmp["date"] = dt
+        tmp["market"] = market
         col_map = {"BPS": "bps", "PER": "per", "PBR": "pbr", "EPS": "eps", "DIV": "div"}
         for old, new in col_map.items():
             if old in tmp.columns:
                 tmp[new] = tmp[old]
             else:
                 tmp[new] = None
-        rows = tmp[["ticker", "date", "bps", "per", "pbr", "eps", "div"]].to_dict("records")
+        rows = tmp[["ticker", "date", "market", "bps", "per", "pbr", "eps", "div"]].to_dict("records")
 
         self._upsert(
             Fundamental, rows,
-            conflict_cols=["ticker", "date"],
+            conflict_cols=["ticker", "date", "market"],
             update_cols=["bps", "per", "pbr", "eps", "div"],
         )
 
         logger.info(f"기본 지표 저장: {dt} ({len(rows)}건)")
         return len(rows)
 
-    def load_fundamentals(self, dt: date) -> pd.DataFrame:
+    def load_fundamentals(self, dt: date, market: str = "KOSPI") -> pd.DataFrame:
         """기본 지표 조회
 
         Args:
             dt: 기준 날짜
+            market: 시장 구분 (KOSPI/KOSDAQ). 해당 시장 데이터만 반환.
 
         Returns:
             DataFrame(index=ticker, columns=[BPS, PER, PBR, EPS, DIV])
         """
         sql = (
             "SELECT ticker, bps AS BPS, per AS PER, pbr AS PBR, eps AS EPS, div AS DIV "
-            "FROM fundamental WHERE date = :dt"
+            "FROM fundamental WHERE date = :dt AND (market = :market OR market IS NULL)"
         )
         with self.engine.connect() as conn:
-            df = pd.read_sql(text(sql), conn, params={"dt": str(dt)})
+            df = pd.read_sql(text(sql), conn, params={"dt": str(dt), "market": market})
 
         if df.empty:
             return pd.DataFrame()

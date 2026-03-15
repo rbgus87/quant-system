@@ -13,10 +13,10 @@
 # ============================================================
 
 # === 활성 프리셋 (이 두 줄만 바꾸면 전략+금액 전환) ===
-# 전략: A(균형) B(밸류) C(모멘텀) D(고배당) E(소형밸류) F(올시즌) G(KOSDAQ) H(최소변동성)
-preset: "D"
+# 전략: A(균형) B(밸류) C(모멘텀) D(고배당) E(소형밸류) F(올시즌) G(KOSDAQ) H(최소변동성) I(코스닥밸류)
+preset: "B"
 # 금액: 100만 / 500만 / 1000만 / 3000만 / 5000만 / 1억 / 5억
-sizing: "5억"
+sizing: "1000만"
 
 # === 개별 덮어쓰기 (프리셋 위에 추가 조정, 선택) ===
 # 아래 주석을 해제하면 프리셋 값 대신 이 값이 적용됩니다.
@@ -309,6 +309,38 @@ presets:
       trailing_stop_pct: 0.15
       max_drawdown_pct: 0.15            # MDD 서킷브레이커 활성화 (-15%)
       vol_target: 0.12                  # 변동성 타겟팅 활성화 (연 12%)
+
+  # I: 코스닥 밸류 (KOSDAQ 전용 저평가주)
+  # B(밸류)의 KOSDAQ 버전. 부실주 방어를 위해 퀄리티 필터 강화.
+  # KOSDAQ만 대상으로 극단적 저평가 종목을 포착.
+  I:
+    factor_weights:
+      value: 0.60
+      momentum: 0.15
+      quality: 0.25                        # B(20%)보다 높음: KOSDAQ 부실주 방어
+    value_weights:
+      pbr: 0.40
+      per: 0.40
+      div: 0.20
+    universe:
+      market: "KOSDAQ"                     # KOSDAQ 전용
+      min_market_cap_percentile: 15.0      # 하위 15% 제외 (초소형 제거)
+      min_avg_trading_value: 200000000     # 2억 (KOSDAQ 유동성 확보)
+    volatility:
+      max_percentile: 80.0                 # B(90%)보다 타이트 (KOSDAQ 변동성 제어)
+    market_regime:
+      partial_ratio: 0.7
+      defensive_ratio: 0.5
+    momentum:
+      absolute_momentum_enabled: false     # B와 동일: 하락장 매수 기회
+      risk_free_rate: 0.035
+    quality:
+      min_fscore: 3                        # B(2)보다 높음: KOSDAQ 부실주 필터
+    trading:
+      max_turnover_pct: 0.30
+      trailing_stop_pct: 0.20             # B(25%)보다 타이트 (KOSDAQ 급락 방어)
+      max_drawdown_pct: 0.99
+      vol_target: 0.99
 
   # ----------------------------------------------------------
   # 금액 프리셋 (종목 수, 유동성, 슬리피지만 조정)

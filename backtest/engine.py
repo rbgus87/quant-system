@@ -49,19 +49,20 @@ class MultiFactorBacktest:
         self,
         start_date: str,
         end_date: str,
-        market: str = "KOSPI",
+        market: str | None = None,
     ) -> pd.DataFrame:
         """백테스트 실행
 
         Args:
             start_date: 시작일 (YYYY-MM-DD)
             end_date: 종료일 (YYYY-MM-DD)
-            market: 대상 시장
+            market: 대상 시장 (None이면 settings.universe.market 사용)
 
         Returns:
             DataFrame(index=date, columns=[portfolio_value, cash, n_holdings, returns])
         """
-        logger.info(f"백테스트 시작: {start_date} ~ {end_date}")
+        market = market or settings.universe.market
+        logger.info(f"백테스트 시작: {start_date} ~ {end_date} ({market})")
 
         rebal_dates = self._generate_rebalance_dates(start_date, end_date, market)
 

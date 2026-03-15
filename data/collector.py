@@ -276,16 +276,19 @@ class KRXDataCollector:
         """
         dt = _parse_date(date)
 
-        # 1. 캐시 확인
-        cached = self.storage.load_fundamentals(dt)
+        # 1. 캐시 확인 (market별 분리 조회)
+        cached = self.storage.load_fundamentals(dt, market=market)
         if not cached.empty:
-            logger.info(f"[{date}] 기본 지표 캐시 히트 ({len(cached)}건)")
+            logger.info(f"[{date}] 기본 지표 캐시 히트 ({len(cached)}건, {market})")
             return cached
 
-        # 2. KRX Open API
+        # 2. KRX Open API (시장별 엔드포인트 분기)
         if self.krx_api:
             try:
-                data = self.krx_api.get_stock_base_info(date)
+                if market.upper() == "KOSDAQ":
+                    data = self.krx_api.get_kosdaq_stock_base_info(date)
+                else:
+                    data = self.krx_api.get_stock_base_info(date)
                 records = data.get("OutBlock_1", [])
                 if records:
                     df = self._parse_base_info(records)
@@ -297,9 +300,9 @@ class KRXDataCollector:
                                 has_valid = True
                                 break
                         if has_valid:
-                            self.storage.save_fundamentals(dt, df)
+                            self.storage.save_fundamentals(dt, df, market=market)
                             logger.info(
-                                f"[{date}] 기본 지표: {len(df)}건 (KRX API)"
+                                f"[{date}] 기본 지표: {len(df)}건 (KRX API, {market})"
                             )
                             return df
                         else:
@@ -313,9 +316,9 @@ class KRXDataCollector:
         # 3. DART OpenAPI 폴백 (재무제표 기반 PER/PBR 계산)
         dart_df = self._get_fundamentals_via_dart(date, market)
         if not dart_df.empty:
-            self.storage.save_fundamentals(dt, dart_df)
+            self.storage.save_fundamentals(dt, dart_df, market=market)
             logger.info(
-                f"[{date}] 기본 지표: {len(dart_df)}건 (DART → 캐시 저장)"
+                f"[{date}] 기본 지표: {len(dart_df)}건 (DART → 캐시 저장, {market})"
             )
             return dart_df
 
@@ -853,8 +856,8 @@ class ReturnCalculator:
                 logger.info(
                     f"모멘텀 벌크 프리페치: {first_day}, {last_day}"
                 )
-                self.collector.prefetch_daily_trade(first_day)
-                self.collector.prefetch_daily_trade(last_day)
+                self.collector.prefetch_daily_trade(first_day, market=settings.universe.market)
+                self.collector.prefetch_daily_trade(last_day, market=settings.universe.market)
 
                 # DB 재조회
                 bulk_df2 = self.collector.storage.load_daily_prices_bulk(
@@ -979,8 +982,8 @@ class ReturnCalculator:
             if len(sessions) >= 2:
                 first_day = sessions[0].strftime("%Y%m%d")
                 last_day = sessions[-1].strftime("%Y%m%d")
-                self.collector.prefetch_daily_trade(first_day)
-                self.collector.prefetch_daily_trade(last_day)
+                self.collector.prefetch_daily_trade(first_day, market=settings.universe.market)
+                self.collector.prefetch_daily_trade(last_day, market=settings.universe.market)
 
                 bulk_df2 = self.collector.storage.load_daily_prices_bulk(
                     remaining, sd, ed
