@@ -117,9 +117,10 @@ class TestE2EPipeline:
             mock_settings.trading.max_drawdown_pct = 0.30
             mock_settings.trading.trailing_stop_pct = 0.20
             with patch("trading.order.KiwoomRestClient", return_value=mock_api):
-                from trading.order import OrderExecutor
+                with patch("trading.order.DataStorage", return_value=MagicMock()):
+                    from trading.order import OrderExecutor
 
-                executor = OrderExecutor()
+                    executor = OrderExecutor()
 
         # 현재: 005930, 000660 → 목표: 000660, 035720, 051910
         sell_done, buy_done = executor.execute_rebalancing(

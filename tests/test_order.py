@@ -18,8 +18,9 @@ def mock_api():
 
 
 @pytest.fixture
-def executor(mock_api):
-    """OrderExecutor with mocked API"""
+def executor(mock_api, tmp_path):
+    """OrderExecutor with mocked API and isolated DB"""
+    mock_storage = MagicMock()
     with patch("trading.order.settings") as mock_settings:
         mock_settings.is_paper_trading = True
         mock_settings.trading.commission_rate = 0.00015
@@ -29,8 +30,9 @@ def executor(mock_api):
         mock_settings.trading.max_drawdown_pct = 0.30
         mock_settings.trading.trailing_stop_pct = 0.20
         with patch("trading.order.KiwoomRestClient", return_value=mock_api):
-            with patch.object(OrderExecutor, "_load_peak_value", return_value=0):
-                ex = OrderExecutor()
+            with patch("trading.order.DataStorage", return_value=mock_storage):
+                with patch.object(OrderExecutor, "_load_peak_value", return_value=0):
+                    ex = OrderExecutor()
     return ex
 
 
