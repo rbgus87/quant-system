@@ -524,6 +524,10 @@ def main() -> None:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("스케줄러 종료")
+        try:
+            TelegramNotifier().send("퀀트 스케줄러가 종료되었습니다.")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
