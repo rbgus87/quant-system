@@ -2,6 +2,9 @@ venv/
 .env
 __pycache__/
 *.pyc
+dist/
+build/
+*.spec
 *.log
 data/quant.db
 *.db

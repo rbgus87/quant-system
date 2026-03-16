@@ -105,6 +105,16 @@ class SchedulerPanel(QWidget):
         """QProcess 생성 및 시그널 연결"""
         proc = QProcess(self)
         proc.setWorkingDirectory(os.getcwd())
+
+        # Windows에서 자식 프로세스 UTF-8 출력 강제
+        env = proc.processEnvironment()
+        if env.isEmpty():
+            from PyQt6.QtCore import QProcessEnvironment
+            env = QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONIOENCODING", "utf-8")
+        env.insert("PYTHONLEGACYWINDOWSSTDIO", "0")
+        proc.setProcessEnvironment(env)
+
         proc.readyReadStandardOutput.connect(lambda: self._read_output(proc))
         proc.readyReadStandardError.connect(lambda: self._read_error(proc))
         proc.finished.connect(self._on_process_finished)
