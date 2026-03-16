@@ -217,3 +217,6 @@ class MainWindow(QMainWindow):
         event.accept()
         from PyQt6.QtWidgets import QApplication
         QApplication.instance().quit()
+        # PyInstaller exe에서 QApplication.quit()만으로 프로세스가 안 죽는 경우 대비
+        import os
+        os._exit(0)
