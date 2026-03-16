@@ -71,21 +71,21 @@ QPushButton:disabled {{
     background: {bg};
 }}
 QPushButton#startBtn {{
-    background: #40C057;
-    color: white;
-    border-color: #37B24D;
+    background: {input_bg};
+    color: #40C057;
+    border: 2px solid #40C057;
     font-weight: bold;
 }}
-QPushButton#startBtn:hover {{ background: #37B24D; }}
-QPushButton#startBtn:disabled {{ background: #868E96; color: #CED4DA; }}
+QPushButton#startBtn:hover {{ background: #40C057; color: white; }}
+QPushButton#startBtn:disabled {{ color: {border}; border-color: {border}; }}
 QPushButton#stopBtn {{
-    background: #FA5252;
-    color: white;
-    border-color: #F03E3E;
+    background: {input_bg};
+    color: #FA5252;
+    border: 2px solid #FA5252;
     font-weight: bold;
 }}
-QPushButton#stopBtn:hover {{ background: #F03E3E; }}
-QPushButton#stopBtn:disabled {{ background: #868E96; color: #CED4DA; }}
+QPushButton#stopBtn:hover {{ background: #FA5252; color: white; }}
+QPushButton#stopBtn:disabled {{ color: {border}; border-color: {border}; }}
 QTableWidget {{
     border: 1px solid {border};
     gridline-color: {border};
@@ -95,7 +95,6 @@ QTableWidget {{
 }}
 QTableWidget::item {{
     padding: 3px 6px;
-    color: {fg};
 }}
 QHeaderView::section {{
     background: {header_bg};

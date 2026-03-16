@@ -57,23 +57,20 @@ class BacktestRunner(QWidget):
         period_row.addWidget(self._cash_edit)
 
         period_row.addStretch()
-        group_layout.addLayout(period_row)
 
-        # 실행 버튼 행
-        btn_row = QHBoxLayout()
-        self._run_btn = QPushButton("백테스트 실행")
+        self._run_btn = QPushButton("실행")
         self._run_btn.clicked.connect(self._run_backtest)
-        btn_row.addWidget(self._run_btn)
+        period_row.addWidget(self._run_btn)
 
         self._stop_btn = QPushButton("중지")
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._stop_backtest)
-        btn_row.addWidget(self._stop_btn)
+        period_row.addWidget(self._stop_btn)
 
         self._status_label = QLabel("")
-        btn_row.addWidget(self._status_label)
-        btn_row.addStretch()
-        group_layout.addLayout(btn_row)
+        period_row.addWidget(self._status_label)
+
+        group_layout.addLayout(period_row)
 
         # 진행률
         self._progress = QProgressBar()
