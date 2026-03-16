@@ -167,6 +167,14 @@ class SchedulerPanel(QWidget):
         self.log_output.emit("[GUI] 스케줄러 중지")
         logger.info("스케줄러 프로세스 중지")
 
+        # Windows에서 terminate()는 cleanup 없이 즉시 종료되므로
+        # GUI에서 직접 텔레그램 종료 알림 발송
+        try:
+            from notify.telegram import TelegramNotifier
+            TelegramNotifier().send("퀀트 스케줄러가 종료되었습니다.")
+        except Exception as e:
+            logger.debug(f"종료 알림 발송 실패: {e}")
+
     def _run_now(self) -> None:
         """즉시 리밸런싱 (1회 실행)"""
         proc = self._create_process()
