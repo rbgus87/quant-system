@@ -131,18 +131,16 @@ class PortfolioView(QWidget):
                     if col >= 2
                     else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                 )
-                # 수익률 셀: 배경색으로 구분 (연한 빨강/파랑)
+                # 수익률 글자색: +연한 빨강, -연한 파랑
                 if col == 6:
                     from PyQt6.QtGui import QColor, QFont
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
                     if profit_rate > 0:
-                        item.setBackground(QColor("#FFEBEE"))  # 연한 빨강 배경
-                        item.setForeground(QColor("#D32F2F"))  # 진한 빨강 글자
+                        item.setForeground(QColor("#FF6B6B"))
                     elif profit_rate < 0:
-                        item.setBackground(QColor("#E3F2FD"))  # 연한 파랑 배경
-                        item.setForeground(QColor("#1565C0"))  # 진한 파랑 글자
+                        item.setForeground(QColor("#74C0FC"))
                 self._table.setItem(row, col, item)
 
         self._total_label.setText(

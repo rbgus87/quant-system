@@ -72,6 +72,12 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._scheduler_panel)
 
         left_layout.addStretch()
+
+        # 테마 전환 버튼 (좌측 하단)
+        self._theme_btn = QPushButton("Light")
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        left_layout.addWidget(self._theme_btn)
+
         left_panel.setMaximumWidth(340)
         left_panel.setMinimumWidth(280)
 
@@ -143,13 +149,6 @@ class MainWindow(QMainWindow):
         self._status_widget = StatusBarWidget()
         status_bar = QStatusBar()
         status_bar.addPermanentWidget(self._status_widget, 1)
-
-        # 테마 전환 버튼 (상태바 우측)
-        self._theme_btn = QPushButton("Light")
-        self._theme_btn.setFixedWidth(60)
-        self._theme_btn.clicked.connect(self._toggle_theme)
-        status_bar.addPermanentWidget(self._theme_btn)
-
         self.setStatusBar(status_bar)
 
     def _setup_tray(self) -> None:
@@ -178,16 +177,10 @@ class MainWindow(QMainWindow):
             self._log_viewer._text.setStyleSheet(
                 "QTextEdit { background-color: #1E1E1E; color: #CCCCCC; }"
             )
-            self._backtest_runner._output.setStyleSheet(
-                "QTextEdit { background-color: #1E1E1E; color: #CCCCCC; }"
-            )
         else:
             self.setStyleSheet(light_theme())
             self._theme_btn.setText("Dark")
             self._log_viewer._text.setStyleSheet(
-                "QTextEdit { background-color: #FAFAFA; color: #212529; }"
-            )
-            self._backtest_runner._output.setStyleSheet(
                 "QTextEdit { background-color: #FAFAFA; color: #212529; }"
             )
         # 차트 테마 동기화
