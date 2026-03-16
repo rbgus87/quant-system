@@ -94,8 +94,20 @@ class SchedulerPanel(QWidget):
         layout.addWidget(group)
 
     def _python_path(self) -> str:
-        """현재 venv의 Python 경로"""
-        return sys.executable
+        """Python 인터프리터 경로 (PyInstaller exe에서는 sys.executable이 exe 자체이므로 탐색)"""
+        exe = sys.executable
+        # PyInstaller로 빌드된 경우 sys.executable이 .exe를 가리킴
+        if getattr(sys, "frozen", False):
+            import shutil
+            python = shutil.which("python") or shutil.which("python3")
+            if python:
+                return python
+            # venv 또는 시스템 Python 탐색
+            for candidate in ["python.exe", "python3.exe"]:
+                path = os.path.join(os.path.dirname(exe), candidate)
+                if os.path.exists(path):
+                    return path
+        return exe
 
     def _scheduler_script(self) -> str:
         """scheduler/main.py 절대 경로"""

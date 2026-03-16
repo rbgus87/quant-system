@@ -26,6 +26,10 @@ def setup_logging() -> None:
 
 
 def main() -> None:
+    # PyInstaller --onefile에서 자식 프로세스가 exe 재실행하는 것 방지
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     setup_logging()
 
     app = QApplication(sys.argv)

@@ -119,6 +119,12 @@ class BacktestRunner(QWidget):
         self._process.readyReadStandardError.connect(self._read_error)
         self._process.finished.connect(self._on_finished)
 
+        # PyInstaller exe에서는 sys.executable이 exe이므로 Python 탐색
+        python = sys.executable
+        if getattr(sys, "frozen", False):
+            import shutil
+            python = shutil.which("python") or shutil.which("python3") or python
+
         script = os.path.join(os.getcwd(), "run_backtest.py")
         args = [
             script,
@@ -128,7 +134,7 @@ class BacktestRunner(QWidget):
             "--cash", cash,
             "--auto-lead",
         ]
-        self._process.start(sys.executable, args)
+        self._process.start(python, args)
 
     def _stop_backtest(self) -> None:
         if self._process:
