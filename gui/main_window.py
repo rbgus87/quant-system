@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QMainWindow,
+    QPushButton,
     QSplitter,
     QStatusBar,
     QTabWidget,
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.themes import dark_theme, light_theme
 from gui.tray_icon import TrayIcon
 from gui.widgets.backtest_runner import BacktestRunner
 from gui.widgets.chart_view import ChartView
@@ -29,109 +31,6 @@ from gui.widgets.status_bar import StatusBarWidget
 
 logger = logging.getLogger(__name__)
 
-# 통합 스타일시트
-_STYLESHEET = """
-QMainWindow {
-    background-color: #F8F9FA;
-}
-QGroupBox {
-    border: 1px solid #DEE2E6;
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 14px;
-    font-weight: bold;
-    color: #495057;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 6px;
-}
-QTabWidget::pane {
-    border: 1px solid #DEE2E6;
-    border-radius: 4px;
-    background: white;
-}
-QTabBar::tab {
-    padding: 6px 16px;
-    margin-right: 2px;
-    border: 1px solid #DEE2E6;
-    border-bottom: none;
-    border-radius: 4px 4px 0 0;
-    background: #F1F3F5;
-    color: #495057;
-}
-QTabBar::tab:selected {
-    background: white;
-    color: #212529;
-    font-weight: bold;
-}
-QPushButton {
-    padding: 5px 14px;
-    border: 1px solid #CED4DA;
-    border-radius: 4px;
-    background: white;
-    color: #212529;
-}
-QPushButton:hover {
-    background: #E9ECEF;
-}
-QPushButton:pressed {
-    background: #DEE2E6;
-}
-QPushButton:disabled {
-    color: #ADB5BD;
-    background: #F8F9FA;
-}
-QPushButton#startBtn {
-    background: #40C057;
-    color: white;
-    border-color: #37B24D;
-    font-weight: bold;
-}
-QPushButton#startBtn:hover { background: #37B24D; }
-QPushButton#stopBtn {
-    background: #FA5252;
-    color: white;
-    border-color: #F03E3E;
-    font-weight: bold;
-}
-QPushButton#stopBtn:hover { background: #F03E3E; }
-QTableWidget {
-    border: 1px solid #DEE2E6;
-    gridline-color: #E9ECEF;
-    background: white;
-    selection-background-color: #D0EBFF;
-}
-QTableWidget::item {
-    padding: 3px 6px;
-}
-QHeaderView::section {
-    background: #F1F3F5;
-    border: none;
-    border-bottom: 2px solid #DEE2E6;
-    padding: 5px 8px;
-    font-weight: bold;
-    color: #495057;
-}
-QComboBox {
-    padding: 4px 8px;
-    border: 1px solid #CED4DA;
-    border-radius: 4px;
-    background: white;
-}
-QLineEdit {
-    padding: 4px 8px;
-    border: 1px solid #CED4DA;
-    border-radius: 4px;
-    background: white;
-}
-QStatusBar {
-    background: #F1F3F5;
-    border-top: 1px solid #DEE2E6;
-}
-"""
-
 
 class MainWindow(QMainWindow):
     """퀀트 시스템 메인 윈도우"""
@@ -139,16 +38,17 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.force_quit = False
+        self._is_dark = True  # 기본 다크 모드
         self._setup_ui()
         self._setup_tray()
         self._setup_auto_refresh()
         self._connect_signals()
+        self._apply_theme()
 
     def _setup_ui(self) -> None:
         self.setWindowTitle("Korean Quant System")
         self.setMinimumSize(QSize(1000, 700))
         self.resize(1200, 800)
-        self.setStyleSheet(_STYLESHEET)
 
         # 중앙 위젯
         central = QWidget()
@@ -157,7 +57,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
 
-        # ── 좌측 패널 (프리셋 + 스케줄러) ──
+        # ── 좌측 패널 ──
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -167,10 +67,14 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._preset_panel)
 
         self._scheduler_panel = SchedulerPanel()
-        # 버튼에 objectName 지정 (스타일시트 매칭)
         self._scheduler_panel._start_btn.setObjectName("startBtn")
         self._scheduler_panel._stop_btn.setObjectName("stopBtn")
         left_layout.addWidget(self._scheduler_panel)
+
+        # 테마 전환 버튼
+        self._theme_btn = QPushButton("Light Mode")
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        left_layout.addWidget(self._theme_btn)
 
         left_layout.addStretch()
         left_panel.setMaximumWidth(340)
@@ -182,17 +86,16 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # 상하 스플리터 (탭 위, 로그 아래)
         v_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        # 상단: 탭 영역
+        # 상단: 탭
         tabs_widget = QWidget()
         tabs_layout = QVBoxLayout(tabs_widget)
         tabs_layout.setContentsMargins(0, 0, 0, 0)
 
         self._tabs = QTabWidget()
 
-        # 탭 1: 포트폴리오
+        # 포트폴리오 탭
         portfolio_tab = QWidget()
         portfolio_layout = QVBoxLayout(portfolio_tab)
         portfolio_layout.setContentsMargins(4, 4, 4, 4)
@@ -205,18 +108,17 @@ class MainWindow(QMainWindow):
         auto_row.addWidget(self._auto_refresh_cb)
         auto_row.addStretch()
         portfolio_layout.addLayout(auto_row)
-
         self._tabs.addTab(portfolio_tab, "포트폴리오")
 
-        # 탭 2: 차트
+        # 차트 탭
         self._chart_view = ChartView()
         self._tabs.addTab(self._chart_view, "차트")
 
-        # 탭 3: 백테스트
+        # 백테스트 탭
         self._backtest_runner = BacktestRunner()
         self._tabs.addTab(self._backtest_runner, "백테스트")
 
-        # 탭 4: 설정
+        # 설정 탭
         self._emergency_panel = EmergencyPanel()
         self._tabs.addTab(self._emergency_panel, "설정")
 
@@ -227,7 +129,6 @@ class MainWindow(QMainWindow):
         self._log_viewer = LogViewer()
         v_splitter.addWidget(self._log_viewer)
 
-        # 상단 70%, 하단 30% 비율
         v_splitter.setSizes([500, 200])
         v_splitter.setCollapsible(0, False)
         v_splitter.setCollapsible(1, False)
@@ -264,16 +165,31 @@ class MainWindow(QMainWindow):
         else:
             self._auto_refresh_timer.stop()
 
-    def _connect_signals(self) -> None:
-        # 스케줄러 로그 → 하단 로그 뷰어
-        self._scheduler_panel.log_output.connect(self._log_viewer.append_log)
+    def _toggle_theme(self) -> None:
+        self._is_dark = not self._is_dark
+        self._apply_theme()
 
-        # 스케줄러 상태 → 상태 바
+    def _apply_theme(self) -> None:
+        if self._is_dark:
+            self.setStyleSheet(dark_theme())
+            self._theme_btn.setText("Light Mode")
+            # 로그 뷰어 다크
+            self._log_viewer._text.setStyleSheet(
+                "QTextEdit { background-color: #1E1E1E; color: #CCCCCC; }"
+            )
+        else:
+            self.setStyleSheet(light_theme())
+            self._theme_btn.setText("Dark Mode")
+            # 로그 뷰어 라이트
+            self._log_viewer._text.setStyleSheet(
+                "QTextEdit { background-color: #FAFAFA; color: #212529; }"
+            )
+
+    def _connect_signals(self) -> None:
+        self._scheduler_panel.log_output.connect(self._log_viewer.append_log)
         self._scheduler_panel.status_changed.connect(
             self._status_widget.set_scheduler_status
         )
-
-        # 스케줄러 상태 → 트레이 툴팁
         self._scheduler_panel.status_changed.connect(self._update_tray_tooltip)
 
     def _update_tray_tooltip(self, running: bool) -> None:
