@@ -23,6 +23,7 @@ class ChartView(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._canvas = None
+        self._is_dark = True
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -49,9 +50,14 @@ class ChartView(QWidget):
         try:
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
             from matplotlib.figure import Figure
+            import matplotlib
+
+            # Windows 한글 폰트
+            matplotlib.rcParams["font.family"] = "Malgun Gothic"
+            matplotlib.rcParams["axes.unicode_minus"] = False
 
             self._figure = Figure(figsize=(8, 4), dpi=100)
-            self._figure.set_facecolor("#FAFAFA")
+            self._figure.set_facecolor("#25262B")
             self._canvas = FigureCanvasQTAgg(self._figure)
             group_layout.addWidget(self._canvas)
         except ImportError:
@@ -60,6 +66,17 @@ class ChartView(QWidget):
             logger.warning("matplotlib 미설치, 차트 비활성화")
 
         layout.addWidget(group)
+
+    def set_dark_mode(self, is_dark: bool) -> None:
+        """테마 변경 시 호출"""
+        self._is_dark = is_dark
+        if self._canvas:
+            self.refresh()
+
+    def _theme_colors(self) -> dict:
+        if self._is_dark:
+            return {"bg": "#25262B", "fg": "#C1C2C5", "grid": "#373A40"}
+        return {"bg": "#FFFFFF", "fg": "#212529", "grid": "#DEE2E6"}
 
     def refresh(self) -> None:
         """DB에서 Trade 데이터를 조회하여 차트 그리기"""
@@ -79,14 +96,16 @@ class ChartView(QWidget):
             start_date = end_date - timedelta(days=days)
             trades = ds.load_trades(start_date=start_date, end_date=end_date)
 
+            tc = self._theme_colors()
+            self._figure.set_facecolor(tc["bg"])
             self._figure.clear()
             ax = self._figure.add_subplot(111)
 
             if trades.empty:
                 ax.text(0.5, 0.5, "거래 데이터 없음",
-                        ha="center", va="center", fontsize=14, color="gray",
+                        ha="center", va="center", fontsize=14, color=tc["fg"],
                         transform=ax.transAxes)
-                ax.set_facecolor("#FAFAFA")
+                ax.set_facecolor(tc["bg"])
             else:
                 # 일별 매수/매도 금액 집계
                 trades["trade_date"] = pd.to_datetime(trades["trade_date"])
@@ -97,17 +116,21 @@ class ChartView(QWidget):
                 if "SELL" in daily.columns:
                     ax.bar(daily.index, -daily["SELL"], label="매도", color="#4DABF7", alpha=0.7, width=0.8)
 
-                ax.axhline(y=0, color="gray", linewidth=0.5)
-                ax.legend(fontsize=9)
-                ax.set_ylabel("금액 (원)")
-                ax.set_facecolor("#FAFAFA")
+                ax.axhline(y=0, color=tc["grid"], linewidth=0.5)
+                ax.legend(fontsize=9, facecolor=tc["bg"], edgecolor=tc["grid"],
+                          labelcolor=tc["fg"])
+                ax.set_ylabel("금액 (원)", color=tc["fg"])
+                ax.set_facecolor(tc["bg"])
+                ax.tick_params(colors=tc["fg"])
+                for spine in ax.spines.values():
+                    spine.set_color(tc["grid"])
 
                 # x축 날짜 포맷
                 import matplotlib.dates as mdates
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
                 self._figure.autofmt_xdate()
 
-            ax.set_title(f"거래 내역 ({period_text})", fontsize=11)
+            ax.set_title(f"거래 내역 ({period_text})", fontsize=11, color=tc["fg"])
             self._figure.tight_layout()
             self._canvas.draw()
 

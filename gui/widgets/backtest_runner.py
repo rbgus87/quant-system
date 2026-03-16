@@ -39,54 +39,67 @@ class BacktestRunner(QWidget):
         group = QGroupBox("백테스트")
         group_layout = QVBoxLayout(group)
 
-        # 기간 설정
-        period_row = QHBoxLayout()
-        period_row.addWidget(QLabel("시작:"))
+        # 설정 + 버튼 (한 행에 배치)
+        from PyQt6.QtWidgets import QFormLayout
+
+        settings_row = QHBoxLayout()
+
+        # 왼쪽: 입력 필드
+        form = QFormLayout()
+        form.setSpacing(6)
         self._start_edit = QLineEdit("2020-01-01")
-        self._start_edit.setMaximumWidth(120)
-        period_row.addWidget(self._start_edit)
+        self._start_edit.setFixedWidth(110)
+        form.addRow("시작일:", self._start_edit)
 
-        period_row.addWidget(QLabel("종료:"))
         self._end_edit = QLineEdit("2025-12-31")
-        self._end_edit.setMaximumWidth(120)
-        period_row.addWidget(self._end_edit)
+        self._end_edit.setFixedWidth(110)
+        form.addRow("종료일:", self._end_edit)
 
-        period_row.addWidget(QLabel("초기자본:"))
-        self._cash_edit = QLineEdit("10000000")
-        self._cash_edit.setMaximumWidth(120)
-        period_row.addWidget(self._cash_edit)
+        self._cash_edit = QLineEdit("10,000,000")
+        self._cash_edit.setFixedWidth(110)
+        form.addRow("초기자본:", self._cash_edit)
 
-        period_row.addStretch()
-        group_layout.addLayout(period_row)
+        settings_row.addLayout(form)
 
-        # 실행 버튼 행
-        btn_row = QHBoxLayout()
+        # 오른쪽: 버튼 + 상태
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(6)
+
         self._run_btn = QPushButton("백테스트 실행")
+        self._run_btn.setObjectName("startBtn")
+        self._run_btn.setMinimumHeight(36)
         self._run_btn.clicked.connect(self._run_backtest)
-        btn_row.addWidget(self._run_btn)
+        btn_col.addWidget(self._run_btn)
 
         self._stop_btn = QPushButton("중지")
+        self._stop_btn.setObjectName("stopBtn")
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._stop_backtest)
-        btn_row.addWidget(self._stop_btn)
+        btn_col.addWidget(self._stop_btn)
 
         self._status_label = QLabel("")
-        btn_row.addWidget(self._status_label)
-        btn_row.addStretch()
-        group_layout.addLayout(btn_row)
+        self._status_label.setStyleSheet("font-weight: bold;")
+        btn_col.addWidget(self._status_label)
 
-        # 진행률
         self._progress = QProgressBar()
-        self._progress.setRange(0, 0)  # indeterminate
+        self._progress.setRange(0, 0)
         self._progress.setVisible(False)
-        group_layout.addWidget(self._progress)
+        self._progress.setFixedHeight(6)
+        btn_col.addWidget(self._progress)
+
+        btn_col.addStretch()
+        settings_row.addLayout(btn_col)
+        settings_row.addStretch()
+        group_layout.addLayout(settings_row)
 
         # 출력 영역
         self._output = QTextEdit()
         self._output.setReadOnly(True)
-        self._output.setMaximumHeight(250)
         from PyQt6.QtGui import QFont
         self._output.setFont(QFont("Consolas", 9))
+        self._output.setStyleSheet(
+            "QTextEdit { background-color: #1E1E1E; color: #CCCCCC; }"
+        )
         group_layout.addWidget(self._output)
 
         layout.addWidget(group)
@@ -98,7 +111,7 @@ class BacktestRunner(QWidget):
 
         start = self._start_edit.text().strip()
         end = self._end_edit.text().strip()
-        cash = self._cash_edit.text().strip()
+        cash = self._cash_edit.text().strip().replace(",", "")
 
         self._output.clear()
         self._output_lines.clear()

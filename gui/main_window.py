@@ -71,11 +71,6 @@ class MainWindow(QMainWindow):
         self._scheduler_panel._stop_btn.setObjectName("stopBtn")
         left_layout.addWidget(self._scheduler_panel)
 
-        # 테마 전환 버튼
-        self._theme_btn = QPushButton("Light Mode")
-        self._theme_btn.clicked.connect(self._toggle_theme)
-        left_layout.addWidget(self._theme_btn)
-
         left_layout.addStretch()
         left_panel.setMaximumWidth(340)
         left_panel.setMinimumWidth(280)
@@ -148,6 +143,13 @@ class MainWindow(QMainWindow):
         self._status_widget = StatusBarWidget()
         status_bar = QStatusBar()
         status_bar.addPermanentWidget(self._status_widget, 1)
+
+        # 테마 전환 버튼 (상태바 우측)
+        self._theme_btn = QPushButton("Light")
+        self._theme_btn.setFixedWidth(60)
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        status_bar.addPermanentWidget(self._theme_btn)
+
         self.setStatusBar(status_bar)
 
     def _setup_tray(self) -> None:
@@ -172,18 +174,24 @@ class MainWindow(QMainWindow):
     def _apply_theme(self) -> None:
         if self._is_dark:
             self.setStyleSheet(dark_theme())
-            self._theme_btn.setText("Light Mode")
-            # 로그 뷰어 다크
+            self._theme_btn.setText("Light")
             self._log_viewer._text.setStyleSheet(
+                "QTextEdit { background-color: #1E1E1E; color: #CCCCCC; }"
+            )
+            self._backtest_runner._output.setStyleSheet(
                 "QTextEdit { background-color: #1E1E1E; color: #CCCCCC; }"
             )
         else:
             self.setStyleSheet(light_theme())
-            self._theme_btn.setText("Dark Mode")
-            # 로그 뷰어 라이트
+            self._theme_btn.setText("Dark")
             self._log_viewer._text.setStyleSheet(
                 "QTextEdit { background-color: #FAFAFA; color: #212529; }"
             )
+            self._backtest_runner._output.setStyleSheet(
+                "QTextEdit { background-color: #FAFAFA; color: #212529; }"
+            )
+        # 차트 테마 동기화
+        self._chart_view.set_dark_mode(self._is_dark)
 
     def _connect_signals(self) -> None:
         self._scheduler_panel.log_output.connect(self._log_viewer.append_log)
