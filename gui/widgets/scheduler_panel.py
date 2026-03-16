@@ -1,0 +1,208 @@
+# gui/widgets/scheduler_panel.py
+"""스케줄러 제어 패널 — 시작/중지/즉시 실행"""
+
+import logging
+import os
+import sys
+from typing import Optional
+
+from PyQt6.QtCore import QProcess, QTimer, pyqtSignal
+from PyQt6.QtWidgets import (
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class SchedulerPanel(QWidget):
+    """스케줄러 프로세스 관리 위젯"""
+
+    status_changed = pyqtSignal(bool)  # True=running, False=stopped
+    log_output = pyqtSignal(str)  # 스케줄러 stdout/stderr
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._process: Optional[QProcess] = None
+        self._setup_ui()
+        self._update_buttons()
+
+        # 상태 폴링 타이머
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._check_status)
+        self._timer.start(2000)
+
+    def _setup_ui(self) -> None:
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        group = QGroupBox("스케줄러")
+        group_layout = QVBoxLayout(group)
+
+        # 상태 표시
+        status_row = QHBoxLayout()
+        self._status_icon = QLabel()
+        self._status_label = QLabel("중지됨")
+        self._status_label.setStyleSheet("font-weight: bold;")
+        status_row.addWidget(self._status_icon)
+        status_row.addWidget(self._status_label)
+        status_row.addStretch()
+        group_layout.addLayout(status_row)
+
+        # 다음 실행 시간
+        self._next_run_label = QLabel("")
+        self._next_run_label.setStyleSheet("color: gray; font-size: 11px;")
+        group_layout.addWidget(self._next_run_label)
+
+        # 버튼 행
+        btn_row = QHBoxLayout()
+
+        self._start_btn = QPushButton("시작")
+        self._start_btn.clicked.connect(self.start_scheduler)
+        btn_row.addWidget(self._start_btn)
+
+        self._stop_btn = QPushButton("중지")
+        self._stop_btn.clicked.connect(self.stop_scheduler)
+        btn_row.addWidget(self._stop_btn)
+
+        self._now_btn = QPushButton("즉시 실행")
+        self._now_btn.setToolTip("월말 체크 무시하고 즉시 리밸런싱 1회 실행")
+        self._now_btn.clicked.connect(self._run_now)
+        btn_row.addWidget(self._now_btn)
+
+        group_layout.addLayout(btn_row)
+
+        # 추가 버튼 행
+        btn_row2 = QHBoxLayout()
+
+        self._dryrun_btn = QPushButton("연결 테스트")
+        self._dryrun_btn.setToolTip("API 연결 + 토큰 + 텔레그램 확인")
+        self._dryrun_btn.clicked.connect(self._run_dryrun)
+        btn_row2.addWidget(self._dryrun_btn)
+
+        self._screen_btn = QPushButton("스크리닝만")
+        self._screen_btn.setToolTip("종목 선정만 실행 (매매 없음)")
+        self._screen_btn.clicked.connect(self._run_screen_only)
+        btn_row2.addWidget(self._screen_btn)
+
+        group_layout.addLayout(btn_row2)
+
+        layout.addWidget(group)
+
+    def _python_path(self) -> str:
+        """현재 venv의 Python 경로"""
+        return sys.executable
+
+    def _scheduler_script(self) -> str:
+        """scheduler/main.py 절대 경로"""
+        return os.path.join(os.getcwd(), "scheduler", "main.py")
+
+    def _create_process(self) -> QProcess:
+        """QProcess 생성 및 시그널 연결"""
+        proc = QProcess(self)
+        proc.setWorkingDirectory(os.getcwd())
+        proc.readyReadStandardOutput.connect(lambda: self._read_output(proc))
+        proc.readyReadStandardError.connect(lambda: self._read_error(proc))
+        proc.finished.connect(self._on_process_finished)
+        return proc
+
+    def _read_output(self, proc: QProcess) -> None:
+        data = proc.readAllStandardOutput().data().decode("utf-8", errors="replace")
+        for line in data.strip().splitlines():
+            self.log_output.emit(line)
+
+    def _read_error(self, proc: QProcess) -> None:
+        data = proc.readAllStandardError().data().decode("utf-8", errors="replace")
+        for line in data.strip().splitlines():
+            self.log_output.emit(line)
+
+    def _on_process_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
+        if self._process and self._process.property("mode") == "scheduler":
+            self._process = None
+            self._update_buttons()
+            self.status_changed.emit(False)
+            logger.info(f"스케줄러 종료 (code={exit_code})")
+
+    def is_running(self) -> bool:
+        return self._process is not None and self._process.state() == QProcess.ProcessState.Running
+
+    def start_scheduler(self) -> None:
+        """스케줄러 시작 (상주 모드)"""
+        if self.is_running():
+            return
+
+        self._process = self._create_process()
+        self._process.setProperty("mode", "scheduler")
+        self._process.start(self._python_path(), [self._scheduler_script()])
+        self._update_buttons()
+        self.status_changed.emit(True)
+        self.log_output.emit("[GUI] 스케줄러 시작")
+        logger.info("스케줄러 프로세스 시작")
+
+    def stop_scheduler(self) -> None:
+        """스케줄러 중지"""
+        if not self.is_running():
+            return
+
+        self._process.terminate()
+        if not self._process.waitForFinished(5000):
+            self._process.kill()
+        self._process = None
+        self._update_buttons()
+        self.status_changed.emit(False)
+        self.log_output.emit("[GUI] 스케줄러 중지")
+        logger.info("스케줄러 프로세스 중지")
+
+    def _run_now(self) -> None:
+        """즉시 리밸런싱 (1회 실행)"""
+        proc = self._create_process()
+        proc.setProperty("mode", "oneshot")
+        proc.start(self._python_path(), [self._scheduler_script(), "--now"])
+        self.log_output.emit("[GUI] 즉시 리밸런싱 실행")
+
+    def _run_dryrun(self) -> None:
+        """연결 테스트"""
+        proc = self._create_process()
+        proc.setProperty("mode", "oneshot")
+        proc.start(self._python_path(), [self._scheduler_script(), "--dry-run"])
+        self.log_output.emit("[GUI] 연결 테스트 실행")
+
+    def _run_screen_only(self) -> None:
+        """스크리닝만 실행"""
+        proc = self._create_process()
+        proc.setProperty("mode", "oneshot")
+        proc.start(self._python_path(), [self._scheduler_script(), "--screen-only"])
+        self.log_output.emit("[GUI] 스크리닝만 실행")
+
+    def _update_buttons(self) -> None:
+        running = self.is_running()
+        self._start_btn.setEnabled(not running)
+        self._stop_btn.setEnabled(running)
+        self._now_btn.setEnabled(not running)
+        self._dryrun_btn.setEnabled(not running)
+        self._screen_btn.setEnabled(not running)
+
+        if running:
+            self._status_label.setText("실행 중")
+            self._status_label.setStyleSheet("font-weight: bold; color: green;")
+            self._next_run_label.setText(
+                "08:50 리밸런싱 | 15:15 방어 체크 | 15:35 리포트"
+            )
+        else:
+            self._status_label.setText("중지됨")
+            self._status_label.setStyleSheet("font-weight: bold; color: gray;")
+            self._next_run_label.setText("")
+
+    def _check_status(self) -> None:
+        """프로세스 상태 주기적 확인"""
+        self._update_buttons()
+
+    def cleanup(self) -> None:
+        """앱 종료 시 프로세스 정리"""
+        if self.is_running():
+            self._process.terminate()
+            self._process.waitForFinished(3000)
