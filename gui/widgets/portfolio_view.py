@@ -4,7 +4,7 @@
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -20,6 +20,23 @@ from PyQt6.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 
+class _BalanceWorker(QThread):
+    """잔고 조회를 백그라운드에서 실행"""
+
+    finished = pyqtSignal(dict)
+    error = pyqtSignal(str)
+
+    def run(self) -> None:
+        try:
+            from trading.kiwoom_api import KiwoomRestClient
+
+            api = KiwoomRestClient()
+            balance = api.get_balance()
+            self.finished.emit(balance)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class PortfolioView(QWidget):
     """보유 종목 테이블 위젯"""
 
@@ -27,6 +44,7 @@ class PortfolioView(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        self._worker: Optional[_BalanceWorker] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -43,9 +61,9 @@ class PortfolioView(QWidget):
         summary_row.addWidget(self._total_label)
         summary_row.addStretch()
 
-        refresh_btn = QPushButton("새로고침")
-        refresh_btn.clicked.connect(self.refresh)
-        summary_row.addWidget(refresh_btn)
+        self._refresh_btn = QPushButton("새로고침")
+        self._refresh_btn.clicked.connect(self.refresh)
+        summary_row.addWidget(self._refresh_btn)
         group_layout.addLayout(summary_row)
 
         # 테이블
@@ -63,77 +81,53 @@ class PortfolioView(QWidget):
         layout.addWidget(group)
 
     def refresh(self) -> None:
-        """키움 API에서 잔고 조회 후 테이블 갱신"""
-        try:
-            from trading.kiwoom_api import KiwoomRestClient
+        """키움 API에서 잔고 조회 (백그라운드 스레드)"""
+        if self._worker and self._worker.isRunning():
+            return
 
-            api = KiwoomRestClient()
-            balance = api.get_balance()
+        self._refresh_btn.setEnabled(False)
+        self._refresh_btn.setText("조회 중...")
+        self._total_label.setText("잔고 조회 중...")
 
-            holdings = balance.get("holdings", [])
-            cash = balance.get("cash", 0)
-            total = balance.get("total_eval_amount", 0)
+        self._worker = _BalanceWorker()
+        self._worker.finished.connect(self._on_balance_loaded)
+        self._worker.error.connect(self._on_balance_error)
+        self._worker.start()
 
-            self._table.setRowCount(len(holdings))
+    def _on_balance_loaded(self, balance: dict) -> None:
+        """잔고 조회 완료"""
+        self._refresh_btn.setEnabled(True)
+        self._refresh_btn.setText("새로고침")
 
-            for row, h in enumerate(holdings):
-                ticker = h.get("ticker", "")
-                name = h.get("name", "")
-                qty = h.get("qty", 0)
-                avg_price = h.get("avg_price", 0)
-                current_price = h.get("current_price", 0)
-                eval_amount = h.get("eval_amount", 0)
-                pnl_pct = h.get("pnl_pct", 0)
+        holdings = balance.get("holdings", [])
+        cash = balance.get("cash", 0)
+        total = balance.get("total_eval_amount", 0)
 
-                items = [
-                    ticker,
-                    name,
-                    f"{qty:,}",
-                    f"{avg_price:,.0f}",
-                    f"{current_price:,.0f}",
-                    f"{eval_amount:,.0f}",
-                    f"{pnl_pct:+.2f}%",
-                ]
-
-                for col, val in enumerate(items):
-                    item = QTableWidgetItem(val)
-                    item.setTextAlignment(
-                        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                        if col >= 2
-                        else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-                    )
-                    # 수익률 색상
-                    if col == 6:
-                        if pnl_pct > 0:
-                            item.setForeground(Qt.GlobalColor.red)
-                        elif pnl_pct < 0:
-                            item.setForeground(Qt.GlobalColor.blue)
-                    self._table.setItem(row, col, item)
-
-            self._total_label.setText(
-                f"총 평가: {total:,.0f}원 | 예수금: {cash:,.0f}원 | "
-                f"종목 수: {len(holdings)}"
-            )
-
-        except Exception as e:
-            logger.warning(f"잔고 조회 실패: {e}")
-            self._total_label.setText(f"조회 실패: {e}")
-            self._table.setRowCount(0)
-
-    def update_holdings(self, holdings: list[dict], total: float, cash: float) -> None:
-        """외부에서 직접 데이터를 전달하여 테이블 갱신"""
         self._table.setRowCount(len(holdings))
 
         for row, h in enumerate(holdings):
+            ticker = h.get("ticker", "")
+            name = h.get("name", "")
+            qty = h.get("qty", 0)
+            avg_price = h.get("avg_price", 0)
+            current_price = h.get("current_price", 0)
+            eval_amount = h.get("eval_amount", 0)
+            profit_rate = h.get("profit_rate", 0)
+
+            # 매수가가 0이면 평가금액/수량으로 추정
+            if avg_price == 0 and qty > 0 and eval_amount > 0:
+                avg_price = eval_amount / qty
+
             items = [
-                h.get("ticker", ""),
-                h.get("name", ""),
-                f"{h.get('qty', 0):,}",
-                f"{h.get('avg_price', 0):,.0f}",
-                f"{h.get('current_price', 0):,.0f}",
-                f"{h.get('eval_amount', 0):,.0f}",
-                f"{h.get('pnl_pct', 0):+.2f}%",
+                ticker,
+                name,
+                f"{qty:,}",
+                f"{avg_price:,.0f}",
+                f"{current_price:,.0f}",
+                f"{eval_amount:,.0f}",
+                f"{profit_rate:+.2f}%",
             ]
+
             for col, val in enumerate(items):
                 item = QTableWidgetItem(val)
                 item.setTextAlignment(
@@ -141,9 +135,23 @@ class PortfolioView(QWidget):
                     if col >= 2
                     else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
                 )
+                # 수익률 색상
+                if col == 6:
+                    if profit_rate > 0:
+                        item.setForeground(Qt.GlobalColor.red)
+                    elif profit_rate < 0:
+                        item.setForeground(Qt.GlobalColor.blue)
                 self._table.setItem(row, col, item)
 
         self._total_label.setText(
             f"총 평가: {total:,.0f}원 | 예수금: {cash:,.0f}원 | "
             f"종목 수: {len(holdings)}"
         )
+
+    def _on_balance_error(self, error_msg: str) -> None:
+        """잔고 조회 실패"""
+        self._refresh_btn.setEnabled(True)
+        self._refresh_btn.setText("새로고침")
+        self._total_label.setText(f"조회 실패: {error_msg}")
+        self._table.setRowCount(0)
+        logger.warning(f"잔고 조회 실패: {error_msg}")
