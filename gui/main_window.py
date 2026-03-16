@@ -4,9 +4,10 @@
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QMainWindow,
     QSplitter,
@@ -17,6 +18,9 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.tray_icon import TrayIcon
+from gui.widgets.backtest_runner import BacktestRunner
+from gui.widgets.chart_view import ChartView
+from gui.widgets.emergency_panel import EmergencyPanel
 from gui.widgets.log_viewer import LogViewer
 from gui.widgets.portfolio_view import PortfolioView
 from gui.widgets.preset_panel import PresetPanel
@@ -34,6 +38,7 @@ class MainWindow(QMainWindow):
         self.force_quit = False
         self._setup_ui()
         self._setup_tray()
+        self._setup_auto_refresh()
         self._connect_signals()
 
     def _setup_ui(self) -> None:
@@ -61,20 +66,46 @@ class MainWindow(QMainWindow):
         left_panel.setMaximumWidth(350)
         left_panel.setMinimumWidth(280)
 
-        # 우측 패널 (탭: 포트폴리오 + 로그)
+        # 우측 패널 (탭)
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         self._tabs = QTabWidget()
 
-        # 포트폴리오 탭
-        self._portfolio_view = PortfolioView()
-        self._tabs.addTab(self._portfolio_view, "포트폴리오")
+        # 탭 1: 포트폴리오
+        portfolio_tab = QWidget()
+        portfolio_layout = QVBoxLayout(portfolio_tab)
+        portfolio_layout.setContentsMargins(4, 4, 4, 4)
 
-        # 로그 탭
+        self._portfolio_view = PortfolioView()
+        portfolio_layout.addWidget(self._portfolio_view)
+
+        # 자동 갱신 체크박스
+        auto_row = QHBoxLayout()
+        self._auto_refresh_cb = QCheckBox("30초마다 자동 갱신")
+        self._auto_refresh_cb.stateChanged.connect(self._toggle_auto_refresh)
+        auto_row.addWidget(self._auto_refresh_cb)
+        auto_row.addStretch()
+        portfolio_layout.addLayout(auto_row)
+
+        self._tabs.addTab(portfolio_tab, "포트폴리오")
+
+        # 탭 2: 차트
+        self._chart_view = ChartView()
+        self._tabs.addTab(self._chart_view, "차트")
+
+        # 탭 3: 로그
         self._log_viewer = LogViewer()
         self._tabs.addTab(self._log_viewer, "로그")
+
+        # 탭 4: 백테스트
+        self._backtest_runner = BacktestRunner()
+        self._tabs.addTab(self._backtest_runner, "백테스트")
+
+        # 탭 5: 설정/비상
+        self._emergency_panel = EmergencyPanel()
+        self._tabs.addTab(self._emergency_panel, "설정")
 
         right_layout.addWidget(self._tabs)
 
@@ -98,6 +129,18 @@ class MainWindow(QMainWindow):
         self._tray = TrayIcon(self)
         self._tray.show()
 
+    def _setup_auto_refresh(self) -> None:
+        """포트폴리오 자동 갱신 타이머"""
+        self._auto_refresh_timer = QTimer(self)
+        self._auto_refresh_timer.timeout.connect(self._portfolio_view.refresh)
+
+    def _toggle_auto_refresh(self, state: int) -> None:
+        if state:
+            self._auto_refresh_timer.start(30000)  # 30초
+            self._portfolio_view.refresh()  # 즉시 한 번 실행
+        else:
+            self._auto_refresh_timer.stop()
+
     def _connect_signals(self) -> None:
         """시그널 연결"""
         # 스케줄러 로그 → 로그 뷰어
@@ -118,6 +161,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         """창 닫기 시 트레이로 최소화 (force_quit이면 종료)"""
         if self.force_quit:
+            self._auto_refresh_timer.stop()
             self._scheduler_panel.cleanup()
             self._tray.hide()
             event.accept()
