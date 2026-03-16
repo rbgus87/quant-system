@@ -76,6 +76,9 @@ class PortfolioView(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setAlternatingRowColors(True)
+        self._table.setStyleSheet(
+            "QTableWidget { alternate-background-color: #F5F5F5; }"
+        )
         group_layout.addWidget(self._table)
 
         layout.addWidget(group)
