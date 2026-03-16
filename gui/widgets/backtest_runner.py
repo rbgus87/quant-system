@@ -34,10 +34,11 @@ class BacktestRunner(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(4, 4, 4, 4)
 
         group = QGroupBox("백테스트")
         group_layout = QVBoxLayout(group)
+        group_layout.setSpacing(6)
 
         # 기간 설정
         period_row = QHBoxLayout()
@@ -78,13 +79,13 @@ class BacktestRunner(QWidget):
         self._progress.setVisible(False)
         group_layout.addWidget(self._progress)
 
-        # 출력 영역
+        # 출력 영역 (백테스트 로그)
         self._output = QTextEdit()
         self._output.setReadOnly(True)
-        self._output.setMaximumHeight(250)
+        self._output.setPlaceholderText("백테스트 실행 결과가 여기에 표시됩니다")
         from PyQt6.QtGui import QFont
         self._output.setFont(QFont("Consolas", 9))
-        group_layout.addWidget(self._output)
+        group_layout.addWidget(self._output, 1)  # stretch=1로 나머지 공간 채움
 
         layout.addWidget(group)
 
@@ -118,11 +119,14 @@ class BacktestRunner(QWidget):
         self._process.readyReadStandardError.connect(self._read_error)
         self._process.finished.connect(self._on_finished)
 
+        script = os.path.join(os.getcwd(), "run_backtest.py")
         args = [
-            "-m", "backtest.engine",
+            script,
+            "--mode", "custom",
             "--start", start,
             "--end", end,
             "--cash", cash,
+            "--auto-lead",
         ]
         self._process.start(sys.executable, args)
 
