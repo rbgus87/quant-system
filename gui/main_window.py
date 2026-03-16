@@ -198,17 +198,22 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip(f"Korean Quant System - 스케줄러: {status}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self.force_quit:
-            self._auto_refresh_timer.stop()
-            self._scheduler_panel.cleanup()
-            self._tray.hide()
-            event.accept()
-        else:
+        # 스케줄러 실행 중이면 트레이로 최소화 (force_quit이 아닌 경우)
+        if not self.force_quit and self._scheduler_panel.is_running():
             event.ignore()
             self.hide()
             self._tray.showMessage(
                 "Korean Quant System",
-                "트레이에서 실행 중입니다. 더블클릭으로 열 수 있습니다.",
+                "스케줄러 실행 중 — 트레이에서 실행 중입니다.",
                 TrayIcon.MessageIcon.Information,
                 2000,
             )
+            return
+
+        # 완전 종료
+        self._auto_refresh_timer.stop()
+        self._scheduler_panel.cleanup()
+        self._tray.hide()
+        event.accept()
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().quit()
