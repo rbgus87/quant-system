@@ -139,37 +139,110 @@ class TelegramNotifier:
         sell_done: list[str],
         buy_done: list[str],
         total_value: float,
-        sell_total: int = 0,
-        buy_total: int = 0,
+        balance: Optional[dict] = None,
     ) -> bool:
-        """월별 리밸런싱 결과 알림
+        """월별 리밸런싱 결과 알림 (Trade DB에서 상세 조회)
 
         Args:
-            sell_done: 매도 완료 종목 리스트
-            buy_done: 매수 완료 종목 리스트
-            total_value: 총 평가금액
-            sell_total: 매도 계획 수
-            buy_total: 매수 계획 수
+            sell_done: 매도 완료 종목 코드 리스트
+            buy_done: 매수 완료 종목 코드 리스트
+            total_value: 총 자산 (평가 + 예수금)
+            balance: get_balance() 결과 (보유종목 표시용)
 
         Returns:
             발송 성공 여부
         """
-        sell_preview = ", ".join(sell_done[:5])
-        if len(sell_done) > 5:
-            sell_preview += " ..."
-        buy_preview = ", ".join(buy_done[:5])
-        if len(buy_done) > 5:
-            buy_preview += " ..."
+        # Trade DB에서 오늘 거래 내역 조회
+        trades = self._load_today_trades()
 
-        msg = (
-            f"*월별 리밸런싱 완료*\n\n"
-            f"매도: {len(sell_done)}/{sell_total or len(sell_done)}개\n"
-            f"`{sell_preview}`\n\n"
-            f"매수: {len(buy_done)}/{buy_total or len(buy_done)}개\n"
-            f"`{buy_preview}`\n\n"
-            f"총 평가금액: {total_value:,.0f}원"
-        )
+        lines = ["*월별 리밸런싱 완료*"]
+
+        # 매도 내역
+        sell_trades = [t for t in trades if t["side"] == "SELL"]
+        if sell_trades:
+            sell_total_amt = sum(t["amount"] for t in sell_trades)
+            lines.append(f"\n*매도* ({len(sell_trades)}종목, {sell_total_amt:,.0f}원)")
+            for t in sell_trades:
+                name = t.get("name") or t["ticker"]
+                lines.append(
+                    f"  {name} {t['quantity']}주 x {t['price']:,.0f}원"
+                )
+        elif not sell_done:
+            lines.append("\n*매도* 없음")
+
+        # 매수 내역
+        buy_trades = [t for t in trades if t["side"] == "BUY"]
+        if buy_trades:
+            buy_total_amt = sum(t["amount"] for t in buy_trades)
+            lines.append(f"\n*매수* ({len(buy_trades)}종목, {buy_total_amt:,.0f}원)")
+            for t in buy_trades:
+                name = t.get("name") or t["ticker"]
+                lines.append(
+                    f"  {name} {t['quantity']}주 x {t['price']:,.0f}원"
+                )
+        elif not buy_done:
+            lines.append("\n*매수* 없음")
+
+        # 계좌 요약
+        lines.append("")
+        if balance:
+            cash = balance.get("cash", 0)
+            eval_amt = balance.get("total_eval_amount", 0)
+            lines.append(f"총 자산: `{total_value:,.0f}원`")
+            if eval_amt > 0:
+                lines.append(f"  평가금액: {eval_amt:,.0f}원")
+            lines.append(f"  예수금: {cash:,.0f}원")
+        else:
+            lines.append(f"총 자산: `{total_value:,.0f}원`")
+
+        msg = "\n".join(lines)
         return self.send(msg)
+
+    def _load_today_trades(self) -> list[dict]:
+        """오늘 거래 내역을 Trade DB에서 조회
+
+        Returns:
+            거래 내역 리스트 [{ticker, side, quantity, price, amount, name}, ...]
+        """
+        try:
+            from data.storage import DataStorage
+            from data.collector import KRXDataCollector
+            from datetime import date as date_type
+
+            storage = DataStorage()
+            collector = KRXDataCollector()
+            today = date_type.today()
+
+            with storage.engine.connect() as conn:
+                from sqlalchemy import text
+
+                rows = conn.execute(
+                    text(
+                        "SELECT ticker, side, quantity, price, amount "
+                        "FROM trade WHERE trade_date = :dt "
+                        "ORDER BY id"
+                    ),
+                    {"dt": str(today)},
+                ).fetchall()
+
+            result = []
+            for row in rows:
+                ticker = row[0]
+                name = collector.get_ticker_name(ticker)
+                result.append(
+                    {
+                        "ticker": ticker,
+                        "side": row[1],
+                        "quantity": row[2],
+                        "price": row[3],
+                        "amount": row[4],
+                        "name": name if name != ticker else "",
+                    }
+                )
+            return result
+        except Exception as e:
+            logger.warning(f"거래 내역 조회 실패: {e}")
+            return []
 
     def send_daily_report(self, daily_return: float, total_value: float) -> bool:
         """일별 수익 리포트 (하위 호환용, 상세 리포트 권장)

@@ -346,10 +346,10 @@ class KRXDataCollector:
         """
         dt = _parse_date(date)
 
-        # 1. 캐시 확인
-        cached = self.storage.load_market_caps(dt)
+        # 1. 캐시 확인 (시장별 분리)
+        cached = self.storage.load_market_caps(dt, market=market)
         if not cached.empty:
-            logger.info(f"[{date}] 시가총액 캐시 히트 ({len(cached)}건)")
+            logger.info(f"[{date}] 시가총액 캐시 히트 ({len(cached)}건, {market})")
             return cached
 
         # 2. KRX Open API (일별 거래 데이터에 시가총액 포함)
@@ -361,9 +361,9 @@ class KRXDataCollector:
                 if records:
                     df = self._parse_daily_trade_market_cap(records)
                     if not df.empty:
-                        self.storage.save_market_caps(dt, df)
+                        self.storage.save_market_caps(dt, df, market=market)
                         logger.info(
-                            f"[{date}] 시가총액: {len(df)}건 (KRX API → 캐시 저장)"
+                            f"[{date}] 시가총액: {len(df)}건 (KRX API → 캐시 저장, {market})"
                         )
                         return df
             except Exception as e:
@@ -397,11 +397,11 @@ class KRXDataCollector:
 
         dt = _parse_date(date)
 
-        # DB 캐시 확인: 해당 날짜에 충분한 데이터가 이미 있으면 API 스킵
-        cached_count = self.storage.load_daily_prices_for_date(dt)
-        if cached_count >= 100:  # KOSPI 종목 수 기준 충분한 데이터
+        # DB 캐시 확인: 해당 날짜·시장에 충분한 데이터가 이미 있으면 API 스킵
+        cached_count = self.storage.load_daily_prices_for_date(dt, market=market)
+        if cached_count >= 100:
             self._prefetched_dates.add(cache_key)
-            logger.debug(f"[{date}] DB 캐시 히트 ({cached_count}건), API 스킵")
+            logger.debug(f"[{date}] DB 캐시 히트 ({cached_count}건, {market}), API 스킵")
             return pd.DataFrame()
 
         if not self.krx_api:
@@ -438,14 +438,14 @@ class KRXDataCollector:
 
             df = pd.DataFrame(rows).set_index("ticker")
 
-            # OHLCV 캐시 일괄 저장
+            # OHLCV 캐시 일괄 저장 (시장별 분리)
             ohlcv_cols = ["open", "high", "low", "close", "volume"]
-            self.storage.save_daily_prices_bulk(dt, df[ohlcv_cols])
+            self.storage.save_daily_prices_bulk(dt, df[ohlcv_cols], market=market)
 
-            # 시가총액 캐시 저장
+            # 시가총액 캐시 저장 (시장별 분리)
             cap_cols = [c for c in ["market_cap", "shares"] if c in df.columns]
             if cap_cols:
-                self.storage.save_market_caps(dt, df[cap_cols])
+                self.storage.save_market_caps(dt, df[cap_cols], market=market)
 
             self._prefetched_dates.add(cache_key)
             logger.info(f"[{date}] 일별 거래 프리페치: {len(df)}건 캐시 저장")
@@ -604,6 +604,10 @@ class KRXDataCollector:
         # KRX 일별 거래 데이터에서 종가 + 주식수 확보
         trade_data = self.prefetch_daily_trade(date, market)
         if trade_data.empty:
+            # prefetch가 빈 DataFrame을 반환하는 경우:
+            # DB 캐시 히트로 스킵된 것일 수 있음 → DB에서 직접 로드
+            trade_data = self._load_trade_data_from_db(date)
+        if trade_data.empty:
             logger.warning(f"[{date}] DART 폴백: KRX 거래 데이터 없음")
             return pd.DataFrame()
 
@@ -616,6 +620,34 @@ class KRXDataCollector:
         return self.dart_client.get_fundamentals_for_date(
             tickers, date, close_prices, shares_data
         )
+
+    def _load_trade_data_from_db(self, date: str) -> pd.DataFrame:
+        """DB 캐시에서 종가 + 주식수 로드 (DART 폴백용)
+
+        Args:
+            date: 기준 날짜 (YYYYMMDD)
+
+        Returns:
+            DataFrame(index=ticker, columns=[close, shares])
+        """
+        dt = _parse_date(date)
+        with self.storage.engine.connect() as conn:
+            from sqlalchemy import text
+
+            # daily_price에서 종가, market_cap에서 주식수 JOIN
+            sql = text(
+                "SELECT dp.ticker, dp.close, mc.shares "
+                "FROM daily_price dp "
+                "JOIN market_cap mc ON dp.ticker = mc.ticker AND dp.date = mc.date "
+                "WHERE dp.date = :dt AND dp.close > 0 AND mc.shares > 0"
+            )
+            rows = conn.execute(sql, {"dt": str(dt)}).fetchall()
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=["ticker", "close", "shares"])
+        return df.set_index("ticker")
 
     def _get_daily_trade_method(self, market: str) -> Callable:
         """시장에 따른 KRX API 일별 거래 메서드 반환"""

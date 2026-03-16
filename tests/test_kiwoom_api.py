@@ -123,33 +123,33 @@ class TestCurrentPrice:
     """현재가 조회 테스트"""
 
     def test_get_current_price_success(self, client, token_response) -> None:
-        """현재가 정상 조회"""
-        price_response = {
-            "cur_prc": "70000",
-            "opng_prc": "69500",
-            "hgst_prc": "70500",
-            "lwst_prc": "69000",
-            "acc_trd_qty": "15000000",
-            "flu_rt": "1.45",
-        }
+        """모의투자: pykrx 폴백으로 현재가 조회"""
+        import pandas as pd
+        from unittest.mock import patch
+
+        mock_df = pd.DataFrame(
+            {"종가": [70000]},
+            index=pd.DatetimeIndex(["2026-03-13"]),
+        )
         with requests_mock.Mocker() as m:
             m.post("https://mockapi.kiwoom.com/oauth2/token", json=token_response)
-            m.get("https://mockapi.kiwoom.com/api/dostk/mrkt-info", json=price_response)
-            result = client.get_current_price("005930")
-            assert result["ticker"] == "005930"
-            assert result["current_price"] == 70000
-            assert result["volume"] == 15000000
+            with patch("trading.kiwoom_api.pykrx_stock") as mock_stock:
+                mock_stock.get_market_ohlcv.return_value = mock_df
+                result = client.get_current_price("005930")
+                assert result["ticker"] == "005930"
+                assert result["current_price"] == 70000
 
     def test_get_current_price_failure(self, client, token_response) -> None:
-        """현재가 조회 실패 시 빈 dict 반환"""
+        """모의투자: pykrx 폴백 실패 시 빈 dict 반환"""
+        import pandas as pd
+        from unittest.mock import patch
+
         with requests_mock.Mocker() as m:
             m.post("https://mockapi.kiwoom.com/oauth2/token", json=token_response)
-            m.get(
-                "https://mockapi.kiwoom.com/api/dostk/mrkt-info",
-                exc=ConnectionError("timeout"),
-            )
-            result = client.get_current_price("005930")
-            assert result == {}
+            with patch("trading.kiwoom_api.pykrx_stock") as mock_stock:
+                mock_stock.get_market_ohlcv.return_value = pd.DataFrame()
+                result = client.get_current_price("005930")
+                assert result == {}
 
 
 class TestOrders:
@@ -237,7 +237,7 @@ class TestBalance:
     """잔고 조회 테스트"""
 
     def test_get_balance_success(self, client, token_response) -> None:
-        """잔고 정상 조회"""
+        """잔고 정상 조회 (POST 방식)"""
         balance_response = {
             "acnt_evlt_remn_indv_tot": [
                 {
@@ -251,15 +251,17 @@ class TestBalance:
                     "pfls_rt": "2.94",
                 }
             ],
-            "dnca_tot_amt": "5000000",
+            "prsm_dpst_aset_amt": "17000000",
             "tot_evlt_amt": "12000000",
-            "tot_pfls": "200000",
+            "tot_evlt_pl": "200000",
+            "return_code": 0,
+            "return_msg": "success",
         }
         with requests_mock.Mocker() as m:
             m.post("https://mockapi.kiwoom.com/oauth2/token", json=token_response)
-            m.get("https://mockapi.kiwoom.com/api/dostk/acnt", json=balance_response)
+            m.post("https://mockapi.kiwoom.com/api/dostk/acnt", json=balance_response)
             result = client.get_balance()
-            assert result["cash"] == 5000000
+            assert result["cash"] == 5000000  # 17000000 - 12000000
             assert len(result["holdings"]) == 1
             assert result["holdings"][0]["ticker"] == "005930"
             assert result["holdings"][0]["qty"] == 100
@@ -268,7 +270,7 @@ class TestBalance:
         """잔고 조회 실패 시 기본값 반환"""
         with requests_mock.Mocker() as m:
             m.post("https://mockapi.kiwoom.com/oauth2/token", json=token_response)
-            m.get(
+            m.post(
                 "https://mockapi.kiwoom.com/api/dostk/acnt",
                 exc=ConnectionError("timeout"),
             )
@@ -323,31 +325,21 @@ class TestBaseUrlSelection:
 class TestRetry:
     """재시도 로직 테스트"""
 
-    def test_get_current_price_retry_on_failure(self, client, token_response) -> None:
-        """현재가 조회 재시도 (최대 3회)"""
+    def test_get_current_price_pykrx_fallback(self, client, token_response) -> None:
+        """모의투자: pykrx 폴백으로 종가 조회 성공"""
+        import pandas as pd
+        from unittest.mock import patch
+
+        mock_df = pd.DataFrame(
+            {"종가": [68000, 69000, 70000]},
+            index=pd.DatetimeIndex(["2026-03-11", "2026-03-12", "2026-03-13"]),
+        )
         with requests_mock.Mocker() as m:
             m.post("https://mockapi.kiwoom.com/oauth2/token", json=token_response)
-            m.get(
-                "https://mockapi.kiwoom.com/api/dostk/mrkt-info",
-                [
-                    {"exc": ConnectionError("fail 1")},
-                    {"exc": ConnectionError("fail 2")},
-                    {
-                        "json": {
-                            "cur_prc": "70000",
-                            "opng_prc": "0",
-                            "hgst_prc": "0",
-                            "lwst_prc": "0",
-                            "acc_trd_qty": "0",
-                            "flu_rt": "0",
-                        }
-                    },
-                ],
-            )
-            result = client.get_current_price("005930")
-            assert result["current_price"] == 70000
-            # 3번 요청 (2 fail + 1 success)
-            assert m.call_count == 4  # 1 token + 3 price
+            with patch("trading.kiwoom_api.pykrx_stock") as mock_stock:
+                mock_stock.get_market_ohlcv.return_value = mock_df
+                result = client.get_current_price("005930")
+                assert result["current_price"] == 70000  # 최신 종가
 
     def test_buy_stock_retry_exhausted(self, client, token_response) -> None:
         """매수 주문 재시도 소진 시 빈 dict"""

@@ -558,6 +558,47 @@ class OrderExecutor:
                     is_paper=settings.is_paper_trading,
                 )
 
+        # ④ 실패분 재시도 (rate limit 등 일시적 실패 대응)
+        failed_tickers = [
+            t for t in affordable_list
+            if t not in buy_done and t in buy_prices
+        ]
+        if failed_tickers:
+            logger.info(
+                f"매수 실패 {len(failed_tickers)}종목 재시도 대기 (5초)..."
+            )
+            time.sleep(5)
+            for ticker in failed_tickers:
+                price = buy_prices[ticker]
+                qty = int(budget_per_stock / (price * cost_rate))
+                if qty <= 0:
+                    continue
+                if qty > MAX_BUY_QTY:
+                    qty = MAX_BUY_QTY
+                result = self.api.buy_stock(
+                    ticker=ticker,
+                    qty=qty,
+                    order_type="3",
+                    exchange=exchange,
+                )
+                if result.get("return_code") == 0:
+                    buy_done.append(ticker)
+                    buy_amount = price * qty
+                    self.storage.save_trade(
+                        trade_date=date.today(),
+                        ticker=ticker,
+                        side="BUY",
+                        quantity=qty,
+                        price=price,
+                        amount=buy_amount,
+                        commission=buy_amount * self.cfg.commission_rate,
+                        tax=0.0,
+                        is_paper=settings.is_paper_trading,
+                    )
+                    logger.info(f"재시도 매수 성공: {ticker} {qty}주")
+                else:
+                    logger.warning(f"재시도 매수 실패: {ticker}")
+
         logger.info(
             f"리밸런싱 완료 — 매도: {len(sell_done)}/{len(sell_list)}, "
             f"매수: {len(buy_done)}/{len(affordable_list)}"

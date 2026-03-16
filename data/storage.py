@@ -48,6 +48,7 @@ class DailyPrice(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ticker = Column(String(10), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
+    market = Column(String(10), nullable=False, default="KOSPI", server_default="KOSPI")
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)
@@ -85,6 +86,7 @@ class MarketCap(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     ticker = Column(String(10), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
+    market = Column(String(10), nullable=False, default="KOSPI", server_default="KOSPI")
     market_cap = Column(BigInteger)
     shares = Column(BigInteger)
 
@@ -166,6 +168,8 @@ class DataStorage:
 
         Base.metadata.create_all(self.engine)
         self._migrate_fundamental_market_column()
+        self._migrate_daily_price_market_column()
+        self._migrate_market_cap_market_column()
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info(f"DB 연결: {path}")
 
@@ -183,6 +187,36 @@ class DataStorage:
                     logger.info("DB 마이그레이션: fundamental.market 컬럼 추가 완료")
         except Exception as e:
             logger.debug(f"fundamental 마이그레이션 스킵: {e}")
+
+    def _migrate_daily_price_market_column(self) -> None:
+        """기존 DB에 daily_price.market 컬럼이 없으면 추가 (하위 호환)"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(daily_price)"))
+                columns = [row[1] for row in result]
+                if "market" not in columns:
+                    conn.execute(
+                        text("ALTER TABLE daily_price ADD COLUMN market VARCHAR(10) DEFAULT 'KOSPI'")
+                    )
+                    conn.commit()
+                    logger.info("DB 마이그레이션: daily_price.market 컬럼 추가 완료")
+        except Exception as e:
+            logger.debug(f"daily_price 마이그레이션 스킵: {e}")
+
+    def _migrate_market_cap_market_column(self) -> None:
+        """기존 DB에 market_cap.market 컬럼이 없으면 추가 (하위 호환)"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(market_cap)"))
+                columns = [row[1] for row in result]
+                if "market" not in columns:
+                    conn.execute(
+                        text("ALTER TABLE market_cap ADD COLUMN market VARCHAR(10) DEFAULT 'KOSPI'")
+                    )
+                    conn.commit()
+                    logger.info("DB 마이그레이션: market_cap.market 컬럼 추가 완료")
+        except Exception as e:
+            logger.debug(f"market_cap 마이그레이션 스킵: {e}")
 
     # ───────────────────────────────────────────────
     # 내부 헬퍼
@@ -239,12 +273,13 @@ class DataStorage:
     # 일별 가격
     # ───────────────────────────────────────────────
 
-    def save_daily_prices(self, ticker: str, df: pd.DataFrame) -> int:
+    def save_daily_prices(self, ticker: str, df: pd.DataFrame, market: str = "KOSPI") -> int:
         """OHLCV 데이터 upsert 저장
 
         Args:
             ticker: 종목코드
             df: DataFrame(index=date, columns=[open, high, low, close, volume])
+            market: 시장 구분 (KOSPI/KOSDAQ)
 
         Returns:
             저장된 행 수
@@ -255,16 +290,17 @@ class DataStorage:
         tmp = df.reset_index()
         tmp = tmp.rename(columns={tmp.columns[0]: "date"})
         tmp["ticker"] = ticker
+        tmp["market"] = market
         tmp["date"] = pd.to_datetime(tmp["date"]).dt.date
-        rows = tmp[["ticker", "date", "open", "high", "low", "close", "volume"]].to_dict("records")
+        rows = tmp[["ticker", "date", "market", "open", "high", "low", "close", "volume"]].to_dict("records")
 
         self._upsert(
             DailyPrice, rows,
             conflict_cols=["ticker", "date"],
-            update_cols=["open", "high", "low", "close", "volume"],
+            update_cols=["market", "open", "high", "low", "close", "volume"],
         )
 
-        logger.debug(f"일별 가격 저장: {ticker} ({len(rows)}건)")
+        logger.debug(f"일별 가격 저장: {ticker} {market} ({len(rows)}건)")
         return len(rows)
 
     def load_daily_prices(
@@ -305,19 +341,23 @@ class DataStorage:
         df["date"] = pd.to_datetime(df["date"]).dt.date
         return df.set_index("date")
 
-    def load_daily_prices_for_date(self, dt: date) -> int:
+    def load_daily_prices_for_date(self, dt: date, market: str = "KOSPI") -> int:
         """특정 날짜의 캐시된 OHLCV 종목 수 조회 (프리페치 스킵 판단용)
 
         Args:
             dt: 기준 날짜
+            market: 시장 구분 (KOSPI/KOSDAQ)
 
         Returns:
-            해당 날짜에 저장된 종목 수
+            해당 날짜·시장에 저장된 종목 수
         """
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT COUNT(*) FROM daily_price WHERE date = :dt"),
-                {"dt": str(dt)},
+                text(
+                    "SELECT COUNT(*) FROM daily_price "
+                    "WHERE date = :dt AND (market = :market OR market IS NULL)"
+                ),
+                {"dt": str(dt), "market": market},
             )
             return result.scalar() or 0
 
@@ -386,12 +426,13 @@ class DataStorage:
     # 시가총액
     # ───────────────────────────────────────────────
 
-    def save_market_caps(self, dt: date, df: pd.DataFrame) -> int:
+    def save_market_caps(self, dt: date, df: pd.DataFrame, market: str = "KOSPI") -> int:
         """시가총액 upsert 저장
 
         Args:
             dt: 기준 날짜
             df: DataFrame(index=ticker, columns=[market_cap, shares])
+            market: 시장 구분 (KOSPI/KOSDAQ)
 
         Returns:
             저장된 행 수
@@ -403,31 +444,43 @@ class DataStorage:
             df, dt,
             columns=["ticker", "date", "market_cap", "shares"],
         )
+        for row in rows:
+            row["market"] = market
 
         self._upsert(
             MarketCap, rows,
             conflict_cols=["ticker", "date"],
-            update_cols=["market_cap", "shares"],
+            update_cols=["market", "market_cap", "shares"],
         )
 
-        logger.info(f"시가총액 저장: {dt} ({len(rows)}건)")
+        logger.info(f"시가총액 저장: {dt} {market} ({len(rows)}건)")
         return len(rows)
 
-    def load_market_caps(self, dt: date) -> pd.DataFrame:
+    def load_market_caps(self, dt: date, market: Optional[str] = None) -> pd.DataFrame:
         """시가총액 조회
 
         Args:
             dt: 기준 날짜
+            market: 시장 구분 (KOSPI/KOSDAQ). None이면 전체 반환.
 
         Returns:
             DataFrame(index=ticker, columns=[market_cap, shares])
         """
-        sql = (
-            "SELECT ticker, market_cap, shares "
-            "FROM market_cap WHERE date = :dt"
-        )
+        if market:
+            sql = (
+                "SELECT ticker, market_cap, shares "
+                "FROM market_cap WHERE date = :dt AND (market = :market OR market IS NULL)"
+            )
+            params: dict = {"dt": str(dt), "market": market}
+        else:
+            sql = (
+                "SELECT ticker, market_cap, shares "
+                "FROM market_cap WHERE date = :dt"
+            )
+            params = {"dt": str(dt)}
+
         with self.engine.connect() as conn:
-            df = pd.read_sql(text(sql), conn, params={"dt": str(dt)})
+            df = pd.read_sql(text(sql), conn, params=params)
 
         if df.empty:
             return pd.DataFrame()
@@ -490,12 +543,13 @@ class DataStorage:
             result["date"] = pd.to_datetime(result["date"]).dt.date
         return result
 
-    def save_daily_prices_bulk(self, dt: date, df: pd.DataFrame) -> int:
+    def save_daily_prices_bulk(self, dt: date, df: pd.DataFrame, market: str = "KOSPI") -> int:
         """여러 종목의 일별 가격 일괄 upsert 저장
 
         Args:
             dt: 기준 날짜
             df: DataFrame(index=ticker, columns=[open, high, low, close, volume])
+            market: 시장 구분 (KOSPI/KOSDAQ)
 
         Returns:
             저장된 행 수
@@ -507,14 +561,16 @@ class DataStorage:
             df, dt,
             columns=["ticker", "date", "open", "high", "low", "close", "volume"],
         )
+        for row in rows:
+            row["market"] = market
 
         self._upsert(
             DailyPrice, rows,
             conflict_cols=["ticker", "date"],
-            update_cols=["open", "high", "low", "close", "volume"],
+            update_cols=["market", "open", "high", "low", "close", "volume"],
         )
 
-        logger.info(f"일별 가격 일괄 저장: {dt} ({len(rows)}건)")
+        logger.info(f"일별 가격 일괄 저장: {dt} {market} ({len(rows)}건)")
         return len(rows)
 
     # ───────────────────────────────────────────────

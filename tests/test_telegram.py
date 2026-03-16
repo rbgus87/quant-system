@@ -101,30 +101,43 @@ class TestRebalancingReport:
     """리밸런싱 결과 알림 테스트"""
 
     def test_send_rebalancing_report(self, notifier, api_url) -> None:
-        """리밸런싱 리포트 정상 발송"""
+        """리밸런싱 리포트: 매수/매도 상세 표시"""
+        from unittest.mock import patch
+
+        mock_trades = [
+            {"ticker": "005930", "side": "SELL", "quantity": 10,
+             "price": 70000, "amount": 700000, "name": "삼성전자"},
+            {"ticker": "035720", "side": "BUY", "quantity": 5,
+             "price": 50000, "amount": 250000, "name": "카카오"},
+        ]
         with requests_mock.Mocker() as m:
             m.post(api_url, json={"ok": True}, status_code=200)
-            result = notifier.send_rebalancing_report(
-                sell_done=["005930", "000660"],
-                buy_done=["035720"],
-                total_value=50000000,
-            )
+            with patch.object(notifier, "_load_today_trades", return_value=mock_trades):
+                result = notifier.send_rebalancing_report(
+                    sell_done=["005930"],
+                    buy_done=["035720"],
+                    total_value=50000000,
+                    balance={"cash": 5000000, "total_eval_amount": 45000000},
+                )
             assert result is True
             text = m.last_request.json()["text"]
             assert "리밸런싱" in text
-            assert "005930" in text
+            assert "삼성전자" in text
+            assert "10주" in text
+            assert "예수금" in text
 
-    def test_report_long_list_truncated(self, notifier, api_url) -> None:
-        """6개 이상 종목 시 ... 표시"""
+    def test_report_empty_trades(self, notifier, api_url) -> None:
+        """매매 없을 때 '없음' 표시"""
+        from unittest.mock import patch
+
         with requests_mock.Mocker() as m:
             m.post(api_url, json={"ok": True}, status_code=200)
-            notifier.send_rebalancing_report(
-                sell_done=[f"00{i:04d}" for i in range(10)],
-                buy_done=[],
-                total_value=10000000,
-            )
+            with patch.object(notifier, "_load_today_trades", return_value=[]):
+                notifier.send_rebalancing_report(
+                    sell_done=[], buy_done=[], total_value=10000000,
+                )
             text = m.last_request.json()["text"]
-            assert "..." in text
+            assert "없음" in text
 
 
 class TestDailyReport:

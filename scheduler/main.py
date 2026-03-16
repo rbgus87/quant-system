@@ -205,12 +205,15 @@ def _execute_rebalancing_core(notifier: TelegramNotifier) -> None:
 
     # 결과 알림
     updated_balance = api.get_balance()
+    cash = updated_balance.get("cash", 0)
+    eval_amt = updated_balance.get("total_eval_amount", 0)
+    # 총 자산 = 평가금액 + 예수금 (체결 직후 평가 미반영 대비)
+    total_asset = eval_amt + cash if eval_amt > 0 else cash or total_value
     notifier.send_rebalancing_report(
         sell_done=sell_done,
         buy_done=buy_done,
-        total_value=updated_balance.get("total_eval_amount", total_value),
-        sell_total=len(sell_done),
-        buy_total=len(buy_done),
+        total_value=total_asset,
+        balance=updated_balance,
     )
 
 

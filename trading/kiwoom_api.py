@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional
 from config.settings import settings
+from pykrx import stock as pykrx_stock
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class KiwoomRestClient:
         self._token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
         self._last_request_at: float = 0.0
-        self._min_request_interval: float = 0.2  # 최소 요청 간격 (초)
+        self._min_request_interval: float = 0.5  # 최소 요청 간격 (초) — 초당 2회
 
         mode = (
             "모의투자 (mockapi.kiwoom.com)"
@@ -158,9 +159,10 @@ class KiwoomRestClient:
     # ────────────────────────────────────────────
 
     def get_current_price(self, ticker: str) -> dict:
-        """주식 현재가 조회 (ka10001)
+        """주식 현재가 조회
 
-        GET /api/dostk/mrkt-info
+        실전: POST /api/dostk/mrkt-info (ka10001)
+        모의: pykrx 최근 종가 폴백 (mockapi는 시세 API 미지원)
 
         Args:
             ticker: 종목코드 (예: 005930)
@@ -168,20 +170,41 @@ class KiwoomRestClient:
         Returns:
             가격 정보 dict 또는 빈 dict (실패 시)
         """
-        url = f"{self.base_url}/api/dostk/mrkt-info"
+        # 실전 서버: 키움 REST API 사용
+        if not self.is_paper:
+            url = f"{self.base_url}/api/dostk/mrkt-info"
+            try:
+                data = self._post_with_retry(
+                    url, "ka10001", {"stk_cd": ticker}
+                )
+                return {
+                    "ticker": ticker,
+                    "current_price": _safe_int(data.get("cur_prc")),
+                    "open_price": _safe_int(data.get("opng_prc")),
+                    "high_price": _safe_int(data.get("hgst_prc")),
+                    "low_price": _safe_int(data.get("lwst_prc")),
+                    "volume": _safe_int(data.get("acc_trd_qty")),
+                    "change_rate": _safe_float(data.get("flu_rt")),
+                }
+            except Exception as e:
+                logger.error(f"현재가 조회 실패 ({ticker}): {e}")
+                return {}
+
+        # 모의 서버: pykrx 최근 종가 폴백 (mockapi는 시세 API 미지원)
         try:
-            data = self._get_with_retry(url, "ka10001", {"stk_cd": ticker})
+            end = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+            df = pykrx_stock.get_market_ohlcv(start, end, ticker)
+            if df.empty:
+                logger.warning(f"pykrx 종가 조회 실패 ({ticker}): 데이터 없음")
+                return {}
+            last_close = int(df["종가"].iloc[-1])
             return {
                 "ticker": ticker,
-                "current_price": _safe_int(data.get("cur_prc")),
-                "open_price": _safe_int(data.get("opng_prc")),
-                "high_price": _safe_int(data.get("hgst_prc")),
-                "low_price": _safe_int(data.get("lwst_prc")),
-                "volume": _safe_int(data.get("acc_trd_qty")),
-                "change_rate": _safe_float(data.get("flu_rt")),
+                "current_price": last_close,
             }
         except Exception as e:
-            logger.error(f"현재가 조회 실패 ({ticker}): {e}")
+            logger.error(f"현재가 폴백 조회 실패 ({ticker}): {e}")
             return {}
 
     def _request_with_retry(
@@ -211,6 +234,31 @@ class KiwoomRestClient:
                 )
                 resp.raise_for_status()
                 return resp.json()
+            except requests.HTTPError as e:
+                last_exc = e
+                body = ""
+                status_code = e.response.status_code if e.response is not None else 0
+                if e.response is not None:
+                    try:
+                        body = e.response.text[:500]
+                    except Exception:
+                        pass
+                if attempt < MAX_RETRIES - 1:
+                    # 429 rate limit: 더 긴 대기 (2초 고정)
+                    if status_code == 429:
+                        delay = 2.0
+                    else:
+                        delay = RETRY_BASE_DELAY * (2**attempt)
+                    logger.warning(
+                        f"{method} 재시도 ({attempt + 1}/{MAX_RETRIES}): {e}"
+                        + (f" | body: {body}" if body else "")
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        f"{method} 최종 실패: {e}"
+                        + (f" | body: {body}" if body else "")
+                    )
             except (requests.RequestException, ConnectionError) as e:
                 last_exc = e
                 if attempt < MAX_RETRIES - 1:
@@ -413,14 +461,20 @@ class KiwoomRestClient:
     def get_balance(self) -> dict:
         """계좌 잔고 조회 (kt00018)
 
-        GET /api/dostk/acnt
+        POST /api/dostk/acnt
 
         Returns:
             잔고 dict {holdings, cash, total_eval_amount, total_profit}
         """
         url = f"{self.base_url}/api/dostk/acnt"
+        exchange = "KRX" if self.is_paper else "SOR"
+        body = {
+            "acnt_no": self.account_no,
+            "qry_tp": "1",
+            "dmst_stex_tp": exchange,
+        }
         try:
-            data = self._get_with_retry(url, "kt00018", {"acnt_no": self.account_no})
+            data = self._post_with_retry(url, "kt00018", body)
 
             holdings = []
             for item in data.get("acnt_evlt_remn_indv_tot", []):
@@ -437,11 +491,18 @@ class KiwoomRestClient:
                     }
                 )
 
+            # 추정예탁자산 (총 자산 = 평가 + 현금)
+            total_asset = _safe_float(data.get("prsm_dpst_aset_amt"))
+            eval_amount = _safe_float(data.get("tot_evlt_amt"))
+            # 예수금 = 추정예탁자산 - 평가금액
+            cash = total_asset - eval_amount if total_asset > 0 else 0.0
             return {
                 "holdings": holdings,
-                "cash": _safe_float(data.get("dnca_tot_amt")),
-                "total_eval_amount": _safe_float(data.get("tot_evlt_amt")),
-                "total_profit": _safe_float(data.get("tot_pfls")),
+                "cash": cash,
+                "total_eval_amount": eval_amount,
+                "total_profit": _safe_float(
+                    data.get("tot_evlt_pl") or data.get("tot_pfls")
+                ),
             }
         except Exception as e:
             logger.error(f"잔고 조회 실패: {e}")
@@ -459,8 +520,13 @@ class KiwoomRestClient:
             미체결 주문 리스트
         """
         url = f"{self.base_url}/api/dostk/acnt"
+        exchange = "KRX" if self.is_paper else "SOR"
+        body = {
+            "acnt_no": self.account_no,
+            "dmst_stex_tp": exchange,
+        }
         try:
-            data = self._get_with_retry(url, "kt00013", {"acnt_no": self.account_no})
+            data = self._post_with_retry(url, "kt00013", body)
             return data.get("oso_ord_list", [])
         except Exception as e:
             logger.error(f"미체결 조회 실패: {e}")
