@@ -114,10 +114,6 @@ class PortfolioView(QWidget):
             eval_amount = h.get("eval_amount", 0)
             profit_rate = h.get("profit_rate", 0)
 
-            # 매수가가 0이면 평가금액/수량으로 추정
-            if avg_price == 0 and qty > 0 and eval_amount > 0:
-                avg_price = eval_amount / qty
-
             items = [
                 ticker,
                 name,

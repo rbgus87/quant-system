@@ -483,11 +483,11 @@ class KiwoomRestClient:
                         "ticker": item.get("stk_cd", ""),
                         "name": item.get("stk_nm", ""),
                         "qty": _safe_int(item.get("rmnd_qty")),
-                        "avg_price": _safe_float(item.get("avg_prc")),
+                        "avg_price": _safe_float(item.get("pur_pric") or item.get("avg_prc")),
                         "current_price": _safe_float(item.get("cur_prc")),
                         "eval_amount": _safe_float(item.get("evlt_amt")),
-                        "eval_profit": _safe_float(item.get("evlt_pfls")),
-                        "profit_rate": _safe_float(item.get("pfls_rt")),
+                        "eval_profit": _safe_float(item.get("evltv_prft") or item.get("evlt_pfls")),
+                        "profit_rate": _safe_float(item.get("prft_rt") or item.get("pfls_rt")),
                     }
                 )
 
