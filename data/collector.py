@@ -857,19 +857,19 @@ class ReturnCalculator:
         remaining: list[str] = []
 
         if not bulk_df.empty:
-            # 벌크 데이터에서 벡터화 수익률 계산
+            # 벡터화 수익률 계산 (groupby 루프 제거)
             bulk_df = bulk_df.sort_values(["ticker", "date"])
+            grp = bulk_df.groupby("ticker")["close"]
+            first_prices = grp.first()
+            last_prices = grp.last()
+            counts = grp.count()
+            valid_mask = (counts >= 10) & (first_prices > 0)
+            valid_returns = (last_prices[valid_mask] / first_prices[valid_mask] - 1)
+            results = {str(k): float(v) for k, v in valid_returns.dropna().items()}
 
-            for ticker, group in bulk_df.groupby("ticker"):
-                if len(group) < 10:
-                    remaining.append(str(ticker))
-                    continue
-                start_price = group["close"].iloc[0]
-                end_price = group["close"].iloc[-1]
-                if start_price > 0:
-                    results[str(ticker)] = float(end_price / start_price - 1)
-
-            # 벌크에서 조회 안 된 종목
+            # 데이터 부족 종목 → remaining
+            short = counts[counts < 10].index.tolist()
+            remaining = [str(t) for t in short]
             found = set(bulk_df["ticker"].unique())
             remaining.extend([t for t in tickers if t not in found])
         else:
@@ -898,17 +898,15 @@ class ReturnCalculator:
                 if not bulk_df2.empty:
                     bulk_df2["date"] = pd.to_datetime(bulk_df2["date"])
                     bulk_df2 = bulk_df2.sort_values(["ticker", "date"])
-                    filled = 0
-                    remaining_set = set(remaining)
-                    for ticker, group in bulk_df2.groupby("ticker"):
-                        if len(group) < 2:
-                            continue
-                        sp = group["close"].iloc[0]
-                        ep = group["close"].iloc[-1]
-                        if sp > 0:
-                            results[str(ticker)] = float(ep / sp - 1)
-                            remaining_set.discard(str(ticker))
-                            filled += 1
+                    grp2 = bulk_df2.groupby("ticker")["close"]
+                    fp2 = grp2.first()
+                    lp2 = grp2.last()
+                    cnt2 = grp2.count()
+                    valid2 = (cnt2 >= 2) & (fp2 > 0)
+                    new_rets = (lp2[valid2] / fp2[valid2] - 1).dropna()
+                    filled = len(new_rets)
+                    results.update({str(k): float(v) for k, v in new_rets.items()})
+                    remaining_set = set(remaining) - {str(t) for t in new_rets.index}
                     remaining = list(remaining_set)
                     logger.info(
                         f"모멘텀 벌크 프리페치 완료: {filled}개 성공, "
@@ -987,19 +985,24 @@ class ReturnCalculator:
             bulk_df["date"] = pd.to_datetime(bulk_df["date"])
             bulk_df = bulk_df.sort_values(["ticker", "date"])
 
-            for ticker, group in bulk_df.groupby("ticker"):
-                tk = str(ticker)
-                end_price_row = group.iloc[-1]
-                ep = end_price_row["close"]
+            # 벡터화: 종목별 마지막 종가 (공통)
+            last_prices = bulk_df.groupby("ticker")["close"].last()
 
-                for months in lookback_months_list:
-                    ps = period_starts[months]
-                    period_data = group[group["date"] >= ps]
-                    if len(period_data) < 10:
-                        continue
-                    sp = period_data["close"].iloc[0]
-                    if sp > 0:
-                        all_results[months][tk] = float(ep / sp - 1)
+            for months in lookback_months_list:
+                ps = period_starts[months]
+                period_df = bulk_df[bulk_df["date"] >= ps]
+                if period_df.empty:
+                    continue
+                grp = period_df.groupby("ticker")["close"]
+                first_prices = grp.first()
+                counts = grp.count()
+                valid_mask = (counts >= 10) & (first_prices > 0)
+                valid_first = first_prices[valid_mask]
+                valid_last = last_prices.reindex(valid_first.index)
+                returns = (valid_last / valid_first - 1).dropna()
+                all_results[months].update(
+                    {str(k): float(v) for k, v in returns.items()}
+                )
 
             found = set(bulk_df["ticker"].unique())
             remaining = [t for t in tickers if t not in found]
@@ -1023,22 +1026,25 @@ class ReturnCalculator:
                 if not bulk_df2.empty:
                     bulk_df2["date"] = pd.to_datetime(bulk_df2["date"])
                     bulk_df2 = bulk_df2.sort_values(["ticker", "date"])
-                    remaining_set = set(remaining)
-                    for ticker, group in bulk_df2.groupby("ticker"):
-                        tk = str(ticker)
-                        if len(group) < 2:
+                    last_p2 = bulk_df2.groupby("ticker")["close"].last()
+                    all_found: set[str] = set()
+                    for months in lookback_months_list:
+                        ps = period_starts[months]
+                        p_df = bulk_df2[bulk_df2["date"] >= ps]
+                        if p_df.empty:
                             continue
-                        ep = group["close"].iloc[-1]
-                        for months in lookback_months_list:
-                            ps = period_starts[months]
-                            period_data = group[group["date"] >= ps]
-                            if len(period_data) < 2:
-                                continue
-                            sp = period_data["close"].iloc[0]
-                            if sp > 0:
-                                all_results[months][tk] = float(ep / sp - 1)
-                        remaining_set.discard(tk)
-                    remaining = list(remaining_set)
+                        grp = p_df.groupby("ticker")["close"]
+                        first_p = grp.first()
+                        cnt = grp.count()
+                        valid = (cnt >= 2) & (first_p > 0)
+                        vf = first_p[valid]
+                        vl = last_p2.reindex(vf.index)
+                        rets = (vl / vf - 1).dropna()
+                        all_results[months].update(
+                            {str(k): float(v) for k, v in rets.items()}
+                        )
+                        all_found.update(str(t) for t in rets.index)
+                    remaining = [t for t in remaining if t not in all_found]
 
             # 개별 폴백은 가장 긴 기간으로만 (짧은 기간은 포함됨)
             if remaining:

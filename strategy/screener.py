@@ -19,7 +19,15 @@ class MultiFactorScreener:
     """멀티팩터 종목 스크리닝 통합 파이프라인
 
     유니버스 조회 → 데이터 수집 → 전처리 → 팩터 계산 → 상위 N개 반환
+
+    팩터 스코어 캐시:
+      클래스 레벨 인메모리 캐시로 동일 프로세스 내에서
+      n_stocks만 다른 백테스트 반복 시 팩터 재계산을 방지합니다.
+      DB factor_score 테이블에도 저장하여 프로세스 간 재활용 가능.
     """
+
+    # 클래스 레벨 인메모리 캐시: {(date, market): composite_df}
+    _factor_cache: dict[tuple[str, str], pd.DataFrame] = {}
 
     def __init__(self, request_delay: float = 0.5) -> None:
         self.collector = KRXDataCollector(request_delay=request_delay)
@@ -54,6 +62,14 @@ class MultiFactorScreener:
         n_stocks = n_stocks or settings.portfolio.n_stocks
 
         try:
+            # 0. 팩터 스코어 캐시 확인 (인메모리 → DB 순)
+            cache_key = (date, market)
+            if cache_key in MultiFactorScreener._factor_cache:
+                composite_df = MultiFactorScreener._factor_cache[cache_key]
+                portfolio = self.composite.select_top(composite_df, n=n_stocks)
+                logger.debug(f"[{date}] 팩터 캐시 히트 (메모리)")
+                return portfolio
+
             # 1. 데이터 수집 (ALL = KOSPI+KOSDAQ 통합)
             markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
             logger.info(f"[{date}] 스크리닝 시작 — {'+'.join(markets)}")
@@ -203,6 +219,9 @@ class MultiFactorScreener:
                     finance_tickers=finance_tickers,
                 )
 
+            # 팩터 스코어 인메모리 캐시 저장 (동일 프로세스 내 재활용)
+            MultiFactorScreener._factor_cache[cache_key] = composite_df
+
             portfolio = self.composite.select_top(composite_df, n=n_stocks)
 
             logger.info(f"[{date}] 스크리닝 완료: {len(portfolio)}개 종목 선정")
@@ -250,15 +269,19 @@ class MultiFactorScreener:
 
         if not bulk_df.empty:
             bulk_df = bulk_df.sort_values(["ticker", "date"])
-            for ticker, group in bulk_df.groupby("ticker"):
-                closes = group["close"].dropna()
-                if len(closes) < min_data_points:
-                    continue
-                daily_returns = closes.pct_change().dropna()
-                if len(daily_returns) < min_data_points:
-                    continue
-                ann_vol = float(daily_returns.std() * np.sqrt(252))
-                volatilities[str(ticker)] = ann_vol
+            # pivot_table → 벡터화 변동성 계산 (groupby 루프 제거)
+            pivot = bulk_df.pivot_table(
+                index="date", columns="ticker", values="close"
+            )
+            daily_returns = pivot.pct_change(fill_method=None)
+            valid_counts = daily_returns.count()
+            ann_vol = daily_returns.std() * np.sqrt(252)
+            valid_mask = valid_counts >= min_data_points
+            volatilities = {
+                str(k): float(v)
+                for k, v in ann_vol[valid_mask].items()
+                if pd.notna(v)
+            }
 
             # 벌크에서 누락된 종목 (DB에 데이터 없음)
             found = set(bulk_df["ticker"].unique())

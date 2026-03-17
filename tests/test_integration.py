@@ -13,6 +13,11 @@ from unittest.mock import patch, MagicMock
 class TestE2EPipeline:
     """데이터 수집 → 스크리닝 → 주문 E2E 테스트"""
 
+    def setup_method(self) -> None:
+        """테스트 간 팩터 캐시 오염 방지"""
+        from strategy.screener import MultiFactorScreener
+        MultiFactorScreener._factor_cache.clear()
+
     def _make_fundamentals(self, tickers: list[str]) -> pd.DataFrame:
         """테스트용 기본 지표 DataFrame 생성"""
         np.random.seed(42)

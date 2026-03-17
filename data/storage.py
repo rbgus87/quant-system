@@ -604,6 +604,27 @@ class DataStorage:
         logger.info(f"팩터 스코어 저장: {dt} ({len(rows)}건)")
         return len(rows)
 
+    def load_factor_scores(self, dt: date) -> pd.DataFrame:
+        """팩터 스코어 조회 (스크리너 캐시용)
+
+        Args:
+            dt: 기준 날짜
+
+        Returns:
+            DataFrame(index=ticker, columns=[value_score, momentum_score, quality_score, composite_score])
+        """
+        sql = (
+            "SELECT ticker, value_score, momentum_score, quality_score, composite_score "
+            "FROM factor_score WHERE date = :dt"
+        )
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params={"dt": str(dt)})
+
+        if df.empty:
+            return pd.DataFrame()
+
+        return df.set_index("ticker").sort_values("composite_score", ascending=False)
+
     # ───────────────────────────────────────────────
     # 포트폴리오
     # ───────────────────────────────────────────────

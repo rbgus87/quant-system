@@ -6,6 +6,7 @@
 
 import PyInstaller.__main__
 import os
+import shutil
 import sys
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +56,11 @@ def build() -> None:
     if os.path.exists(exe_path):
         size_mb = os.path.getsize(exe_path) / (1024 * 1024)
         print(f"\n빌드 완료: {exe_path} ({size_mb:.1f} MB)")
+
+        # 프로젝트 루트로 복사 (기존 파일 덮어쓰기)
+        dest_path = os.path.join(PROJECT_ROOT, "KoreanQuant.exe")
+        shutil.copy2(exe_path, dest_path)
+        print(f"루트 폴더로 복사 완료: {dest_path}")
     else:
         print("\n빌드 실패!")
         sys.exit(1)

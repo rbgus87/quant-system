@@ -423,6 +423,37 @@ class MultiFactorBacktest:
 
         return rebal_value
 
+    def _get_avg_daily_volumes(
+        self,
+        tickers: list[str],
+        date_str: str,
+        lookback_days: int = 20,
+    ) -> dict[str, float]:
+        """종목별 20일 평균 거래량 조회 (시장 충격 계산용)
+
+        Args:
+            tickers: 종목 코드 리스트
+            date_str: 기준 날짜 (YYYYMMDD)
+            lookback_days: 평균 산출 기간 (기본 20일)
+
+        Returns:
+            {ticker: avg_daily_volume}
+        """
+        from datetime import datetime, timedelta
+
+        end_dt = datetime.strptime(date_str, "%Y%m%d")
+        start_dt = end_dt - timedelta(days=int(lookback_days * 1.5))
+        sd = start_dt.date()
+        ed = end_dt.date()
+
+        bulk_df = self.krx.storage.load_daily_prices_bulk(tickers, sd, ed)
+        if bulk_df.empty:
+            return {}
+
+        # 종목별 평균 거래량 (벡터화)
+        avg_vols = bulk_df.groupby("ticker")["volume"].mean()
+        return {str(k): float(v) for k, v in avg_vols.items() if pd.notna(v) and v > 0}
+
     def _execute_trades(
         self,
         holdings: dict[str, int],
@@ -478,6 +509,10 @@ class MultiFactorBacktest:
             "buy_details": [],
         })
 
+        # 시장 충격 계산용 평균 거래량 조회
+        order_tickers = [t for t in orders if orders[t] != 0 and t in prices]
+        avg_volumes = self._get_avg_daily_volumes(order_tickers, date_str)
+
         # 자금 흐름 추적: 매매 전 현금
         cash_before_trade = cash
 
@@ -492,7 +527,12 @@ class MultiFactorBacktest:
             price = prices.get(ticker)
             if price is None:
                 continue
-            proceed = self.rebalancer.calc_sell_proceed(price, sell_shares)
+            # 시장 충격 반영: 주문 수량 대비 거래량 비율로 가격 조정
+            impact = self.rebalancer.estimate_market_impact(
+                sell_shares, avg_volumes.get(ticker, 0)
+            )
+            adjusted_price = price * (1 - impact)  # 매도 시 불리한 가격
+            proceed = self.rebalancer.calc_sell_proceed(adjusted_price, sell_shares)
             cash += proceed
             holdings[ticker] = holdings.get(ticker, 0) - sell_shares
             # 종목별 수익률 계산 (매수 평균단가 대비)
@@ -527,7 +567,12 @@ class MultiFactorBacktest:
             price = prices.get(ticker)
             if price is None:
                 continue
-            cost = self.rebalancer.calc_buy_cost(price, delta)
+            # 시장 충격 반영: 매수 시 불리한 가격
+            impact = self.rebalancer.estimate_market_impact(
+                delta, avg_volumes.get(ticker, 0)
+            )
+            adjusted_price = price * (1 + impact)
+            cost = self.rebalancer.calc_buy_cost(adjusted_price, delta)
             if cash >= cost:
                 cash -= cost
                 # 평균 매수단가 업데이트 (가중 평균)

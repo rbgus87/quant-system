@@ -9,6 +9,10 @@ from strategy.screener import MultiFactorScreener
 class TestMultiFactorScreener:
     """MultiFactorScreener 통합 테스트 (mock 기반)"""
 
+    def setup_method(self) -> None:
+        """테스트 간 팩터 캐시 오염 방지"""
+        MultiFactorScreener._factor_cache.clear()
+
     def _make_fundamentals(self, n: int = 50) -> pd.DataFrame:
         """테스트용 기본 지표 DataFrame 생성"""
         np.random.seed(42)
