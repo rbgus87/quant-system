@@ -115,7 +115,10 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
         return 1.0
 
 
-def _execute_rebalancing_core(notifier: TelegramNotifier) -> None:
+def _execute_rebalancing_core(
+    notifier: TelegramNotifier,
+    skip_turnover_check: bool = False,
+) -> None:
     """리밸런싱 공통 로직
 
     서킷브레이커 재진입 확인 → 스크리닝 → DB 저장 → 잔고 조회 →
@@ -123,8 +126,13 @@ def _execute_rebalancing_core(notifier: TelegramNotifier) -> None:
 
     Args:
         notifier: 텔레그램 알림 발송기
+        skip_turnover_check: 턴오버 제한 검증 건너뛰기 (수동 리밸런싱 시)
     """
+    import time as _time
+
     from strategy.screener import MultiFactorScreener
+
+    start_ts = _time.monotonic()
 
     # 현재 잔고 조회 후 OrderExecutor에 총 평가금액 전달 (MDD 기준값)
     api = KiwoomRestClient()
@@ -200,20 +208,36 @@ def _execute_rebalancing_core(notifier: TelegramNotifier) -> None:
 
     # 리밸런싱 주문 실행
     sell_done, buy_done = executor.execute_rebalancing(
-        current_holdings, new_portfolio, invest_ratio=invest_ratio
+        current_holdings, new_portfolio,
+        invest_ratio=invest_ratio,
+        skip_turnover_check=skip_turnover_check,
     )
 
     # 결과 알림
+    elapsed = _time.monotonic() - start_ts
     updated_balance = api.get_balance()
     cash = updated_balance.get("cash", 0)
     eval_amt = updated_balance.get("total_eval_amount", 0)
     # 총 자산 = 평가금액 + 예수금 (체결 직후 평가 미반영 대비)
     total_asset = eval_amt + cash if eval_amt > 0 else cash or total_value
+
+    # 포트폴리오 변동 요약
+    prev_set = set(current_holdings)
+    new_set = set(new_portfolio)
+    kept = prev_set & new_set
+    added = new_set - prev_set
+    removed = prev_set - new_set
+    change_summary = (
+        f"유지 {len(kept)} / 신규 {len(added)} / 교체 {len(removed)}"
+    )
+
     notifier.send_rebalancing_report(
         sell_done=sell_done,
         buy_done=buy_done,
         total_value=total_asset,
         balance=updated_balance,
+        elapsed_sec=elapsed,
+        change_summary=change_summary,
     )
 
 
@@ -229,7 +253,7 @@ def run_monthly_rebalancing() -> None:
     logger.info("=" * 50)
     logger.info("월말 리밸런싱 시작")
     notifier = TelegramNotifier()
-    notifier.send("월말 리밸런싱을 시작합니다...")
+    notifier.send("[월말] 리밸런싱을 시작합니다...")
 
     try:
         _execute_rebalancing_core(notifier)
@@ -250,6 +274,12 @@ def run_daily_defense_check() -> None:
 
     logger.info("일별 방어 체크 시작 (15:15)")
     notifier = TelegramNotifier()
+
+    def _ticker_display(ticker: str) -> str:
+        """종목코드 → '종목명(코드)' 표시"""
+        h = next((h for h in holdings if h.get("ticker") == ticker), None)
+        name = h.get("name", "") if h else ""
+        return f"{name}({ticker})" if name else ticker
 
     try:
         api = KiwoomRestClient()
@@ -273,14 +303,15 @@ def run_daily_defense_check() -> None:
         # ① MDD 서킷브레이커 체크
         if executor._check_drawdown(total_value):
             sold = executor.execute_emergency_liquidation()
+            sold_names = [_ticker_display(t) for t in sold]
             actions.append(
                 f"서킷브레이커 발동: 전량 매도 {len(sold)}종목 "
-                f"({', '.join(sold)})"
+                f"({', '.join(sold_names)})"
             )
             notifier.send(
                 f"[방어 체크] 서킷브레이커 발동!\n"
                 f"전량 매도 완료: {len(sold)}종목\n"
-                f"매도 종목: {', '.join(sold)}"
+                f"매도 종목: {', '.join(sold_names)}"
             )
             logger.warning(f"방어 체크 완료: {'; '.join(actions)}")
             return  # 전량 매도 후 트레일링 스톱 불필요
@@ -326,14 +357,15 @@ def run_daily_defense_check() -> None:
                     )
 
             if sold_tickers:
+                sold_names = [_ticker_display(t) for t in sold_tickers]
                 actions.append(
                     f"트레일링 스톱: {len(sold_tickers)}종목 매도 "
-                    f"({', '.join(sold_tickers)})"
+                    f"({', '.join(sold_names)})"
                 )
                 notifier.send(
                     f"[방어 체크] 트레일링 스톱 발동!\n"
                     f"매도 완료: {len(sold_tickers)}종목\n"
-                    f"매도 종목: {', '.join(sold_tickers)}"
+                    f"매도 종목: {', '.join(sold_names)}"
                 )
 
         if actions:
@@ -374,7 +406,7 @@ def _force_rebalancing() -> None:
     notifier.send("[수동] 리밸런싱을 즉시 실행합니다...")
 
     try:
-        _execute_rebalancing_core(notifier)
+        _execute_rebalancing_core(notifier, skip_turnover_check=True)
         logger.info("수동 리밸런싱 완료")
     except Exception as e:
         logger.error(f"리밸런싱 오류: {e}", exc_info=True)

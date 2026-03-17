@@ -140,6 +140,8 @@ class TelegramNotifier:
         buy_done: list[str],
         total_value: float,
         balance: Optional[dict] = None,
+        elapsed_sec: float = 0.0,
+        change_summary: str = "",
     ) -> bool:
         """월별 리밸런싱 결과 알림 (Trade DB에서 상세 조회)
 
@@ -148,6 +150,8 @@ class TelegramNotifier:
             buy_done: 매수 완료 종목 코드 리스트
             total_value: 총 자산 (평가 + 예수금)
             balance: get_balance() 결과 (보유종목 표시용)
+            elapsed_sec: 리밸런싱 소요 시간 (초)
+            change_summary: 포트폴리오 변동 요약
 
         Returns:
             발송 성공 여부
@@ -183,6 +187,10 @@ class TelegramNotifier:
         elif not buy_done:
             lines.append("\n*매수* 없음")
 
+        # 포트폴리오 변동 요약
+        if change_summary:
+            lines.append(f"\n*변동* {change_summary}")
+
         # 계좌 요약
         lines.append("")
         if balance:
@@ -194,6 +202,13 @@ class TelegramNotifier:
             lines.append(f"  예수금: {cash:,.0f}원")
         else:
             lines.append(f"총 자산: `{total_value:,.0f}원`")
+
+        # 소요 시간
+        if elapsed_sec > 0:
+            minutes = int(elapsed_sec // 60)
+            seconds = int(elapsed_sec % 60)
+            elapsed_str = f"{minutes}분 {seconds}초" if minutes > 0 else f"{seconds}초"
+            lines.append(f"\n소요 시간: {elapsed_str}")
 
         msg = "\n".join(lines)
         return self.send(msg)
@@ -298,9 +313,16 @@ class TelegramNotifier:
         weekdays = ["월", "화", "수", "목", "금", "토", "일"]
         date_str = f"{now.strftime('%Y-%m-%d')} {weekdays[now.weekday()]}"
 
+        # 현재 프리셋 표시
+        preset_info = self._load_preset_info()
+
         # 계좌 요약
         lines = [
             f"*일별 리포트* ({date_str})",
+        ]
+        if preset_info:
+            lines.append(f"전략: {preset_info}")
+        lines.extend([
             "",
             "*계좌 요약*",
             f"  총 평가금액: `{total_eval:,.0f}원`",
@@ -308,7 +330,7 @@ class TelegramNotifier:
             f"  총 손익:     `{total_profit:+,.0f}원 ({total_return * 100:+.2f}%)`",
             f"  예수금:      `{cash:,.0f}원`",
             f"  당일 수익률: `{daily_return * 100:+.2f}%`",
-        ]
+        ])
 
         # 보유 종목
         if holdings:
@@ -354,6 +376,32 @@ class TelegramNotifier:
 
         msg = "\n".join(lines)
         return self.send(msg)
+
+    def _load_preset_info(self) -> str:
+        """config.yaml에서 현재 프리셋/금액/종목수 읽기"""
+        try:
+            import yaml
+            config_path = Path("config/config.yaml")
+            if not config_path.exists():
+                return ""
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            preset = data.get("preset", "")
+            sizing = data.get("sizing", "")
+            # 종목 수: 개별 오버라이드 → 금액 프리셋
+            n_stocks = (
+                data.get("portfolio", {}).get("n_stocks")
+                or data.get("presets", {}).get(sizing, {}).get("portfolio", {}).get("n_stocks", "")
+            )
+            parts = []
+            if preset:
+                parts.append(preset)
+            if sizing:
+                parts.append(sizing)
+            if n_stocks:
+                parts.append(f"{n_stocks}종목")
+            return " / ".join(parts) if parts else ""
+        except Exception:
+            return ""
 
     # ── peak / prev value 추적 (MDD + 당일수익률) ──
 

@@ -343,6 +343,7 @@ class OrderExecutor:
         current_holdings: list[str],
         target_portfolio: list[str],
         invest_ratio: float = 1.0,
+        skip_turnover_check: bool = False,
     ) -> tuple[list[str], list[str]]:
         """리밸런싱 주문 실행
 
@@ -352,6 +353,7 @@ class OrderExecutor:
             current_holdings: 현재 보유 종목 코드 리스트
             target_portfolio: 목표 포트폴리오 코드 리스트
             invest_ratio: 투자 비중 (0.0~1.0, 시장 레짐/변동성 타겟팅 반영)
+            skip_turnover_check: 턴오버 제한 검증 건너뛰기 (수동 리밸런싱 시)
 
         Returns:
             (매도 완료 리스트, 매수 완료 리스트)
@@ -374,9 +376,14 @@ class OrderExecutor:
         sell_list, buy_list = self._calculate_orders(current_holdings, target_portfolio)
         logger.info(f"리밸런싱 계획: 매도 {len(sell_list)}개, 매수 {len(buy_list)}개")
 
-        # 턴오버 제한 검증 (전량 청산은 의도적 행위이므로 예외)
-        if target_portfolio:
+        # 턴오버 제한 검증 (전량 청산·수동 리밸런싱은 의도적 행위이므로 예외)
+        if target_portfolio and not skip_turnover_check:
             self._check_turnover_limit(len(sell_list), len(current_holdings))
+        elif skip_turnover_check and len(sell_list) > 0:
+            logger.warning(
+                f"턴오버 제한 검증 건너뜀 (수동 리밸런싱): "
+                f"매도 {len(sell_list)}/{len(current_holdings)}개"
+            )
         elif current_holdings:
             logger.warning(
                 f"전량 청산 모드: 목표 포트폴리오 비어있음, "

@@ -371,7 +371,7 @@ presets:
 
   1000만:
     portfolio:
-      n_stocks: 10
+      n_stocks: 15
       initial_cash: 10000000
     universe:
       min_market_cap_percentile: 10.0

@@ -116,6 +116,42 @@ QComboBox QAbstractItemView {{
     color: {fg};
     selection-background-color: {select_bg};
 }}
+QSpinBox {{
+    padding: 4px 8px;
+    border: 1px solid {border};
+    border-radius: 4px;
+    background: {input_bg};
+    color: {fg};
+}}
+QSpinBox::up-button, QSpinBox::down-button {{
+    border: none;
+    background: {header_bg};
+    width: 16px;
+}}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{
+    background: {border};
+}}
+QSlider::groove:horizontal {{
+    border: 1px solid {border};
+    height: 6px;
+    background: {input_bg};
+    border-radius: 3px;
+}}
+QSlider::handle:horizontal {{
+    background: {accent};
+    border: none;
+    width: 16px;
+    height: 16px;
+    margin: -5px 0;
+    border-radius: 8px;
+}}
+QSlider::handle:horizontal:hover {{
+    background: #74C0FC;
+}}
+QSlider::sub-page:horizontal {{
+    background: {accent};
+    border-radius: 3px;
+}}
 QLineEdit {{
     padding: 4px 8px;
     border: 1px solid {border};
