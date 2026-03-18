@@ -566,6 +566,7 @@ class OrderExecutor:
                 )
 
         # ④ 실패분 재시도 (rate limit 등 일시적 실패 대응)
+        # 중복 주문 방지: 미체결 주문 조회 후 이미 접수된 종목은 스킵
         failed_tickers = [
             t for t in affordable_list
             if t not in buy_done and t in buy_prices
@@ -575,7 +576,22 @@ class OrderExecutor:
                 f"매수 실패 {len(failed_tickers)}종목 재시도 대기 (5초)..."
             )
             time.sleep(5)
+            # 미체결 조회로 이미 접수된 주문 확인 (중복 주문 방지)
+            try:
+                unfilled = self.api.get_unfilled_orders()
+                unfilled_tickers = {
+                    o.get("stk_cd", o.get("ticker", ""))
+                    for o in unfilled
+                }
+            except Exception:
+                unfilled_tickers = set()
+                logger.warning("미체결 조회 실패 — 재시도 전체 스킵 (중복 주문 방지)")
+                failed_tickers = []
+
             for ticker in failed_tickers:
+                if ticker in unfilled_tickers:
+                    logger.info(f"미체결 주문 존재, 재시도 스킵: {ticker}")
+                    continue
                 price = buy_prices[ticker]
                 qty = int(budget_per_stock / (price * cost_rate))
                 if qty <= 0:

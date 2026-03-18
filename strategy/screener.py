@@ -85,16 +85,16 @@ class MultiFactorScreener:
                     market_cap_list.append(mc)
 
             # 데이터 없으면 직전 영업일로 자동 폴백 (최대 5일)
+            data_date = date  # 실제 데이터 조회에 사용된 날짜 (폴백 시 변경됨)
             if not fundamentals_list and not market_cap_list:
                 from datetime import datetime as _dt
 
-                original_date = date
                 base_dt = _dt.strptime(date, "%Y%m%d").date()
                 for attempt in range(5):
                     prev_ts = previous_krx_business_day(base_dt)
                     fallback_date = prev_ts.strftime("%Y%m%d")
                     logger.info(
-                        f"[{original_date}] 데이터 없음 → "
+                        f"[{date}] 데이터 없음 → "
                         f"직전 영업일 {fallback_date} 폴백 (시도 {attempt + 1}/5)"
                     )
                     for m in markets:
@@ -105,8 +105,8 @@ class MultiFactorScreener:
                         if not mc.empty:
                             market_cap_list.append(mc)
                     if fundamentals_list or market_cap_list:
-                        date = fallback_date
-                        logger.info(f"[{fallback_date}] 폴백 성공")
+                        data_date = fallback_date
+                        logger.info(f"[{date}→{data_date}] 폴백 성공")
                         break
                     base_dt = prev_ts.date() if hasattr(prev_ts, 'date') else prev_ts
 
@@ -134,13 +134,13 @@ class MultiFactorScreener:
                 return pd.DataFrame()
 
             # 거래정지 종목 감지
-            suspended = self.collector.get_suspended_tickers(universe_tickers, date)
+            suspended = self.collector.get_suspended_tickers(universe_tickers, data_date)
 
             # 유동성 데이터 (평균 거래대금)
             avg_tv = None
             min_tv = settings.universe.min_avg_trading_value
             if min_tv > 0:
-                avg_tv = self.collector.get_avg_trading_value(universe_tickers, date)
+                avg_tv = self.collector.get_avg_trading_value(universe_tickers, data_date)
 
             tickers = self.processor.filter_universe(
                 tickers=universe_tickers,
@@ -156,7 +156,7 @@ class MultiFactorScreener:
 
             # 변동성 필터: 고변동성 종목 제외
             if settings.volatility.filter_enabled and tickers:
-                tickers = self._apply_volatility_filter(tickers, date)
+                tickers = self._apply_volatility_filter(tickers, data_date)
                 logger.info(f"변동성 필터 후: {len(tickers)}개 종목")
 
             if not tickers:
@@ -183,7 +183,7 @@ class MultiFactorScreener:
             # 모멘텀 (멀티기간: 12M 60% + 6M 30% + 3M 10%)
             # 12M 데이터로 한 번 조회 후 6M은 슬라이싱으로 재사용
             multi_returns = self.return_calc.get_returns_multi_period(
-                tickers, date, lookback_months_list=[12, 6], skip_months=1
+                tickers, data_date, lookback_months_list=[12, 6], skip_months=1
             )
             returns_12m = multi_returns[12]
             returns_6m = multi_returns[6]

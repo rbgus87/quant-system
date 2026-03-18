@@ -98,14 +98,15 @@ class MultiFactorBacktest:
                     list(all_tickers), trade_date_str
                 )
 
-                # 총 자산 평가 (시가 없으면 이전 history에서 마지막 종가 사용)
+                # 총 자산 평가 (시가 없으면 매수 평균단가로 대체)
                 total_value = cash
                 for ticker, shares in holdings.items():
-                    if ticker in prices:
-                        total_value += prices[ticker] * shares
+                    price = prices.get(ticker) or cost_basis.get(ticker)
+                    if price:
+                        total_value += price * shares
                     else:
                         logger.warning(
-                            f"[{trade_date_str}] {ticker} 시가 없음"
+                            f"[{trade_date_str}] {ticker} 시가·매수가 모두 없음"
                             f" — 보유 {shares}주 자산 평가에서 제외"
                         )
 
@@ -528,11 +529,13 @@ class MultiFactorBacktest:
             if price is None:
                 continue
             # 시장 충격 반영: 주문 수량 대비 거래량 비율로 가격 조정
+            # 시장 충격은 슬리피지를 대체하므로, 충격 적용 시 슬리피지 제외
             impact = self.rebalancer.estimate_market_impact(
                 sell_shares, avg_volumes.get(ticker, 0)
             )
             adjusted_price = price * (1 - impact)  # 매도 시 불리한 가격
-            proceed = self.rebalancer.calc_sell_proceed(adjusted_price, sell_shares)
+            cost_rate = self.rebalancer.cfg.commission_rate + self.rebalancer.cfg.tax_rate
+            proceed = adjusted_price * sell_shares * (1 - cost_rate)
             cash += proceed
             holdings[ticker] = holdings.get(ticker, 0) - sell_shares
             # 종목별 수익률 계산 (매수 평균단가 대비)
@@ -568,11 +571,13 @@ class MultiFactorBacktest:
             if price is None:
                 continue
             # 시장 충격 반영: 매수 시 불리한 가격
+            # 시장 충격은 슬리피지를 대체하므로, 충격 적용 시 슬리피지 제외
             impact = self.rebalancer.estimate_market_impact(
                 delta, avg_volumes.get(ticker, 0)
             )
             adjusted_price = price * (1 + impact)
-            cost = self.rebalancer.calc_buy_cost(adjusted_price, delta)
+            buy_cost_rate = self.rebalancer.cfg.commission_rate
+            cost = adjusted_price * delta * (1 + buy_cost_rate)
             if cash >= cost:
                 cash -= cost
                 # 평균 매수단가 업데이트 (가중 평균)

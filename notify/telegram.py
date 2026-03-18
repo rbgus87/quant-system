@@ -6,6 +6,7 @@ python-telegram-bot v21은 완전 async 기반이지만
 """
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -377,11 +378,14 @@ class TelegramNotifier:
         msg = "\n".join(lines)
         return self.send(msg)
 
+    # 프로젝트 루트 기준 절대 경로 (exe 환경에서도 올바른 경로)
+    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     def _load_preset_info(self) -> str:
         """config.yaml에서 현재 프리셋/금액/종목수 읽기"""
         try:
             import yaml
-            config_path = Path("config/config.yaml")
+            config_path = Path(os.path.join(self._PROJECT_ROOT, "config", "config.yaml"))
             if not config_path.exists():
                 return ""
             data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -408,7 +412,7 @@ class TelegramNotifier:
     @property
     def _peak_value_path(self) -> str:
         mode = "paper" if settings.is_paper_trading else "live"
-        return f"data/peak_value_{mode}.json"
+        return os.path.join(self._PROJECT_ROOT, "data", f"peak_value_{mode}.json")
 
     def _load_peak_value(self) -> float:
         """고점 값 로드"""

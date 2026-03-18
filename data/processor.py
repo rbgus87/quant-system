@@ -28,13 +28,12 @@ class DataProcessor:
         """
         cleaned = df.copy()
 
-        # PBR, PER: 0 이하 → NaN + 상하위 1% 양방향 Winsorize
+        # PBR, PER: 0 이하 → NaN + 상위 1% Winsorize (하위는 유지 — 극저PBR 가치주 보존)
         for col in ["PBR", "PER"]:
             if col in cleaned.columns:
                 cleaned[col] = cleaned[col].where(cleaned[col] > 0, np.nan)
-                lower = cleaned[col].quantile(0.01)
                 upper = cleaned[col].quantile(0.99)
-                cleaned[col] = cleaned[col].clip(lower=lower, upper=upper)
+                cleaned[col] = cleaned[col].clip(upper=upper)
 
         # DIV: 음수 → NaN
         if "DIV" in cleaned.columns:

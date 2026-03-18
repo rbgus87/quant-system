@@ -148,7 +148,7 @@ def _execute_rebalancing_core(
         return
 
     current_holdings = [h["ticker"] for h in balance["holdings"] if h["qty"] > 0]
-    total_value = balance.get("total_eval_amount", 0)
+    total_value = balance.get("total_eval_amount", 0) + balance.get("cash", 0)
 
     # 고정 금액 모드: max_investment_amount > 0이면 투자 금액 제한
     max_inv = settings.portfolio.max_investment_amount
