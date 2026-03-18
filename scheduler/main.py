@@ -550,14 +550,16 @@ def main() -> None:
 
     logger.info("스케줄러 시작 (Ctrl+C로 종료)")
     logger.info("  08:50 월말 리밸런싱 | 15:15 방어 체크 | 15:35 일별 리포트")
-    TelegramNotifier().send("퀀트 스케줄러가 시작되었습니다.")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    TelegramNotifier().send(f"퀀트 스케줄러가 시작되었습니다.\n{now}")
 
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("스케줄러 종료")
         try:
-            TelegramNotifier().send("퀀트 스케줄러가 종료되었습니다.")
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            TelegramNotifier().send(f"퀀트 스케줄러가 종료되었습니다.\n{now}")
         except Exception:
             pass
 
