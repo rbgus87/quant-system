@@ -14,6 +14,7 @@ logs/
 .idea/
 *.html
 *.png
+reports/
 notebooks/.ipynb_checkpoints/
 
 # 런타임 데이터/캐시
