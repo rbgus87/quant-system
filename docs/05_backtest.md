@@ -270,7 +270,7 @@ import os
 
 logger = logging.getLogger(__name__)
 
-RF_ANNUAL = 0.03   # 무위험 수익률 연 3% (한국 국고채 기준)
+RF_ANNUAL: float = settings.momentum.risk_free_rate  # 무위험 수익률 연 3.5% (config/settings.py 단일 소스)
 
 
 class PerformanceAnalyzer:

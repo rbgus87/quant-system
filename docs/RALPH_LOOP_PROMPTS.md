@@ -173,7 +173,7 @@ config/settings.py의 TradingConfig 참조.
 - PerformanceAnalyzer 클래스 (metrics.py)
   - calculate_cagr(portfolio_values): 연 복합 수익률
   - calculate_mdd(portfolio_values): 최대 낙폭 (목표: -20% 이내)
-  - calculate_sharpe(returns, risk_free=0.03): 샤프 비율 (목표: 1.0+)
+  - calculate_sharpe(returns, risk_free=0.035): 샤프 비율 (목표: 1.0+)
   - calculate_calmar(cagr, mdd): 칼마 비율
   - calculate_win_rate(returns): 일 승률
   - calculate_volatility(returns): 연환산 변동성

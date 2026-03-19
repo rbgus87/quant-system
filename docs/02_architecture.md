@@ -36,6 +36,7 @@
           [notify/telegram.py]    → 리밸런싱 결과 알림
                │
           [dashboard/app.py]      → Streamlit 모니터링
+          [gui/]                  → PyQt6 데스크탑 GUI
 
 [scheduler/main.py]  → 월말 자동 실행 트리거 (APScheduler)
 ```
@@ -55,13 +56,17 @@ korean-quant/
 │
 ├── config/
 │   ├── __init__.py
-│   └── settings.py             ← 전역 설정 싱글톤
+│   ├── settings.py             ← 전역 설정 싱글톤 (YAML 오버라이드 지원)
+│   ├── config.yaml             ← 전략 프리셋 외부 설정
+│   ├── calendar.py             ← KRX 영업일 캘린더
+│   └── logging_config.py       ← 로깅 설정
 │
 ├── data/
 │   ├── __init__.py
-│   ├── collector.py            ← pykrx 데이터 수집
+│   ├── collector.py            ← 멀티소스 데이터 수집 (KRX Open API → DART → pykrx 폴백)
+│   ├── dart_client.py          ← DART OpenAPI 클라이언트
 │   ├── processor.py            ← 이상치·결측치 처리
-│   └── storage.py              ← SQLite CRUD
+│   └── storage.py              ← SQLite CRUD (WAL 모드, 벌크 쿼리)
 │
 ├── factors/
 │   ├── __init__.py
@@ -73,7 +78,8 @@ korean-quant/
 ├── strategy/
 │   ├── __init__.py
 │   ├── screener.py             ← 종목 스크리닝 통합
-│   └── rebalancer.py           ← 리밸런싱 로직
+│   ├── rebalancer.py           ← 리밸런싱 로직 + 시장충격 모델
+│   └── market_regime.py        ← 시장 레짐 필터 (200일 이평선 기반)
 │
 ├── backtest/
 │   ├── __init__.py
@@ -93,18 +99,23 @@ korean-quant/
 ├── dashboard/
 │   └── app.py                  ← Streamlit 대시보드
 │
+├── gui/                        ← PyQt6 GUI 애플리케이션
+│   ├── __main__.py             ← python -m gui 진입점
+│   ├── app.py                  ← QApplication 초기화
+│   ├── main_window.py          ← 메인 윈도우 (탭 레이아웃)
+│   ├── themes.py               ← 다크/라이트 테마
+│   ├── tray_icon.py            ← 시스템 트레이 아이콘
+│   └── widgets/                ← UI 위젯 (스케줄러, 백테스트, 포트폴리오 등)
+│
 ├── scheduler/
 │   └── main.py                 ← APScheduler 자동 실행
 │
-├── tests/
-│   ├── test_factors.py
-│   ├── test_backtest.py
-│   └── test_kiwoom_api.py
+├── tests/                      ← 단위/통합 테스트 (15개 파일, 335개 테스트)
 │
 ├── notebooks/
-│   ├── 01_data_exploration.ipynb
-│   ├── 02_factor_analysis.ipynb
-│   └── 03_backtest_result.ipynb
+│
+├── build_exe.py                ← PyInstaller exe 빌드 스크립트
+├── run_backtest.py             ← 백테스트 CLI 진입점
 │
 └── logs/
     └── quant.log

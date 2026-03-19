@@ -106,12 +106,14 @@ LOG_LEVEL=INFO
 | **백테스트 (아웃샘플)** | `python run_backtest.py --mode outsample` | 2021~2024 구간 |
 | **백테스트 (자금 지정)** | `python run_backtest.py --cash 50000000` | 초기자금 변경 |
 | **대시보드** | `streamlit run dashboard/app.py` | 웹 모니터링 대시보드 |
+| **GUI 앱** | `python -m gui` | PyQt6 데스크탑 앱 (스케줄러 제어, 백테스트, 포트폴리오) |
+| **GUI (exe)** | `KoreanQuant.exe` | PyInstaller 빌드된 실행 파일 |
 
 ### 개발/테스트 명령어
 
 | 구분 | 명령어 | 설명 |
 |------|--------|------|
-| **전체 테스트** | `python -m pytest tests/` | 228개 테스트 실행 |
+| **전체 테스트** | `python -m pytest tests/` | 335개 테스트 실행 |
 | **상세 테스트** | `python -m pytest tests/ -v` | 개별 테스트 결과 표시 |
 | **특정 모듈 테스트** | `python -m pytest tests/test_backtest.py` | 단일 파일 테스트 |
 | **실패 시 즉시 중단** | `python -m pytest tests/ -x --tb=short` | 첫 실패에서 멈춤 |
@@ -140,10 +142,11 @@ python scheduler/main.py --dry-run
 | 시간 | 조건 | 동작 |
 |------|------|------|
 | 매 영업일(월~금) 08:50 | 이번 달 마지막 KRX 거래일일 때만 | 멀티팩터 스크리닝 → 리밸런싱 주문 |
+| 매 영업일(월~금) 15:15 | 항상 | 일별 방어 체크 (MDD 서킷브레이커 + 트레일링 스톱) |
 | 매 영업일(월~금) 15:35 | 항상 | 일별 수익 리포트 텔레그램 발송 |
 
 **리밸런싱 프로세스:**
-1. 멀티팩터 스크리닝으로 신규 포트폴리오 10종목 선정
+1. 멀티팩터 스크리닝으로 신규 포트폴리오 선정 (종목 수는 config.yaml 프리셋에 따라 결정)
 2. 현재 보유 종목과 비교하여 매도/매수 목록 생성
 3. 안전장치 검증 (턴오버 제한, MDD 서킷브레이커)
 4. 매도 먼저 실행 → 체결 확인 → 매수 실행 (동일 비중)
@@ -274,10 +277,39 @@ streamlit run dashboard/app.py
 - 현재 포트폴리오 종목 테이블
 - 60초 캐시로 API 호출 최소화
 
-### 3-6. 테스트
+### 3-6. GUI 애플리케이션
+
+PyQt6 기반 데스크탑 앱으로 스케줄러 제어, 백테스트, 포트폴리오 조회 등을 GUI에서 수행할 수 있습니다.
 
 ```bash
-# 전체 테스트 (228개)
+# Python에서 직접 실행
+python -m gui
+
+# PyInstaller로 빌드된 exe 실행
+KoreanQuant.exe
+```
+
+**주요 기능:**
+- 다크/라이트 테마 전환
+- 스케줄러 시작/종료 제어
+- 백테스트 파라미터 입력 및 실행
+- 프리셋 선택 및 YAML 저장
+- 현재 포트폴리오 조회 (키움 API 연동)
+- 실시간 로그 뷰어
+- 긴급 전량 매도 (수동 리밸런싱 우회)
+- 시스템 트레이 최소화
+
+**exe 빌드:**
+
+```bash
+python build_exe.py
+# dist/KoreanQuant.exe 생성
+```
+
+### 3-7. 테스트
+
+```bash
+# 전체 테스트 (335개)
 python -m pytest tests/
 
 # 상세 출력
@@ -296,6 +328,9 @@ python -m pytest tests/test_scheduler.py     # 스케줄러
 python -m pytest tests/test_processor.py     # 데이터 전처리
 python -m pytest tests/test_integration.py   # 통합 테스트
 python -m pytest tests/test_smoke.py         # 스모크 테스트
+python -m pytest tests/test_settings.py      # 설정 로드/검증
+python -m pytest tests/test_dart_client.py   # DART API 클라이언트
+python -m pytest tests/test_market_regime.py # 시장 레짐 필터
 ```
 
 ---
@@ -342,12 +377,21 @@ quant-system/
 ├── dashboard/              # 모니터링
 │   └── app.py              #   Streamlit 대시보드
 │
-├── tests/                  # 테스트 (12개 파일, 228개 테스트)
+├── gui/                    # PyQt6 GUI 애플리케이션
+│   ├── __main__.py         #   python -m gui 진입점
+│   ├── app.py              #   QApplication 초기화
+│   ├── main_window.py      #   메인 윈도우 (탭 레이아웃)
+│   ├── themes.py           #   다크/라이트 테마
+│   ├── tray_icon.py        #   시스템 트레이 아이콘
+│   └── widgets/            #   UI 위젯 (백테스트, 포트폴리오, 스케줄러, 로그 등)
+│
+├── tests/                  # 테스트 (15개 파일, 335개 테스트)
 ├── docs/                   # 문서
 ├── logs/                   # 로그 파일
 ├── reports/                # 백테스트 HTML 리포트 출력
 │
 ├── run_backtest.py         # 백테스트 CLI 진입점
+├── build_exe.py            # PyInstaller exe 빌드 스크립트
 ├── requirements.txt        # pip 의존성
 ├── .env                    # 환경변수 (gitignore)
 └── .env.example            # 환경변수 템플릿
@@ -377,13 +421,13 @@ quant-system/
 | 시가총액 하위 제외 | 10% | 소형주 제외 비율 |
 | 금융주 제외 | true | 금융업종 제외 여부 |
 | 최소 상장일 | 365일 | 신규 상장 제외 기간 |
-| 최소 평균 거래대금 | 2억원 | 20일 평균 거래대금 하한 |
+| 최소 평균 거래대금 | 1억원 | 20일 평균 거래대금 하한 |
 
 ### 5-3. 포트폴리오 설정
 
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
-| 종목 수 | 10개 | 포트폴리오 편입 종목 수 |
+| 종목 수 | 30개 | 포트폴리오 편입 종목 수 (config.yaml 프리셋으로 조정 가능) |
 | 비중 방식 | equal | 동일 비중 (equal / value_weighted) |
 
 ### 5-4. 거래 비용 및 안전장치
@@ -391,7 +435,7 @@ quant-system/
 | 설정 | 기본값 | 설명 |
 |------|--------|------|
 | 수수료율 | 0.015% | 매수/매도 수수료 |
-| 거래세 | 0.20% | 매도 시만 적용 |
+| 거래세 | 0.18% | 매도 시만 적용 |
 | 슬리피지 | 0.1% | 체결가 차이 |
 | 단일 종목 최대 비중 | 10% | 집중 투자 방지 |
 | 월간 최대 교체율 | 50% | 과도한 리밸런싱 방지 |
@@ -450,7 +494,7 @@ venv\Scripts\activate
 python -m pytest tests/ -x --tb=short
 ```
 
-228개 테스트가 모두 통과해야 합니다.
+335개 테스트가 모두 통과해야 합니다.
 
 ### Step 2: 백테스트 (전략 성과 확인)
 
