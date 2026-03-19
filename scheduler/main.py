@@ -198,12 +198,14 @@ def _execute_rebalancing_core(
 
     # ── 변동성 타겟팅 ──
     vol_scale = _calc_vol_target_scale(api)
-    invest_ratio *= vol_scale
+    raw_ratio = invest_ratio * vol_scale
+    # 곱셈 효과로 과도한 비중 축소 방지: 최소 20% 투자 보장
+    invest_ratio = max(raw_ratio, 0.20)
 
     if invest_ratio < 1.0:
         logger.info(
             f"최종 투자 비중: {invest_ratio:.0%} "
-            f"(레짐 × 변동성 스케일)"
+            f"(레짐 × 변동성 스케일, raw={raw_ratio:.0%}, 하한 20%)"
         )
 
     # 리밸런싱 주문 실행
@@ -245,7 +247,8 @@ def run_monthly_rebalancing() -> None:
     """월말 리밸런싱 실행 (스케줄러 호출)
 
     - 영업일이 아니거나 월말이 아니면 스킵
-    - 리밸런싱 실패 시 텔레그램 에러 알림
+    - 리밸런싱 실패 시 최대 2회 재시도 (30분, 60분 후)
+    - 최종 실패 시 텔레그램 에러 알림
     """
     if not (is_business_day() and is_last_business_day_of_month()):
         return
@@ -255,12 +258,36 @@ def run_monthly_rebalancing() -> None:
     notifier = TelegramNotifier()
     notifier.send("[월말] 리밸런싱을 시작합니다...")
 
-    try:
-        _execute_rebalancing_core(notifier)
-        logger.info("월말 리밸런싱 완료")
-    except Exception as e:
-        logger.error(f"리밸런싱 오류: {e}", exc_info=True)
-        notifier.send_error(str(e))
+    import time as _time
+
+    max_retries = 2
+    retry_delays_sec = [1800, 3600]  # 30분, 60분
+
+    for attempt in range(1 + max_retries):
+        try:
+            _execute_rebalancing_core(notifier)
+            logger.info("월말 리밸런싱 완료")
+            return
+        except Exception as e:
+            if attempt < max_retries:
+                delay = retry_delays_sec[attempt]
+                logger.warning(
+                    f"리밸런싱 실패 (시도 {attempt + 1}/{1 + max_retries}): {e} "
+                    f"— {delay // 60}분 후 재시도"
+                )
+                notifier.send(
+                    f"리밸런싱 실패 (시도 {attempt + 1}): {e}\n"
+                    f"{delay // 60}분 후 자동 재시도합니다."
+                )
+                _time.sleep(delay)
+            else:
+                logger.error(
+                    f"리밸런싱 최종 실패 ({1 + max_retries}회 시도 모두 실패): {e}",
+                    exc_info=True,
+                )
+                notifier.send_error(
+                    f"리밸런싱 최종 실패 ({1 + max_retries}회 시도 모두 실패): {e}"
+                )
 
 
 def run_daily_defense_check() -> None:

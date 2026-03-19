@@ -164,6 +164,11 @@ class MultiFactorBacktest:
                 if turnover_log:
                     turnover_log[-1]["trade_date"] = trade_date_str
 
+                # ── 배당금 추정 (보유 기간 1개월분) ──
+                cash = self._estimate_dividend_income(
+                    holdings, prices, date_str, market, cash,
+                )
+
                 # ── 일별 포트폴리오 가치 기록 ──
                 self._record_daily_values(
                     holdings, prices, cash, history,
@@ -409,12 +414,16 @@ class MultiFactorBacktest:
         """
         vol_scale = self._calc_vol_target_scale(history)
         invest_ratio = self.regime_filter.get_invest_ratio(date_str)
-        rebal_value = total_value * invest_ratio * vol_scale
+        raw_ratio = invest_ratio * vol_scale
+        # 곱셈 효과로 과도한 비중 축소 방지: 최소 20% 투자 보장
+        combined_ratio = max(raw_ratio, 0.20)
+        rebal_value = total_value * combined_ratio
 
-        if vol_scale < 1.0:
+        if combined_ratio < 1.0:
             logger.info(
-                f"[{date_str}] 변동성 타겟팅: 투자 비중 ×{vol_scale:.0%} "
-                f"(레짐 {invest_ratio:.0%} → 최종 {invest_ratio * vol_scale:.0%})"
+                f"[{date_str}] 변동성 타겟팅: 투자 비중 "
+                f"(레짐 {invest_ratio:.0%} × vol {vol_scale:.0%} = "
+                f"raw {raw_ratio:.0%} → 최종 {combined_ratio:.0%})"
             )
 
         # 고정 금액 모드: 리밸런싱 기준 금액 제한
@@ -855,6 +864,66 @@ class MultiFactorBacktest:
     # ─────────────────────────────────────────────
     # 내부 메서드
     # ─────────────────────────────────────────────
+
+    def _estimate_dividend_income(
+        self,
+        holdings: dict[str, int],
+        prices: dict[str, float],
+        date_str: str,
+        market: str,
+        cash: float,
+    ) -> float:
+        """보유 종목의 월간 배당금 추정 및 현금 반영
+
+        pykrx는 수정주가가 아닌 실제 종가를 반환하므로,
+        배당락일에 종가가 하락하면 배당금 없이는 손실로 기록됩니다.
+        펀더멘털의 연간 배당수익률(DIV)을 기준으로 월간 배당을 추정합니다.
+
+        Args:
+            holdings: 보유 종목 {ticker: shares}
+            prices: 당일 시가 {ticker: price}
+            date_str: 기준 날짜 (YYYYMMDD)
+            market: 시장
+            cash: 현재 현금
+
+        Returns:
+            배당금 반영 후 현금
+        """
+        if not holdings:
+            return cash
+
+        try:
+            fundamentals = self.krx.get_fundamentals_all(date_str, market)
+            if fundamentals is None or fundamentals.empty:
+                return cash
+
+            total_div_income = 0.0
+            for ticker, shares in holdings.items():
+                if shares <= 0:
+                    continue
+                if ticker not in fundamentals.index:
+                    continue
+                div_yield = fundamentals.loc[ticker].get("DIV", 0)
+                if not div_yield or div_yield <= 0:
+                    continue
+                price = prices.get(ticker)
+                if not price or price <= 0:
+                    continue
+                # 연간 배당수익률 → 월간 배당금
+                monthly_div = price * shares * (div_yield / 100) / 12
+                total_div_income += monthly_div
+
+            if total_div_income > 0:
+                cash += total_div_income
+                logger.debug(
+                    f"[{date_str}] 배당금 추정: {total_div_income:,.0f}원 "
+                    f"({len(holdings)}종목 보유)"
+                )
+
+        except Exception as e:
+            logger.debug(f"[{date_str}] 배당금 추정 실패: {e}")
+
+        return cash
 
     def _calc_portfolio(self, date_str: str, market: str) -> list[str]:
         """T일 기준 팩터 계산 후 상위 N개 종목 반환
