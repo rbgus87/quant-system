@@ -4,7 +4,6 @@
 실행: python -m gui.app
 """
 
-import logging
 import os
 import sys
 
@@ -13,16 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import QApplication
 
+from config.logging_config import setup_logging
 from gui.main_window import MainWindow
-
-
-def setup_logging() -> None:
-    """GUI용 로깅 설정"""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
 
 
 def main() -> None:

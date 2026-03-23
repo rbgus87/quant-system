@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import settings
+from config.logging_config import setup_logging
 from config.calendar import is_krx_business_day, is_last_krx_business_day_of_month
 from data.storage import DataStorage
 from trading.kiwoom_api import KiwoomRestClient
@@ -504,10 +505,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    setup_logging()
 
     if not settings.is_paper_trading:
         logger.warning("실전투자 모드입니다! 신중하게 진행하세요")
