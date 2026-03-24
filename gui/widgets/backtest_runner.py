@@ -6,9 +6,10 @@ import os
 import sys
 from typing import Optional
 
-from PyQt6.QtCore import QProcess
+from PyQt6.QtCore import QDate, QProcess
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -30,6 +31,7 @@ class BacktestRunner(QWidget):
         super().__init__(parent)
         self._process: Optional[QProcess] = None
         self._output_lines: list[str] = []
+        self._report_path: Optional[str] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -43,18 +45,25 @@ class BacktestRunner(QWidget):
         # 기간 설정
         period_row = QHBoxLayout()
         period_row.addWidget(QLabel("시작:"))
-        self._start_edit = QLineEdit("2020-01-01")
-        self._start_edit.setMaximumWidth(120)
+        self._start_edit = QDateEdit()
+        self._start_edit.setCalendarPopup(True)
+        self._start_edit.setDate(QDate(2020, 1, 1))
+        self._start_edit.setDisplayFormat("yyyy-MM-dd")
+        self._start_edit.setMaximumWidth(140)
         period_row.addWidget(self._start_edit)
 
         period_row.addWidget(QLabel("종료:"))
-        self._end_edit = QLineEdit("2025-12-31")
-        self._end_edit.setMaximumWidth(120)
+        self._end_edit = QDateEdit()
+        self._end_edit.setCalendarPopup(True)
+        self._end_edit.setDate(QDate.currentDate())
+        self._end_edit.setDisplayFormat("yyyy-MM-dd")
+        self._end_edit.setMaximumWidth(140)
         period_row.addWidget(self._end_edit)
 
         period_row.addWidget(QLabel("초기자본:"))
-        self._cash_edit = QLineEdit("10000000")
+        self._cash_edit = QLineEdit("10,000,000")
         self._cash_edit.setMaximumWidth(120)
+        self._cash_edit.textChanged.connect(self._format_cash)
         period_row.addWidget(self._cash_edit)
 
         period_row.addStretch()
@@ -67,6 +76,12 @@ class BacktestRunner(QWidget):
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._stop_backtest)
         period_row.addWidget(self._stop_btn)
+
+        self._open_report_btn = QPushButton("리포트 열기")
+        self._open_report_btn.setEnabled(False)
+        self._open_report_btn.setToolTip("백테스트 완료 후 HTML 리포트를 브라우저에서 엽니다")
+        self._open_report_btn.clicked.connect(self._open_report)
+        period_row.addWidget(self._open_report_btn)
 
         self._status_label = QLabel("")
         period_row.addWidget(self._status_label)
@@ -94,8 +109,8 @@ class BacktestRunner(QWidget):
         if self._process and self._process.state() == QProcess.ProcessState.Running:
             return
 
-        start = self._start_edit.text().strip()
-        end = self._end_edit.text().strip()
+        start = self._start_edit.date().toString("yyyy-MM-dd")
+        end = self._end_edit.date().toString("yyyy-MM-dd")
         cash = self._cash_edit.text().strip().replace(",", "")
 
         self._output.clear()
@@ -162,6 +177,54 @@ class BacktestRunner(QWidget):
         if exit_code == 0:
             self._status_label.setText("완료")
             self._status_label.setStyleSheet("color: green; font-weight: bold;")
+            # 리포트 경로 탐색
+            self._report_path = self._find_report_path()
+            if self._report_path:
+                self._open_report_btn.setEnabled(True)
         else:
             self._status_label.setText(f"실패 (code={exit_code})")
             self._status_label.setStyleSheet("color: red; font-weight: bold;")
+
+    def _find_report_path(self) -> Optional[str]:
+        """출력 라인에서 HTML 리포트 경로 추출"""
+        import re
+        for line in reversed(self._output_lines):
+            # reports/ 디렉토리의 .html 파일 매칭
+            match = re.search(r'((?:reports[/\\]|[A-Za-z]:[/\\])[\w\-/\\.]+\.html)', line)
+            if match:
+                path = match.group(1)
+                full_path = os.path.join(os.getcwd(), path) if not os.path.isabs(path) else path
+                if os.path.exists(full_path):
+                    return full_path
+        # 폴백: reports/ 디렉토리에서 최신 HTML 찾기
+        reports_dir = os.path.join(os.getcwd(), "reports")
+        if os.path.isdir(reports_dir):
+            html_files = [
+                os.path.join(reports_dir, f)
+                for f in os.listdir(reports_dir)
+                if f.endswith(".html")
+            ]
+            if html_files:
+                return max(html_files, key=os.path.getmtime)
+        return None
+
+    def _open_report(self) -> None:
+        """HTML 리포트를 브라우저에서 열기"""
+        if self._report_path and os.path.exists(self._report_path):
+            import webbrowser
+            webbrowser.open(f"file:///{self._report_path}")
+
+    def _format_cash(self) -> None:
+        """초기자본 천 단위 콤마 포맷"""
+        text = self._cash_edit.text().replace(",", "")
+        if text.isdigit() and text:
+            formatted = f"{int(text):,}"
+            if formatted != self._cash_edit.text():
+                self._cash_edit.blockSignals(True)
+                cursor_pos = self._cash_edit.cursorPosition()
+                old_len = len(self._cash_edit.text())
+                self._cash_edit.setText(formatted)
+                # 커서 위치 보정
+                new_len = len(formatted)
+                self._cash_edit.setCursorPosition(cursor_pos + (new_len - old_len))
+                self._cash_edit.blockSignals(False)

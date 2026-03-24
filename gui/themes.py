@@ -3,7 +3,8 @@
 
 
 def _common_styles(bg: str, fg: str, bg2: str, border: str, accent: str,
-                   header_bg: str, select_bg: str, input_bg: str) -> str:
+                   header_bg: str, select_bg: str, input_bg: str,
+                   alt_bg: str = "") -> str:
     """공통 스타일 템플릿"""
     return f"""
 QMainWindow {{
@@ -92,6 +93,7 @@ QTableWidget {{
     background: {bg2};
     color: {fg};
     selection-background-color: {select_bg};
+    alternate-background-color: {alt_bg};
 }}
 QTableWidget::item {{
     padding: 3px 6px;
@@ -202,6 +204,7 @@ def light_theme() -> str:
         header_bg="#F1F3F5",
         select_bg="#D0EBFF",
         input_bg="#FFFFFF",
+        alt_bg="#F1F3F5",
     )
 
 
@@ -215,4 +218,5 @@ def dark_theme() -> str:
         header_bg="#2C2E33",
         select_bg="#1C3A5C",
         input_bg="#2C2E33",
+        alt_bg="#2C2E33",
     )

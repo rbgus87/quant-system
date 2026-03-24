@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
@@ -19,6 +19,9 @@ from PyQt6.QtWidgets import (
 )
 
 from gui.themes import dark_theme, light_theme
+
+# 에러 팝업 대상 키워드 (매매/API 관련 심각한 에러만)
+_CRITICAL_ERROR_KEYWORDS = ["주문", "매수", "매도", "API", "토큰", "인증"]
 from gui.tray_icon import TrayIcon
 from gui.widgets.backtest_runner import BacktestRunner
 from gui.widgets.chart_view import ChartView
@@ -188,10 +191,27 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self._scheduler_panel.log_output.connect(self._log_viewer.append_log)
+        self._scheduler_panel.log_output.connect(self._check_critical_error)
         self._scheduler_panel.status_changed.connect(
             self._status_widget.set_scheduler_status
         )
         self._scheduler_panel.status_changed.connect(self._update_tray_tooltip)
+
+        # 키보드 단축키
+        QShortcut(QKeySequence("Ctrl+R"), self, self._scheduler_panel.start_scheduler)
+        QShortcut(QKeySequence("Ctrl+T"), self, self._toggle_theme)
+        QShortcut(QKeySequence("Ctrl+L"), self, self._log_viewer.clear)
+        QShortcut(QKeySequence("Ctrl+F"), self, self._log_viewer.focus_search)
+        QShortcut(QKeySequence("F5"), self, self._portfolio_view.refresh)
+
+    def _check_critical_error(self, line: str) -> None:
+        """매매/API 관련 심각한 에러 발생 시 팝업 알림"""
+        if "[ERROR]" not in line and " ERROR " not in line:
+            return
+        if any(kw in line for kw in _CRITICAL_ERROR_KEYWORDS):
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "오류 발생", line[:300])
 
     def _update_tray_tooltip(self, running: bool) -> None:
         status = "실행 중" if running else "중지"

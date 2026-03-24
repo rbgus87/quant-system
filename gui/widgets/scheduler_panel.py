@@ -62,10 +62,12 @@ class SchedulerPanel(QWidget):
         btn_row = QHBoxLayout()
 
         self._start_btn = QPushButton("시작")
+        self._start_btn.setToolTip("스케줄러 상주 프로세스 시작 (Ctrl+R)")
         self._start_btn.clicked.connect(self.start_scheduler)
         btn_row.addWidget(self._start_btn)
 
         self._stop_btn = QPushButton("중지")
+        self._stop_btn.setToolTip("스케줄러 프로세스 중지 (Ctrl+Q)")
         self._stop_btn.clicked.connect(self.stop_scheduler)
         btn_row.addWidget(self._stop_btn)
 
@@ -189,24 +191,32 @@ class SchedulerPanel(QWidget):
 
     def _run_now(self) -> None:
         """즉시 리밸런싱 (1회 실행)"""
-        proc = self._create_process()
-        proc.setProperty("mode", "oneshot")
-        proc.start(self._python_path(), [self._scheduler_script(), "--now"])
-        self.log_output.emit("[GUI] 즉시 리밸런싱 실행")
+        self._run_oneshot(self._now_btn, "즉시 실행", "--now", "[GUI] 즉시 리밸런싱 실행")
 
     def _run_dryrun(self) -> None:
         """연결 테스트"""
-        proc = self._create_process()
-        proc.setProperty("mode", "oneshot")
-        proc.start(self._python_path(), [self._scheduler_script(), "--dry-run"])
-        self.log_output.emit("[GUI] 연결 테스트 실행")
+        self._run_oneshot(self._dryrun_btn, "연결 테스트", "--dry-run", "[GUI] 연결 테스트 실행")
 
     def _run_screen_only(self) -> None:
         """스크리닝만 실행"""
+        self._run_oneshot(self._screen_btn, "스크리닝만", "--screen-only", "[GUI] 스크리닝만 실행")
+
+    def _run_oneshot(self, btn: QPushButton, label: str, flag: str, log_msg: str) -> None:
+        """원샷 프로세스 실행 (버튼 상태 관리 포함)"""
+        original_text = btn.text()
+        btn.setEnabled(False)
+        btn.setText(f"{label} 중...")
+
         proc = self._create_process()
         proc.setProperty("mode", "oneshot")
-        proc.start(self._python_path(), [self._scheduler_script(), "--screen-only"])
-        self.log_output.emit("[GUI] 스크리닝만 실행")
+        proc.finished.connect(lambda: self._reset_oneshot_btn(btn, original_text))
+        proc.start(self._python_path(), [self._scheduler_script(), flag])
+        self.log_output.emit(log_msg)
+
+    def _reset_oneshot_btn(self, btn: QPushButton, text: str) -> None:
+        """원샷 프로세스 완료 시 버튼 복원"""
+        btn.setEnabled(True)
+        btn.setText(text)
 
     def _update_buttons(self) -> None:
         running = self.is_running()

@@ -33,8 +33,14 @@ class ChartView(QWidget):
         group = QGroupBox("수익률 차트")
         group_layout = QVBoxLayout(group)
 
-        # 기간 선택 + 새로고침
+        # 차트 타입 + 기간 선택 + 새로고침
         ctrl_row = QHBoxLayout()
+
+        self._chart_type_combo = QComboBox()
+        self._chart_type_combo.addItems(["거래 내역", "누적 수익률"])
+        self._chart_type_combo.currentIndexChanged.connect(self.refresh)
+        ctrl_row.addWidget(self._chart_type_combo)
+
         self._period_combo = QComboBox()
         self._period_combo.addItems(["1주", "1개월", "3개월", "6개월", "전체"])
         self._period_combo.setCurrentIndex(1)
@@ -84,6 +90,7 @@ class ChartView(QWidget):
             return
 
         period_text = self._period_combo.currentText()
+        chart_type = self._chart_type_combo.currentText()
         period_days = {"1주": 7, "1개월": 30, "3개월": 90, "6개월": 180, "전체": 3650}
         days = period_days.get(period_text, 30)
 
@@ -106,31 +113,13 @@ class ChartView(QWidget):
                         ha="center", va="center", fontsize=14, color=tc["fg"],
                         transform=ax.transAxes)
                 ax.set_facecolor(tc["bg"])
+            elif chart_type == "누적 수익률":
+                self._draw_cumulative_return(ax, trades, tc, pd)
             else:
-                # 일별 매수/매도 금액 집계
-                trades["trade_date"] = pd.to_datetime(trades["trade_date"])
-                daily = trades.groupby(["trade_date", "side"])["amount"].sum().unstack(fill_value=0)
+                self._draw_trade_bars(ax, trades, tc, pd)
 
-                if "BUY" in daily.columns:
-                    ax.bar(daily.index, daily["BUY"], label="매수", color="#FF6B6B", alpha=0.7, width=0.8)
-                if "SELL" in daily.columns:
-                    ax.bar(daily.index, -daily["SELL"], label="매도", color="#4DABF7", alpha=0.7, width=0.8)
-
-                ax.axhline(y=0, color=tc["grid"], linewidth=0.5)
-                ax.legend(fontsize=9, facecolor=tc["bg"], edgecolor=tc["grid"],
-                          labelcolor=tc["fg"])
-                ax.set_ylabel("금액 (원)", color=tc["fg"])
-                ax.set_facecolor(tc["bg"])
-                ax.tick_params(colors=tc["fg"])
-                for spine in ax.spines.values():
-                    spine.set_color(tc["grid"])
-
-                # x축 날짜 포맷
-                import matplotlib.dates as mdates
-                ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
-                self._figure.autofmt_xdate()
-
-            ax.set_title(f"거래 내역 ({period_text})", fontsize=11, color=tc["fg"])
+            title = f"{chart_type} ({period_text})"
+            ax.set_title(title, fontsize=11, color=tc["fg"])
             self._figure.tight_layout()
             self._canvas.draw()
 
@@ -142,3 +131,61 @@ class ChartView(QWidget):
                     ha="center", va="center", fontsize=10, color="red",
                     transform=ax.transAxes)
             self._canvas.draw()
+
+    def _draw_trade_bars(self, ax, trades, tc: dict, pd) -> None:
+        """일별 매수/매도 금액 바 차트"""
+        trades["trade_date"] = pd.to_datetime(trades["trade_date"])
+        daily = trades.groupby(["trade_date", "side"])["amount"].sum().unstack(fill_value=0)
+
+        if "BUY" in daily.columns:
+            ax.bar(daily.index, daily["BUY"], label="매수", color="#FF6B6B", alpha=0.7, width=0.8)
+        if "SELL" in daily.columns:
+            ax.bar(daily.index, -daily["SELL"], label="매도", color="#4DABF7", alpha=0.7, width=0.8)
+
+        ax.axhline(y=0, color=tc["grid"], linewidth=0.5)
+        ax.legend(fontsize=9, facecolor=tc["bg"], edgecolor=tc["grid"],
+                  labelcolor=tc["fg"])
+        ax.set_ylabel("금액 (원)", color=tc["fg"])
+        self._style_axes(ax, tc)
+
+    def _draw_cumulative_return(self, ax, trades, tc: dict, pd) -> None:
+        """누적 실현 손익 라인 차트"""
+        trades["trade_date"] = pd.to_datetime(trades["trade_date"])
+
+        # profit 컬럼이 있으면 사용, 없으면 amount 기반 추정
+        if "profit" in trades.columns:
+            daily_pnl = trades.groupby("trade_date")["profit"].sum().sort_index().cumsum()
+        else:
+            # SELL 금액 - BUY 금액 기반
+            sell = trades[trades["side"] == "SELL"].groupby("trade_date")["amount"].sum()
+            buy = trades[trades["side"] == "BUY"].groupby("trade_date")["amount"].sum()
+            net = sell.subtract(buy, fill_value=0).sort_index().cumsum()
+            daily_pnl = net
+
+        ax.plot(daily_pnl.index, daily_pnl.values, color="#4DABF7", linewidth=1.5, label="누적 손익")
+        ax.fill_between(
+            daily_pnl.index, daily_pnl.values, 0,
+            where=[v >= 0 for v in daily_pnl.values],
+            alpha=0.15, color="#4DABF7", interpolate=True,
+        )
+        ax.fill_between(
+            daily_pnl.index, daily_pnl.values, 0,
+            where=[v < 0 for v in daily_pnl.values],
+            alpha=0.15, color="#FF6B6B", interpolate=True,
+        )
+        ax.axhline(y=0, color=tc["grid"], linewidth=0.5)
+        ax.set_ylabel("누적 손익 (원)", color=tc["fg"])
+        ax.legend(fontsize=9, facecolor=tc["bg"], edgecolor=tc["grid"],
+                  labelcolor=tc["fg"])
+        self._style_axes(ax, tc)
+
+    def _style_axes(self, ax, tc: dict) -> None:
+        """공통 축 스타일링"""
+        import matplotlib.dates as mdates
+
+        ax.set_facecolor(tc["bg"])
+        ax.tick_params(colors=tc["fg"])
+        for spine in ax.spines.values():
+            spine.set_color(tc["grid"])
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%m/%d"))
+        self._figure.autofmt_xdate()

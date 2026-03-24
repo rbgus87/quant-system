@@ -105,6 +105,7 @@ class PresetPanel(QWidget):
         row3 = QHBoxLayout()
         row3.addStretch()
         self._apply_btn = QPushButton("적용")
+        self._apply_btn.setToolTip("변경된 전략 설정을 config.yaml에 저장")
         self._apply_btn.clicked.connect(self._apply)
         row3.addWidget(self._apply_btn)
         group_layout.addLayout(row3)

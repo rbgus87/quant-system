@@ -6,11 +6,12 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -127,17 +128,16 @@ class EmergencyPanel(QWidget):
         self._load_env()
 
     def _confirm_sell_all(self) -> None:
-        """전량 매도 확인 대화상자"""
-        reply = QMessageBox.warning(
+        """전량 매도 확인 — '매도' 텍스트 입력 필요"""
+        text, ok = QInputDialog.getText(
             self,
             "전량 매도 확인",
-            "정말로 모든 보유 종목을 시장가로 매도하시겠습니까?\n\n"
-            "이 작업은 되돌릴 수 없습니다.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+            '정말로 모든 보유 종목을 시장가로 매도하려면\n"매도"를 입력하세요:',
         )
-        if reply == QMessageBox.StandardButton.Yes:
+        if ok and text.strip() == "매도":
             self._execute_sell_all()
+        elif ok:
+            QMessageBox.warning(self, "취소됨", '"매도"를 정확히 입력해야 합니다.')
 
     def _execute_sell_all(self) -> None:
         """전량 매도 실행"""
@@ -216,8 +216,12 @@ class EmergencyPanel(QWidget):
                     existing_lines.append(f"{key}={field.text()}")
 
             env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
-            self._env_status.setText("저장 완료")
-            self._env_status.setStyleSheet("color: green;")
+            self._show_toast(self._env_status, "저장 완료", "green")
         except Exception as e:
-            self._env_status.setText(f"저장 실패: {e}")
-            self._env_status.setStyleSheet("color: red;")
+            self._show_toast(self._env_status, f"저장 실패: {e}", "red", 5000)
+
+    def _show_toast(self, label: QLabel, text: str, color: str, duration_ms: int = 3000) -> None:
+        """일시적 상태 메시지 표시 (자동 사라짐)"""
+        label.setText(text)
+        label.setStyleSheet(f"color: {color};")
+        QTimer.singleShot(duration_ms, lambda: label.setText(""))
