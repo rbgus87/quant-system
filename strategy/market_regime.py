@@ -25,6 +25,53 @@ logger = logging.getLogger(__name__)
 KOSPI_PROXY_TICKER = "069500"  # KODEX 200
 
 
+def calc_vol_target_scale(
+    recent_values: list[float],
+    vol_target: float | None,
+    lookback: int,
+) -> float:
+    """변동성 타겟팅 — 실현 변동성 대비 투자 비중 배율 계산
+
+    실현 변동성이 목표보다 높으면 투자 비중을 축소하고,
+    낮으면 비중을 유지(최대 100%)합니다.
+
+    Args:
+        recent_values: 최근 N일 포트폴리오/자산 가치 리스트
+        vol_target: 목표 연환산 변동성 (None이면 1.0 반환)
+        lookback: 변동성 계산에 사용할 기간 (거래일)
+
+    Returns:
+        투자 비중 배율 (0.2 ~ 1.0)
+    """
+    if vol_target is None or vol_target <= 0:
+        return 1.0
+
+    if len(recent_values) < max(lookback, 20):
+        return 1.0
+
+    values = recent_values[-lookback:]
+    returns: list[float] = []
+    for j in range(1, len(values)):
+        if values[j - 1] > 0:
+            returns.append(values[j] / values[j - 1] - 1)
+
+    if len(returns) < 10:
+        return 1.0
+
+    realized_vol = float(np.std(returns)) * np.sqrt(252)
+    if realized_vol <= 0:
+        return 1.0
+
+    scale = vol_target / realized_vol
+    result = min(1.0, max(0.2, scale))
+
+    logger.info(
+        f"변동성 타겟팅: 실현={realized_vol:.1%}, "
+        f"목표={vol_target:.1%} -> 비중 {result:.0%}"
+    )
+    return result
+
+
 class MarketRegimeFilter:
     """시장 레짐 기반 투자 비중 조절기
 

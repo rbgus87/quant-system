@@ -988,39 +988,22 @@ class MultiFactorBacktest:
         return prices
 
     def _calc_vol_target_scale(self, history: list[dict]) -> float:
-        """변동성 타겟팅 — 실현 변동성 대비 목표 비율 계산
-
-        최근 N거래일 포트폴리오 수익률의 연환산 변동성을 계산하고,
-        목표 변동성 대비 비율로 투자 비중을 조절합니다.
+        """변동성 타겟팅 — 공통 함수 위임
 
         Args:
             history: 지금까지의 일별 기록 리스트
 
         Returns:
-            투자 비중 배율 (0.0 ~ 1.0, 1.0 = 변동성 타겟 이하)
+            투자 비중 배율 (0.2 ~ 1.0)
         """
-        vol_target = settings.trading.vol_target
-        lookback = settings.trading.vol_lookback_days
+        from strategy.market_regime import calc_vol_target_scale
 
-        if vol_target is None or vol_target <= 0 or len(history) < max(lookback, 20):
-            return 1.0
-
-        recent = history[-lookback:]
-        values = [h["portfolio_value"] for h in recent]
-        returns = []
-        for j in range(1, len(values)):
-            if values[j - 1] > 0:
-                returns.append(values[j] / values[j - 1] - 1)
-
-        if len(returns) < 10:
-            return 1.0
-
-        realized_vol = float(np.std(returns)) * np.sqrt(252)
-        if realized_vol <= 0:
-            return 1.0
-
-        scale = vol_target / realized_vol
-        return min(1.0, max(0.2, scale))  # 최소 20%, 최대 100%
+        values = [h["portfolio_value"] for h in history]
+        return calc_vol_target_scale(
+            values,
+            settings.trading.vol_target,
+            settings.trading.vol_lookback_days,
+        )
 
     def _get_open_price(self, ticker: str, date_str: str) -> Optional[float]:
         """특정 날짜 시가 조회 (개별 폴백용)

@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock
 
-from strategy.market_regime import MarketRegimeFilter
+from strategy.market_regime import MarketRegimeFilter, calc_vol_target_scale
 
 
 def _make_trend_ohlcv(direction: str, ma_days: int = 200) -> pd.DataFrame:
@@ -141,3 +141,51 @@ class TestMarketRegimeFilter:
 
         # 데이터 부족 시 상승 추세 가정 → 둘 다 True → 1.0
         assert ratio == 1.0
+
+
+class TestCalcVolTargetScale:
+    """calc_vol_target_scale 공통 함수 테스트"""
+
+    def test_none_target_returns_one(self) -> None:
+        """vol_target=None이면 1.0 반환"""
+        assert calc_vol_target_scale([100, 101, 102], None, 60) == 1.0
+
+    def test_zero_target_returns_one(self) -> None:
+        """vol_target=0이면 1.0 반환"""
+        assert calc_vol_target_scale([100, 101, 102], 0.0, 60) == 1.0
+
+    def test_insufficient_data_returns_one(self) -> None:
+        """데이터 부족 시 1.0 반환"""
+        assert calc_vol_target_scale([100, 101], 0.15, 60) == 1.0
+
+    def test_low_volatility_returns_one(self) -> None:
+        """실현 변동성이 목표 미만이면 1.0 (비중 유지)"""
+        # 거의 변동 없는 데이터 (일 변동 0.01%)
+        values = [10000 + i * 0.1 for i in range(100)]
+        result = calc_vol_target_scale(values, 0.50, 60)
+        assert result == 1.0
+
+    def test_high_volatility_reduces_scale(self) -> None:
+        """실현 변동성이 목표 초과하면 비중 축소"""
+        np.random.seed(42)
+        # 일 변동성 ~2% → 연환산 ~32%
+        base = 10000.0
+        values = [base]
+        for _ in range(99):
+            base *= 1 + np.random.normal(0, 0.02)
+            values.append(base)
+
+        result = calc_vol_target_scale(values, 0.15, 60)
+        assert 0.2 <= result < 1.0
+
+    def test_scale_bounded(self) -> None:
+        """결과가 0.2~1.0 범위 내"""
+        np.random.seed(99)
+        base = 10000.0
+        values = [base]
+        for _ in range(99):
+            base *= 1 + np.random.normal(0, 0.05)
+            values.append(base)
+
+        result = calc_vol_target_scale(values, 0.10, 60)
+        assert 0.2 <= result <= 1.0

@@ -28,6 +28,15 @@ class MultiFactorScreener:
 
     # 클래스 레벨 인메모리 캐시: {(date, market): composite_df}
     _factor_cache: dict[tuple[str, str], pd.DataFrame] = {}
+    _CACHE_MAX_SIZE: int = 24  # 최근 24개월분만 보관
+
+    @classmethod
+    def _cache_put(cls, key: tuple[str, str], value: pd.DataFrame) -> None:
+        """캐시에 저장 (maxsize 초과 시 가장 오래된 항목 삭제)"""
+        if len(cls._factor_cache) >= cls._CACHE_MAX_SIZE:
+            oldest = next(iter(cls._factor_cache))
+            del cls._factor_cache[oldest]
+        cls._factor_cache[key] = value
 
     @staticmethod
     def _get_effective_fundamental_date(rebalance_date: str) -> str:
@@ -254,8 +263,8 @@ class MultiFactorScreener:
                     finance_tickers=finance_tickers,
                 )
 
-            # 팩터 스코어 인메모리 캐시 저장 (동일 프로세스 내 재활용)
-            MultiFactorScreener._factor_cache[cache_key] = composite_df
+            # 팩터 스코어 인메모리 캐시 저장 (maxsize 제한, 동일 프로세스 내 재활용)
+            self._cache_put(cache_key, composite_df)
 
             portfolio = self.composite.select_top(composite_df, n=n_stocks)
 

@@ -62,8 +62,7 @@ def is_last_business_day_of_month() -> bool:
 def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
     """변동성 타겟팅 — KODEX 200 실현 변동성 기반 투자 비중 산출
 
-    백테스트의 _calc_vol_target_scale과 동일 로직:
-    실현 변동성 > 목표 → 비중 축소 (최소 20%)
+    market_regime.calc_vol_target_scale() 공통 함수에 위임.
 
     Args:
         api: KiwoomRestClient 인스턴스
@@ -71,12 +70,12 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
     Returns:
         투자 비중 배율 (0.2 ~ 1.0)
     """
-    import numpy as np
+    from strategy.market_regime import calc_vol_target_scale
 
     vol_target = settings.trading.vol_target
     lookback = settings.trading.vol_lookback_days
 
-    if vol_target <= 0:
+    if vol_target is None or vol_target <= 0:
         return 1.0
 
     try:
@@ -84,35 +83,20 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
 
         collector = KRXDataCollector()
         end_dt = datetime.now()
-        # 영업일 기준 lookback * 1.5 만큼 과거 데이터 확보
         start_dt = end_dt - timedelta(days=int(lookback * 1.5))
         start_str = start_dt.strftime("%Y%m%d")
         end_str = end_dt.strftime("%Y%m%d")
 
         df = collector.get_ohlcv("069500", start_str, end_str)  # KODEX 200
         if df is None or df.empty or len(df) < max(lookback, 20):
-            logger.info("변동성 타겟팅: 데이터 부족 → 비중 1.0")
+            logger.info("변동성 타겟팅: 데이터 부족 -> 비중 1.0")
             return 1.0
 
-        closes = df["close"].iloc[-lookback:]
-        returns = closes.pct_change().dropna()
-        if len(returns) < 10:
-            return 1.0
-
-        realized_vol = float(np.std(returns)) * np.sqrt(252)
-        if realized_vol <= 0:
-            return 1.0
-
-        scale = vol_target / realized_vol
-        result = min(1.0, max(0.2, scale))
-        logger.info(
-            f"변동성 타겟팅: 실현={realized_vol:.1%}, "
-            f"목표={vol_target:.1%} → 비중 {result:.0%}"
-        )
-        return result
+        values = df["close"].tolist()
+        return calc_vol_target_scale(values, vol_target, lookback)
 
     except Exception as e:
-        logger.warning(f"변동성 타겟팅 실패: {e} → 비중 1.0")
+        logger.warning(f"변동성 타겟팅 실패: {e} -> 비중 1.0")
         return 1.0
 
 
