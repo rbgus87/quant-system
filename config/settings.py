@@ -7,11 +7,23 @@ try:
     import yaml  # type: ignore[import-untyped]
 except ImportError:
     yaml = None  # type: ignore[assignment]
+from typing import Optional
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# 금액 프리셋이 덮어쓸 수 없는 전략 전용 키
+STRATEGY_ONLY_KEYS = {
+    "factor_weights", "value_weights", "momentum", "quality",
+    "volatility", "market_regime",
+}
+# trading 섹션 내 전략 전용 키
+STRATEGY_ONLY_TRADING_KEYS = {
+    "max_drawdown_pct", "vol_target", "trailing_stop_pct", "max_turnover_pct",
+}
 
 
 @dataclass
@@ -89,9 +101,9 @@ class TradingConfig:
     slippage: float = 0.001  # 슬리피지 0.1%
     max_position_pct: float = 0.10  # 단일 종목 최대 비중 10%
     max_turnover_pct: float = 0.50  # 월간 최대 교체율 50%
-    max_drawdown_pct: float = 0.30  # MDD 서킷 브레이커 (-30% 이하 시 전량 매도)
+    max_drawdown_pct: Optional[float] = 0.25  # MDD 서킷브레이커 (None=비활성화)
     trailing_stop_pct: float = 0.20  # 종목별 트레일링 스톱 (매수가 대비 -20%)
-    vol_target: float = 0.12  # 변동성 타겟팅 (연환산 12%)
+    vol_target: Optional[float] = 0.15  # 변동성 타겟팅 (None=비활성화)
     vol_lookback_days: int = 60  # 변동성 계산 기간 (거래일)
 
 
@@ -162,11 +174,33 @@ def _apply_yaml(settings_obj: "Settings", data: dict) -> None:
         else:
             logger.warning("존재하지 않는 전략 프리셋: %s (무시)", preset_name)
 
-    # 2단계: 금액 프리셋 적용 (전략 프리셋 위에 덮어쓰기)
+    # 2단계: 금액 프리셋 적용 (전략 전용 키 충돌 감지)
     if sizing_name and presets:
         if sizing_name in presets:
+            sizing_data = dict(presets[sizing_name])  # 원본 보존
+
+            # 전략 전용 섹션 키 충돌 검사
+            for key in list(sizing_data.keys()):
+                if key in STRATEGY_ONLY_KEYS:
+                    logger.warning(
+                        "금액 프리셋 '%s'이 전략 전용 키 '%s'를 포함합니다. 무시합니다.",
+                        sizing_name, key,
+                    )
+                    del sizing_data[key]
+
+            # trading 내 전략 전용 키 충돌 검사
+            if "trading" in sizing_data and isinstance(sizing_data["trading"], dict):
+                trading = sizing_data["trading"]
+                for key in list(trading.keys()):
+                    if key in STRATEGY_ONLY_TRADING_KEYS:
+                        logger.warning(
+                            "금액 프리셋 '%s'의 trading.%s는 전략 전용 키입니다. 무시합니다.",
+                            sizing_name, key,
+                        )
+                        del trading[key]
+
             logger.info("금액 프리셋 적용: %s", sizing_name)
-            _apply_section_data(settings_obj, presets[sizing_name])
+            _apply_section_data(settings_obj, sizing_data)
         else:
             logger.warning("존재하지 않는 금액 프리셋: %s (무시)", sizing_name)
 
@@ -189,20 +223,31 @@ def validate_settings(s: "Settings") -> None:
     if abs(vw_sum - 1.0) > 0.001:
         errors.append(f"value_weights 합이 1.0이 아닙니다: {vw_sum}")
 
-    # 비율 필드 범위 (0~1)
-    rate_fields = [
+    # 비율 필드 범위 (0~1, None 허용 필드는 별도 처리)
+    rate_fields: list[tuple[str, float]] = [
         ("commission_rate", s.trading.commission_rate),
         ("tax_rate", s.trading.tax_rate),
         ("slippage", s.trading.slippage),
         ("max_position_pct", s.trading.max_position_pct),
         ("max_turnover_pct", s.trading.max_turnover_pct),
-        ("max_drawdown_pct", s.trading.max_drawdown_pct),
         ("trailing_stop_pct", s.trading.trailing_stop_pct),
-        ("vol_target", s.trading.vol_target),
     ]
     for name, val in rate_fields:
         if not (0.0 <= val <= 1.0):
             errors.append(f"{name}는 0~1 범위여야 합니다: {val}")
+
+    # None 허용 필드 (None = 비활성화)
+    for name, val in [
+        ("max_drawdown_pct", s.trading.max_drawdown_pct),
+        ("vol_target", s.trading.vol_target),
+    ]:
+        if val is not None:
+            if not (0.0 <= val <= 1.0):
+                errors.append(f"{name}는 0~1 범위여야 합니다: {val}")
+            if abs(val - 0.99) < 0.001:
+                logger.warning(
+                    "%s=0.99는 사실상 비활성화입니다. null을 사용하세요.", name
+                )
 
     # 정수 범위
     if s.portfolio.n_stocks < 1:

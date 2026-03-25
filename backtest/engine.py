@@ -324,10 +324,15 @@ class MultiFactorBacktest:
             (circuit_breaker_active, peak_value, cash)
         """
         peak_value = max(peak_value, total_value)
+        max_dd_threshold = settings.trading.max_drawdown_pct
+
+        # max_drawdown_pct가 None이면 서킷브레이커 비활성화
+        if max_dd_threshold is None:
+            return circuit_breaker_active, peak_value, cash
+
         current_dd = (
             (total_value - peak_value) / peak_value if peak_value > 0 else 0
         )
-        max_dd_threshold = settings.trading.max_drawdown_pct
 
         if current_dd < -max_dd_threshold:
             if not circuit_breaker_active:
@@ -997,7 +1002,7 @@ class MultiFactorBacktest:
         vol_target = settings.trading.vol_target
         lookback = settings.trading.vol_lookback_days
 
-        if vol_target <= 0 or len(history) < max(lookback, 20):
+        if vol_target is None or vol_target <= 0 or len(history) < max(lookback, 20):
             return 1.0
 
         recent = history[-lookback:]

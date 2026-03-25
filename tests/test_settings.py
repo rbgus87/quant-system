@@ -209,6 +209,80 @@ class TestValidateSettings:
             validate_settings(s)
 
 
+class TestPresetConflictDetection:
+    """금액 프리셋 → 전략 전용 키 충돌 감지 테스트."""
+
+    def test_sizing_preset_ignores_strategy_keys(self, monkeypatch, tmp_path):
+        """금액 프리셋이 factor_weights를 포함하면 무시한다."""
+        monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "x.yaml"))
+        s = Settings()
+        original_value = s.factor_weights.value
+
+        _apply_yaml(s, {
+            "presets": {
+                "bad_sizing": {
+                    "factor_weights": {"value": 0.99, "momentum": 0.01, "quality": 0.00},
+                    "portfolio": {"n_stocks": 5},
+                },
+            },
+            "sizing": "bad_sizing",
+        })
+        # factor_weights는 무시되어야 함
+        assert s.factor_weights.value == original_value
+        # portfolio는 적용되어야 함
+        assert s.portfolio.n_stocks == 5
+
+    def test_sizing_preset_ignores_strategy_trading_keys(self, monkeypatch, tmp_path):
+        """금액 프리셋이 trading.max_drawdown_pct를 포함하면 무시한다."""
+        monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "x.yaml"))
+        s = Settings()
+        s.trading.max_drawdown_pct = 0.25
+
+        _apply_yaml(s, {
+            "presets": {
+                "sizing_with_dd": {
+                    "trading": {
+                        "max_drawdown_pct": 0.99,
+                        "slippage": 0.005,
+                    },
+                },
+            },
+            "sizing": "sizing_with_dd",
+        })
+        # max_drawdown_pct는 무시
+        assert s.trading.max_drawdown_pct == 0.25
+        # slippage는 적용
+        assert s.trading.slippage == 0.005
+
+
+class TestNullDeactivation:
+    """null 비활성화 지원 테스트."""
+
+    def test_max_drawdown_pct_null_passes_validation(self, monkeypatch, tmp_path):
+        """max_drawdown_pct=None은 유효성 검사를 통과한다."""
+        monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "x.yaml"))
+        s = Settings()
+        s.trading.max_drawdown_pct = None
+        validate_settings(s)  # 에러 없어야 함
+
+    def test_vol_target_null_passes_validation(self, monkeypatch, tmp_path):
+        """vol_target=None은 유효성 검사를 통과한다."""
+        monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "x.yaml"))
+        s = Settings()
+        s.trading.vol_target = None
+        validate_settings(s)  # 에러 없어야 함
+
+    def test_099_value_warns(self, monkeypatch, tmp_path, caplog):
+        """0.99 값은 WARNING을 출력한다."""
+        import logging
+        monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "x.yaml"))
+        s = Settings()
+        s.trading.max_drawdown_pct = 0.99
+        with caplog.at_level(logging.WARNING):
+            validate_settings(s)
+        assert "null을 사용하세요" in caplog.text
+
+
 class TestSettingsIntegration:
     """Settings 생성 시 YAML 자동 로드 통합 테스트."""
 

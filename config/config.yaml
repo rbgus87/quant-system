@@ -1,31 +1,27 @@
 # ============================================================
-# 퀀트 전략 설정 파일
-# 이 파일을 수정하여 코드 변경 없이 전략 파라미터를 조정합니다.
+# 퀀트 전략 설정 파일 (v2.0)
+# 코드 변경 없이 전략 파라미터를 조정합니다.
 # API 키 등 비밀정보는 .env 파일에서 관리합니다.
 # ============================================================
 #
-# 사용법:
-#   preset: 전략 프리셋 (A~H 중 선택)
-#   sizing: 금액 프리셋 (100만~5억 중 선택)
-#   아래 개별 설정은 프리셋 위에 덮어쓰기됩니다 (선택)
-#
 # 적용 순서: 전략 프리셋 → 금액 프리셋 → 개별 설정 덮어쓰기
+#
+# 전략 프리셋: 팩터 가중치, 필터, 리스크 관리 결정
+# 금액 프리셋: 종목 수, 유동성, 슬리피지만 조정
+#   ※ 금액 프리셋은 전략 전용 키를 덮어쓸 수 없음 (settings.py에서 검증)
 # ============================================================
 
-# === 활성 프리셋 (이 두 줄만 바꾸면 전략+금액 전환) ===
-# 전략: A(균형) B(밸류) C(모멘텀) D(고배당) E(소형밸류) F(올시즌) G(KOSDAQ) H(최소변동성) I(코스닥밸류)
-preset: "B"
-# 금액: 100만 / 500만 / 1000만 / 3000만 / 5000만 / 1억 / 5억
-sizing: "1000만"
+# === 활성 프리셋 ===
+# 전략: A(균형) B(딥밸류) C(모멘텀) D(방어)
+preset: "A"
+# 금액: 소액 / 중액 / 대액 / 거액
+sizing: "중액"
 
-# === 개별 덮어쓰기 (프리셋 위에 추가 조정, 선택) ===
-# 아래 주석을 해제하면 프리셋 값 대신 이 값이 적용됩니다.
-# 프리셋 없이 직접 설정하려면 preset/sizing을 주석 처리하고 아래를 활성화하세요.
-#
+# === 개별 덮어쓰기 (선택) ===
 # factor_weights:
-#   value: 0.40
+#   value: 0.35
 #   momentum: 0.40
-#   quality: 0.20
+#   quality: 0.25
 #
 # value_weights:
 #   pbr: 0.50
@@ -35,395 +31,193 @@ sizing: "1000만"
 # universe:
 #   market: "KOSPI"
 #   min_market_cap_percentile: 10.0
-#   exclude_finance: true
-#   min_listing_days: 365
-#   min_avg_trading_value: 200000000
 #
 # portfolio:
-#   n_stocks: 10
-#   weight_method: "equal"
+#   n_stocks: 20
 #   initial_cash: 10000000
-#   max_investment_amount: 0
 #
 # trading:
-#   commission_rate: 0.00015
-#   tax_rate: 0.0018
-#   slippage: 0.001
-#   max_position_pct: 0.10
-#   max_turnover_pct: 0.50
-#   max_drawdown_pct: 0.99
-#   trailing_stop_pct: 0.20
-#   vol_target: 0.99
-#   vol_lookback_days: 60
-#
-# market_regime:
-#   enabled: true
-#   ma_days: 200
-#   partial_ratio: 0.7
-#   defensive_ratio: 0.5
-#
-# volatility:
-#   filter_enabled: true
-#   lookback_days: 252
-#   max_percentile: 80.0
-#
-# momentum:
-#   absolute_momentum_enabled: true
-#   risk_free_rate: 0.035
-#
-# quality:
-#   fscore_enabled: true
-#   min_fscore: 2
+#   max_drawdown_pct: 0.25
+#   vol_target: 0.15
 
 # ============================================================
-# 프리셋 정의
+# 전략 프리셋 (4개)
 # ============================================================
 presets:
 
   # ----------------------------------------------------------
-  # 전략 프리셋 A~H (팩터 가중치, 필터, 리스크 관리)
-  # ----------------------------------------------------------
-
   # A: 밸류+모멘텀 균형 (기준선)
-  # 학술적으로 가장 안정적인 3팩터 균형 조합
+  # 학술적으로 가장 안정적인 3팩터 조합. 대부분의 시장 국면에서 양호한 성과.
+  # ----------------------------------------------------------
   A:
     factor_weights:
-      value: 0.40
+      value: 0.35
       momentum: 0.40
-      quality: 0.20
+      quality: 0.25
     value_weights:
       pbr: 0.50
       pcr: 0.30
       div: 0.20
+    universe:
+      market: "KOSPI"
+      min_market_cap_percentile: 10.0
+    momentum:
+      absolute_momentum_enabled: true
+    quality:
+      fscore_enabled: true
+      min_fscore: 4
     volatility:
       max_percentile: 80.0
     market_regime:
-      partial_ratio: 0.7
-      defensive_ratio: 0.5
-    momentum:
-      absolute_momentum_enabled: true
-      risk_free_rate: 0.035
-    quality:
-      min_fscore: 2
+      enabled: true
+      partial_ratio: 0.6
+      defensive_ratio: 0.4
     trading:
       max_turnover_pct: 0.50
-      trailing_stop_pct: 0.20
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
+      trailing_stop_pct: 0.25
+      max_drawdown_pct: 0.25
+      vol_target: 0.15
 
-  # B: 순수 밸류 (강환국 스타일)
-  # 모멘텀 의존을 줄이고 밸류에 집중. 한국 시장에서 가장 검증된 팩터.
-  # 하락장에서 저평가 매수 기회를 살리기 위해 절대모멘텀 비활성화.
+  # ----------------------------------------------------------
+  # B: 딥밸류 (하락장 매수)
+  # 모멘텀 완전 배제. 저평가 종목 장기 보유, 평균 회귀 전략.
+  # ----------------------------------------------------------
   B:
     factor_weights:
-      value: 0.70
-      momentum: 0.10
-      quality: 0.20
-    value_weights:
-      pbr: 0.40
-      pcr: 0.40
-      div: 0.20
-    volatility:
-      max_percentile: 90.0              # 변동성 필터 완화 (저PBR 소형주 살리기)
-    market_regime:
-      partial_ratio: 0.8                # 밸류는 하락장에서 매수 기회
-      defensive_ratio: 0.6
-    momentum:
-      absolute_momentum_enabled: false   # 밸류 전략에서는 절대모멘텀이 해가 될 수 있음
-      risk_free_rate: 0.035
-    quality:
-      min_fscore: 2
-    trading:
-      max_turnover_pct: 0.30            # 밸류는 교체율 낮추기
-      trailing_stop_pct: 0.25           # 스톱 완화 (밸류트랩 허용 범위 확대)
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
-
-  # C: 모멘텀 중심 (추세추종)
-  # 강세장 수익 극대화. 약세장에서는 레짐 필터가 현금 방어.
-  C:
-    factor_weights:
-      value: 0.15
-      momentum: 0.70
-      quality: 0.15
+      value: 0.60
+      momentum: 0.00
+      quality: 0.40
     value_weights:
       pbr: 0.50
       pcr: 0.30
       div: 0.20
-    volatility:
-      max_percentile: 70.0              # 고변동성 종목 적극 제거 (30% 제외)
-    market_regime:
-      partial_ratio: 0.5                # 중립장에서 보수적
-      defensive_ratio: 0.3              # 약세장에서 매우 보수적 (현금 70%)
-    momentum:
-      absolute_momentum_enabled: true
-      risk_free_rate: 0.035             # 강한 추세만 잡기 위해 기준 유지
-    quality:
-      min_fscore: 2
-    trading:
-      max_turnover_pct: 0.60            # 모멘텀은 빠른 교체
-      trailing_stop_pct: 0.15           # 타이트한 스톱 (추세 이탈 시 빠른 탈출)
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
-
-  # D: 고배당 방어형
-  # MDD 최소화 + 안정적 배당 수익. 보합장에서 강점.
-  D:
-    factor_weights:
-      value: 0.50
-      momentum: 0.10
-      quality: 0.40
-    value_weights:
-      pbr: 0.20
-      pcr: 0.30
-      div: 0.50                         # 배당수익률 비중 극대화
-    volatility:
-      max_percentile: 60.0              # 저변동성 종목 선호
-    market_regime:
-      partial_ratio: 0.8
-      defensive_ratio: 0.7              # 약세장에서도 배당주는 비중 유지
-    momentum:
-      absolute_momentum_enabled: true
-      risk_free_rate: 0.035
-    quality:
-      min_fscore: 3                     # 퀄리티 기준 강화 (배당 지속성)
-    trading:
-      max_turnover_pct: 0.30            # 배당주는 장기 보유
-      trailing_stop_pct: 0.25
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
-
-  # E: 소형 밸류 집중 (학술 최강)
-  # 한국 시장에서 학술적으로 가장 높은 초과수익을 낸 팩터 조합.
-  # 주의: 실전에서는 슬리피지가 크므로 백테스트 전용 권장.
-  E:
-    factor_weights:
-      value: 0.60
-      momentum: 0.30
-      quality: 0.10
-    value_weights:
-      pbr: 0.60                         # PBR 극단 비중 (소형 저PBR = 한국 최강 팩터)
-      pcr: 0.20
-      div: 0.20
     universe:
-      min_market_cap_percentile: 5.0    # 시총 하위 5%만 제외 (더 작은 종목 포함)
-      min_avg_trading_value: 100000000  # 거래대금 1억으로 낮춤
+      market: "KOSPI"
+      min_market_cap_percentile: 10.0
+    momentum:
+      absolute_momentum_enabled: false
+    quality:
+      fscore_enabled: true
+      min_fscore: 4
     volatility:
-      max_percentile: 90.0              # 소형주 변동성 허용
+      max_percentile: 90.0
     market_regime:
+      enabled: true
       partial_ratio: 0.8
       defensive_ratio: 0.6
+    trading:
+      max_turnover_pct: 0.30
+      trailing_stop_pct: 0.30
+      max_drawdown_pct: 0.30
+      vol_target: 0.18
+
+  # ----------------------------------------------------------
+  # C: 모멘텀 추세추종 (강세장 극대화)
+  # 강세장 수익 극대화. 약세 전환 시 시장 레짐 필터가 현금 방어.
+  # KOSPI+KOSDAQ 전체 유니버스 사용.
+  # ----------------------------------------------------------
+  C:
+    factor_weights:
+      value: 0.10
+      momentum: 0.70
+      quality: 0.20
+    value_weights:
+      pbr: 0.50
+      pcr: 0.30
+      div: 0.20
+    universe:
+      market: "ALL"
+      min_market_cap_percentile: 15.0
     momentum:
       absolute_momentum_enabled: true
-      risk_free_rate: 0.035
     quality:
-      min_fscore: 3                     # 소형주는 부실기업 많으므로 강화
-    trading:
-      max_turnover_pct: 0.40
-      trailing_stop_pct: 0.20
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
-
-  # F: 올시즌 방어형 (금리 상승기)
-  # 2022년 같은 금리 인상기/인플레이션 환경에 대응.
-  F:
-    factor_weights:
-      value: 0.50
-      momentum: 0.20
-      quality: 0.30
-    value_weights:
-      pbr: 0.30
-      pcr: 0.40                         # PCR 비중 높임 (현금흐름 기반 저평가주)
-      div: 0.30
+      fscore_enabled: true
+      min_fscore: 3
     volatility:
       max_percentile: 70.0
     market_regime:
-      partial_ratio: 0.6
-      defensive_ratio: 0.4
-    momentum:
-      absolute_momentum_enabled: true
-      risk_free_rate: 0.04              # 금리 높을 때 절대모멘텀 기준도 높임
-    quality:
-      min_fscore: 3                     # 재무건전성 중시
+      enabled: true
+      partial_ratio: 0.5
+      defensive_ratio: 0.2
     trading:
-      max_turnover_pct: 0.30            # 방어형은 교체 최소화
+      max_turnover_pct: 0.60
       trailing_stop_pct: 0.20
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
+      max_drawdown_pct: 0.20
+      vol_target: 0.15
 
-  # G: KOSDAQ 성장주 (중소형 모멘텀)
-  # KOSPI+KOSDAQ 유니버스 확장. 성장성 높은 중소형주 포착.
-  G:
+  # ----------------------------------------------------------
+  # D: 방어형 (최소변동성 + 고배당)
+  # MDD 최소화와 Sharpe 극대화에 집중. 배당 수익 + 저변동성 종목.
+  # ----------------------------------------------------------
+  D:
     factor_weights:
-      value: 0.25
-      momentum: 0.50
-      quality: 0.25
-    value_weights:
-      pbr: 0.40
-      pcr: 0.40
-      div: 0.20
-    universe:
-      market: "ALL"                     # KOSPI + KOSDAQ
-      min_market_cap_percentile: 15.0
-      min_avg_trading_value: 300000000  # 3억 (KOSDAQ 유동성 확보)
-    volatility:
-      max_percentile: 75.0
-    market_regime:
-      partial_ratio: 0.6
-      defensive_ratio: 0.4
-    momentum:
-      absolute_momentum_enabled: true
-      risk_free_rate: 0.035
-    quality:
-      min_fscore: 3                     # KOSDAQ은 부실기업 많아 강화
-    trading:
-      max_turnover_pct: 0.50
-      trailing_stop_pct: 0.15           # 타이트한 스톱 (성장주 급락 방어)
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
-
-  # H: 최소 변동성 (Low Volatility)
-  # CAGR보다 MDD 최소화와 샤프 비율 극대화에 집중.
-  # 유일하게 vol_target과 max_drawdown_pct를 활성화하는 프리셋.
-  H:
-    factor_weights:
-      value: 0.40
+      value: 0.35
       momentum: 0.20
-      quality: 0.40
+      quality: 0.45
     value_weights:
       pbr: 0.30
-      pcr: 0.30
-      div: 0.40
-    volatility:
-      max_percentile: 50.0              # 상위 50% 변동성 종목 제거 (핵심)
-    market_regime:
-      partial_ratio: 0.6
-      defensive_ratio: 0.3              # 약세장에서 현금 70%
+      pcr: 0.20
+      div: 0.50
+    universe:
+      market: "KOSPI"
+      min_market_cap_percentile: 10.0
     momentum:
       absolute_momentum_enabled: true
-      risk_free_rate: 0.035
     quality:
-      min_fscore: 3
-    trading:
-      max_turnover_pct: 0.30
-      trailing_stop_pct: 0.15
-      max_drawdown_pct: 0.15            # MDD 서킷브레이커 활성화 (-15%)
-      vol_target: 0.12                  # 변동성 타겟팅 활성화 (연 12%)
-
-  # I: 코스닥 밸류 (KOSDAQ 전용 저평가주)
-  # B(밸류)의 KOSDAQ 버전. 부실주 방어를 위해 퀄리티 필터 강화.
-  # KOSDAQ만 대상으로 극단적 저평가 종목을 포착.
-  I:
-    factor_weights:
-      value: 0.60
-      momentum: 0.15
-      quality: 0.25                        # B(20%)보다 높음: KOSDAQ 부실주 방어
-    value_weights:
-      pbr: 0.40
-      pcr: 0.40
-      div: 0.20
-    universe:
-      market: "KOSDAQ"                     # KOSDAQ 전용
-      min_market_cap_percentile: 15.0      # 하위 15% 제외 (초소형 제거)
-      min_avg_trading_value: 200000000     # 2억 (KOSDAQ 유동성 확보)
+      fscore_enabled: true
+      min_fscore: 5
     volatility:
-      max_percentile: 80.0                 # B(90%)보다 타이트 (KOSDAQ 변동성 제어)
+      max_percentile: 50.0
     market_regime:
-      partial_ratio: 0.7
-      defensive_ratio: 0.5
-    momentum:
-      absolute_momentum_enabled: false     # B와 동일: 하락장 매수 기회
-      risk_free_rate: 0.035
-    quality:
-      min_fscore: 3                        # B(2)보다 높음: KOSDAQ 부실주 필터
+      enabled: true
+      partial_ratio: 0.6
+      defensive_ratio: 0.3
     trading:
-      max_turnover_pct: 0.30
-      trailing_stop_pct: 0.20             # B(25%)보다 타이트 (KOSDAQ 급락 방어)
-      max_drawdown_pct: 0.99
-      vol_target: 0.99
+      max_turnover_pct: 0.25
+      trailing_stop_pct: 0.20
+      max_drawdown_pct: 0.15
+      vol_target: 0.10
 
   # ----------------------------------------------------------
-  # 금액 프리셋 (종목 수, 유동성, 슬리피지만 조정)
-  # 전략 프리셋과 조합하여 사용: preset: "B", sizing: "5억"
+  # 금액 프리셋 (4단계)
+  # 종목 수, 유동성, 슬리피지만 조정. 전략 전용 키는 포함하지 않음.
   # ----------------------------------------------------------
 
-  100만:
+  소액:
     portfolio:
-      n_stocks: 5
-      initial_cash: 1000000
-    universe:
-      min_market_cap_percentile: 10.0
-      min_avg_trading_value: 100000000  # 1억
-    trading:
-      slippage: 0.001
-      max_position_pct: 0.20
-
-  500만:
-    portfolio:
-      n_stocks: 15
+      n_stocks: 10
       initial_cash: 5000000
-    universe:
-      min_market_cap_percentile: 10.0
-      min_avg_trading_value: 100000000  # 1억
     trading:
       slippage: 0.001
       max_position_pct: 0.15
 
-  1000만:
+  중액:
     portfolio:
       n_stocks: 20
       initial_cash: 10000000
-    universe:
-      min_market_cap_percentile: 10.0
-      min_avg_trading_value: 200000000  # 2억
-    trading:
-      slippage: 0.001
-      max_position_pct: 0.10
-
-  3000만:
-    portfolio:
-      n_stocks: 20
-      initial_cash: 30000000
-    universe:
-      min_market_cap_percentile: 10.0
-      min_avg_trading_value: 200000000  # 2억
     trading:
       slippage: 0.001
       max_position_pct: 0.07
 
-  5000만:
-    portfolio:
-      n_stocks: 20
-      initial_cash: 50000000
-    universe:
-      min_market_cap_percentile: 10.0
-      min_avg_trading_value: 300000000  # 3억
-    trading:
-      slippage: 0.001
-      max_position_pct: 0.05
-
-  1억:
+  대액:
     portfolio:
       n_stocks: 25
       initial_cash: 100000000
-    universe:
-      market: "ALL"                     # KOSPI + KOSDAQ 유니버스 확장
-      min_market_cap_percentile: 10.0
-      min_avg_trading_value: 500000000  # 5억
     trading:
       slippage: 0.0015
-      max_position_pct: 0.04
-      max_turnover_pct: 0.40
+      max_position_pct: 0.05
 
-  5억:
+  거액:
     portfolio:
       n_stocks: 30
       initial_cash: 500000000
-    universe:
-      market: "KOSPI"                   # 유동성 확보
-      min_market_cap_percentile: 20.0   # 시총 하위 20% 제외
-      min_avg_trading_value: 1000000000 # 10억
     trading:
       slippage: 0.002
       max_position_pct: 0.035
-      max_turnover_pct: 0.30
+
+# ============================================================
+# [ARCHIVED] v1.1 프리셋 (롤백용 보존)
+# ============================================================
+# 기존 전략 프리셋 A~I (9개)와 금액 프리셋 100만~5억 (7개)은
+# v2.0 전략 재설계로 제거됨. 롤백 필요 시 git history 참조.
+# git show HEAD~3:config/config.yaml
