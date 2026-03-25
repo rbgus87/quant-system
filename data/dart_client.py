@@ -375,12 +375,16 @@ class DartClient:
         )
 
         if not raw_data:
-            # 연간 보고서로 재시도
-            prev_year = str(int(bsns_year) - 1)
-            logger.info(f"[{date_str}] {bsns_year}년 데이터 없음, {prev_year}년 연간 재시도")
-            raw_data = self._fetch_multi_account_batch(
-                valid_tickers, prev_year, REPRT_CODES["annual"]
-            )
+            # 연간 보고서로 최대 3년까지 하향 탐색 (오래된 데이터 폴백)
+            base_year = int(bsns_year)
+            for offset in range(1, 4):
+                try_year = str(base_year - offset)
+                logger.info(f"[{date_str}] {bsns_year}년 데이터 없음, {try_year}년 연간 재시도")
+                raw_data = self._fetch_multi_account_batch(
+                    valid_tickers, try_year, REPRT_CODES["annual"]
+                )
+                if raw_data:
+                    break
 
         if not raw_data:
             logger.warning(f"[{date_str}] DART 재무제표 데이터 없음")
