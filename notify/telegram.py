@@ -307,7 +307,7 @@ class TelegramNotifier:
         # 저장 (다음 날 비교용)
         self._save_peak_value(peak, total_eval)
 
-        # 총 수익률
+        # 누적 수익률 (투자 원금 대비)
         total_return = (total_eval / invested - 1) if invested > 0 else 0.0
 
         now = datetime.now()
@@ -328,10 +328,34 @@ class TelegramNotifier:
             "*계좌 요약*",
             f"  총 평가금액: `{total_eval:,.0f}원`",
             f"  투자 원금:   `{invested:,.0f}원`",
-            f"  총 손익:     `{total_profit:+,.0f}원 ({total_return * 100:+.2f}%)`",
-            f"  예수금:      `{cash:,.0f}원`",
+            f"  누적 수익률: `{total_return * 100:+.2f}%` ({total_profit:+,.0f}원)",
             f"  당일 수익률: `{daily_return * 100:+.2f}%`",
+            f"  예수금:      `{cash:,.0f}원`",
         ])
+
+        # 당일 거래 내역
+        today_trades = self._load_today_trades()
+        if today_trades:
+            sell_trades = [t for t in today_trades if t["side"] == "SELL"]
+            buy_trades = [t for t in today_trades if t["side"] == "BUY"]
+            lines.append("")
+            lines.append(f"*당일 거래* ({len(today_trades)}건)")
+            if sell_trades:
+                sell_amt = sum(t["amount"] for t in sell_trades)
+                lines.append(f"  매도 {len(sell_trades)}건 ({sell_amt:,.0f}원)")
+                for t in sell_trades:
+                    name = t.get("name") or t["ticker"]
+                    lines.append(
+                        f"    {name} {t['quantity']}주 x {t['price']:,.0f}원"
+                    )
+            if buy_trades:
+                buy_amt = sum(t["amount"] for t in buy_trades)
+                lines.append(f"  매수 {len(buy_trades)}건 ({buy_amt:,.0f}원)")
+                for t in buy_trades:
+                    name = t.get("name") or t["ticker"]
+                    lines.append(
+                        f"    {name} {t['quantity']}주 x {t['price']:,.0f}원"
+                    )
 
         # 보유 종목
         if holdings:

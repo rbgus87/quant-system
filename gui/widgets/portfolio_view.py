@@ -4,7 +4,7 @@
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QGroupBox,
@@ -49,6 +49,26 @@ class _BalanceWorker(QThread):
             self.error.emit(str(e))
 
 
+class _TelegramReportWorker(QThread):
+    """잔고 조회 + 텔레그램 리포트 발송을 백그라운드에서 실행"""
+
+    finished = pyqtSignal(bool)  # True=성공
+    error = pyqtSignal(str)
+
+    def run(self) -> None:
+        try:
+            from trading.kiwoom_api import KiwoomRestClient
+            from notify.telegram import TelegramNotifier
+
+            api = KiwoomRestClient()
+            balance = api.get_balance()
+            notifier = TelegramNotifier()
+            ok = notifier.send_detailed_daily_report(balance)
+            self.finished.emit(ok)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class PortfolioView(QWidget):
     """보유 종목 테이블 위젯"""
 
@@ -57,6 +77,7 @@ class PortfolioView(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._worker: Optional[_BalanceWorker] = None
+        self._report_worker: Optional[_TelegramReportWorker] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -76,6 +97,12 @@ class PortfolioView(QWidget):
         self._refresh_btn = QPushButton("새로고침")
         self._refresh_btn.clicked.connect(self.refresh)
         summary_row.addWidget(self._refresh_btn)
+
+        self._report_btn = QPushButton("텔레그램 리포트")
+        self._report_btn.setToolTip("현재 잔고 기준으로 텔레그램 일별 리포트 발송")
+        self._report_btn.clicked.connect(self._send_telegram_report)
+        summary_row.addWidget(self._report_btn)
+
         group_layout.addLayout(summary_row)
 
         # 테이블
@@ -186,3 +213,36 @@ class PortfolioView(QWidget):
         self._total_label.setText(f"조회 실패: {error_msg}")
         self._table.setRowCount(0)
         logger.warning(f"잔고 조회 실패: {error_msg}")
+
+    # ── 텔레그램 리포트 발송 ──
+
+    def _send_telegram_report(self) -> None:
+        """텔레그램 일별 리포트 수동 발송"""
+        if self._report_worker and self._report_worker.isRunning():
+            return
+
+        self._report_btn.setEnabled(False)
+        self._report_btn.setText("발송 중...")
+
+        self._report_worker = _TelegramReportWorker()
+        self._report_worker.finished.connect(self._on_report_sent)
+        self._report_worker.error.connect(self._on_report_error)
+        self._report_worker.start()
+
+    def _on_report_sent(self, ok: bool) -> None:
+        """리포트 발송 완료"""
+        self._report_btn.setEnabled(True)
+        if ok:
+            self._report_btn.setText("발송 완료!")
+            QTimer.singleShot(3000, lambda: self._report_btn.setText("텔레그램 리포트"))
+        else:
+            self._report_btn.setText("발송 실패")
+            QTimer.singleShot(3000, lambda: self._report_btn.setText("텔레그램 리포트"))
+        logger.info(f"텔레그램 리포트 발송: {'성공' if ok else '실패'}")
+
+    def _on_report_error(self, error_msg: str) -> None:
+        """리포트 발송 오류"""
+        self._report_btn.setEnabled(True)
+        self._report_btn.setText("발송 오류")
+        QTimer.singleShot(3000, lambda: self._report_btn.setText("텔레그램 리포트"))
+        logger.error(f"텔레그램 리포트 발송 오류: {error_msg}")
