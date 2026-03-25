@@ -126,8 +126,8 @@ presets:
       pcr: 0.30
       div: 0.20
     universe:
-      market: "ALL"
-      min_market_cap_percentile: 15.0
+      market: "KOSPI"
+      min_market_cap_percentile: 10.0
     momentum:
       absolute_momentum_enabled: true
     quality:

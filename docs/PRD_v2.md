@@ -178,13 +178,12 @@ B:
 #### C: 모멘텀 추세추종 (강세장 극대화)
 
 강세장 수익 극대화. 약세 전환 시 시장 레짐 필터가 현금 방어.
-유일하게 KOSPI+KOSDAQ 전체 유니버스 사용 (모멘텀 종목 풀 확대).
 
 ```yaml
 C:
   factor_weights: { value: 0.10, momentum: 0.70, quality: 0.20 }
   value_weights: { pbr: 0.50, pcr: 0.30, div: 0.20 }
-  universe: { market: "ALL", min_market_cap_percentile: 15.0 }
+  universe: { market: "KOSPI", min_market_cap_percentile: 10.0 }
   momentum: { absolute_momentum_enabled: true }
   quality: { fscore_enabled: true, min_fscore: 3 }
   volatility: { max_percentile: 70.0 }           # 강화: 고변동성 30% 제거
