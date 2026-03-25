@@ -89,8 +89,10 @@ class MultiFactorBacktest:
             logger.info(f"[{i + 1}/{len(rebal_dates)}] 리밸런싱 신호 계산: {date_str}")
 
             try:
-                # T일 팩터 계산 → 목표 포트폴리오
-                new_tickers = self._calc_portfolio(date_str, market)
+                # T일 팩터 계산 → 목표 포트폴리오 (홀딩 버퍼 적용)
+                new_tickers = self._calc_portfolio_with_buffer(
+                    date_str, market, holdings
+                )
                 if not new_tickers:
                     logger.warning(f"{date_str}: 포트폴리오 계산 실패, 스킵")
                     continue
@@ -217,11 +219,69 @@ class MultiFactorBacktest:
         if hasattr(self.krx, "dart_client") and self.krx.dart_client:
             self.krx.dart_client.log_stats()
 
+        # 거래 비용 분석 리포트
+        self._log_trading_cost_report(result, turnover_log)
+
         return result
 
     # ─────────────────────────────────────────────
     # run() 서브 메서드: 책임별 분리
     # ─────────────────────────────────────────────
+
+    def _log_trading_cost_report(
+        self, result: pd.DataFrame, turnover_log: list[dict],
+    ) -> None:
+        """거래 비용 분석 리포트 출력
+
+        Args:
+            result: 백테스트 결과 DataFrame
+            turnover_log: 리밸런싱별 턴오버 기록
+        """
+        if not turnover_log:
+            return
+
+        n_years = len(result) / 252
+        if n_years <= 0:
+            return
+
+        # 연간 평균 턴오버
+        n_rebal = len(turnover_log)
+        avg_turnover = sum(t["turnover_rate"] for t in turnover_log) / n_rebal
+        annual_turnover = avg_turnover * n_rebal / n_years
+
+        # 1회 교체 비용 (편도): 수수료 + 세금 + 슬리피지
+        cfg = settings.trading
+        round_trip_cost = cfg.commission_rate * 2 + cfg.tax_rate + cfg.slippage * 2
+        annual_cost = annual_turnover * round_trip_cost
+
+        # 총 매도/매수 횟수
+        total_sells = sum(t["sells"] for t in turnover_log)
+        total_buys = sum(t["buys"] for t in turnover_log)
+
+        # 평균 보유 기간 추정: 종목당 평균 보유 리밸런싱 횟수
+        # n_stocks개를 보유하면서 매 리밸런싱마다 avg_turnover%를 교체
+        # → 평균 보유 = 1 / turnover_rate 리밸런싱 횟수
+        avg_hold_rebals = 1 / avg_turnover if avg_turnover > 0 else n_rebal
+        freq = settings.portfolio.rebalance_frequency
+        months_per_rebal = 3 if freq == "quarterly" else 1
+        avg_hold_months = avg_hold_rebals * months_per_rebal
+
+        # CAGR 대비 비용 비중
+        total_ret = result["portfolio_value"].iloc[-1] / self.initial_cash - 1
+        cagr = (1 + total_ret) ** (1 / n_years) - 1 if n_years > 0 else 0
+
+        logger.info("=== 거래 비용 분석 ===")
+        logger.info(f"  리밸런싱: {n_rebal}회 ({freq})")
+        logger.info(f"  평균 턴오버: {avg_turnover:.1%}/회, 연 {annual_turnover:.0%}")
+        logger.info(f"  매도 {total_sells}건, 매수 {total_buys}건")
+        logger.info(f"  1회 왕복 비용: {round_trip_cost:.4%}")
+        logger.info(f"  연간 거래 비용: {annual_cost:.2%}")
+        logger.info(f"  10년 누적 비용: {(1 - (1 - annual_cost) ** 10) * 100:.1f}%")
+        logger.info(f"  평균 보유 기간: {avg_hold_months:.1f}개월")
+        if abs(cagr) > 0.001:
+            cost_share = annual_cost / abs(cagr) * 100
+            logger.info(f"  CAGR({cagr:.2%}) 대비 비용 비중: {cost_share:.0f}%")
+        logger.info("=" * 25)
 
     def _prefetch_fundamentals(
         self, rebal_dates: list[pd.Timestamp], market: str,
@@ -291,10 +351,21 @@ class MultiFactorBacktest:
             market: 대상 시장
 
         Returns:
-            KRX 월말 영업일 리스트
+            KRX 월말 영업일 리스트 (frequency에 따라 필터링)
         """
-        rebal_dates = get_krx_month_end_sessions(start_date, end_date)
-        logger.info(f"리밸런싱 횟수: {len(rebal_dates)}회")
+        all_month_ends = get_krx_month_end_sessions(start_date, end_date)
+
+        freq = settings.portfolio.rebalance_frequency
+        if freq == "quarterly":
+            # 3월, 6월, 9월, 12월 마지막 영업일만
+            rebal_dates = [d for d in all_month_ends if d.month in (3, 6, 9, 12)]
+            logger.info(
+                f"리밸런싱 횟수: {len(rebal_dates)}회 (분기, "
+                f"전체 월말 {len(all_month_ends)}개 중)"
+            )
+        else:
+            rebal_dates = all_month_ends
+            logger.info(f"리밸런싱 횟수: {len(rebal_dates)}회 (월간)")
 
         trade_dates_for_prefetch: list[str] = []
         for rdt in rebal_dates:
@@ -1011,7 +1082,6 @@ class MultiFactorBacktest:
         """T일 기준 팩터 계산 후 상위 N개 종목 반환
 
         screener.screen()에 위임하여 실전과 동일한 파이프라인 사용.
-        (거래정지/금융주 필터 포함)
 
         Args:
             date_str: 기준 날짜 (YYYYMMDD)
@@ -1024,6 +1094,63 @@ class MultiFactorBacktest:
         if portfolio_df.empty:
             return []
         return portfolio_df.index.tolist()
+
+    def _calc_portfolio_with_buffer(
+        self, date_str: str, market: str, current_holdings: dict[str, int],
+    ) -> list[str]:
+        """홀딩 버퍼 적용 포트폴리오 계산 — 불필요한 종목 교체 억제
+
+        1. n_stocks × buffer_ratio 만큼의 넓은 후보를 screener에서 가져옴
+        2. 기존 보유 종목이 버퍼 안(상위 n×ratio)이면 유지
+        3. 버퍼 밖으로 밀려난 종목만 매도, 빈 자리에 상위 종목 매수
+
+        Args:
+            date_str: 기준 날짜 (YYYYMMDD)
+            market: 시장
+            current_holdings: 현재 보유 종목 {ticker: shares}
+
+        Returns:
+            최종 목표 종목 리스트
+        """
+        n_stocks = settings.portfolio.n_stocks
+        buffer_ratio = settings.portfolio.holding_buffer_ratio
+        buffer_n = int(n_stocks * buffer_ratio)
+
+        # 넓은 후보 가져오기 (버퍼 크기만큼)
+        wide_df = self.screener.screen(date_str, market=market, n_stocks=buffer_n)
+        if wide_df.empty:
+            return []
+
+        wide_candidates = wide_df.index.tolist()
+        top_n = wide_candidates[:n_stocks]  # 순수 상위 n개
+
+        if not current_holdings:
+            # 첫 리밸런싱: 상위 n개 그대로
+            return top_n
+
+        # 버퍼 로직: 기존 보유 중 버퍼 안에 있는 종목은 유지
+        buffer_set = set(wide_candidates[:buffer_n])
+        held_in_buffer = [t for t in current_holdings if t in buffer_set]
+        held_outside = [t for t in current_holdings if t not in buffer_set]
+
+        # 유지할 종목 + 신규 진입 종목으로 n_stocks 채우기
+        keep = set(held_in_buffer)
+        new_portfolio: list[str] = list(keep)
+
+        # 빈 자리를 상위 순서대로 채움 (이미 보유 중이면 스킵)
+        for ticker in wide_candidates:
+            if len(new_portfolio) >= n_stocks:
+                break
+            if ticker not in keep:
+                new_portfolio.append(ticker)
+
+        if held_outside:
+            logger.debug(
+                f"[{date_str}] 홀딩 버퍼: 유지 {len(held_in_buffer)}, "
+                f"매도 {len(held_outside)}, 신규 {len(new_portfolio) - len(keep)}"
+            )
+
+        return new_portfolio[:n_stocks]
 
     def _get_ticker_name(self, ticker: str) -> str:
         """종목코드로 종목명 조회 (collector 캐시 활용)"""

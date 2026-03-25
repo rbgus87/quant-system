@@ -345,8 +345,11 @@ class TestEngine:
         assert cost > gross
 
     @patch("backtest.engine.MultiFactorScreener")
-    def test_run_basic(self, MockScreener: MagicMock) -> None:
+    def test_run_basic(self, MockScreener: MagicMock, monkeypatch) -> None:
         """기본 백테스트 실행 — 결과 DataFrame 구조 확인"""
+        from config.settings import settings as _s
+        monkeypatch.setattr(_s.portfolio, "rebalance_frequency", "monthly")
+
         np.random.seed(42)
         selected_tickers = [f"T{i:04d}" for i in range(20)]
 
@@ -393,8 +396,11 @@ class TestEngine:
         assert result["portfolio_value"].iloc[0] > 0
 
     @patch("backtest.engine.MultiFactorScreener")
-    def test_turnover_tracking(self, MockScreener: MagicMock) -> None:
+    def test_turnover_tracking(self, MockScreener: MagicMock, monkeypatch) -> None:
         """턴오버 로그가 결과에 포함되는지 확인"""
+        from config.settings import settings as _s
+        monkeypatch.setattr(_s.portfolio, "rebalance_frequency", "monthly")
+
         np.random.seed(42)
 
         # 매월 다른 포트폴리오를 반환하여 턴오버 발생

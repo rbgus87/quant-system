@@ -35,6 +35,8 @@ sizing: "중액"
 # portfolio:
 #   n_stocks: 20
 #   initial_cash: 10000000
+#   rebalance_frequency: "quarterly"   # monthly / quarterly
+#   holding_buffer_ratio: 1.5          # 교체 버퍼 (n × ratio 이내 유지)
 #
 # trading:
 #   max_drawdown_pct: 0.25
