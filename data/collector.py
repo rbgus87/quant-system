@@ -298,6 +298,8 @@ class KRXDataCollector:
         cached = self.storage.load_fundamentals(dt, market=market)
         if not cached.empty:
             logger.info(f"[{date}] 기본 지표 캐시 히트 ({len(cached)}건, {market})")
+            if self.dart_client:
+                self.dart_client.cache_hit_count += 1
             return cached
 
         # 2. KRX Open API (시장별 엔드포인트 분기)

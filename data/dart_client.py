@@ -68,8 +68,26 @@ class DartClient:
         self._corp_code_map: Optional[dict[str, str]] = None
         self._dps_cache: Optional[dict[str, dict[str, float]]] = None
 
+        # API 호출 / 캐시 히트 카운터 (백테스트 성능 분석용)
+        self.api_call_count: int = 0
+        self.cache_hit_count: int = 0
+
         if not self.api_key:
             logger.warning("DART_API_KEY 미설정. .env 파일에 추가하세요.")
+
+    def log_stats(self) -> None:
+        """API 호출 통계 로그 출력"""
+        total = self.api_call_count + self.cache_hit_count
+        hit_rate = (self.cache_hit_count / total * 100) if total > 0 else 0.0
+        logger.info(
+            f"DART API: 호출 {self.api_call_count}회, "
+            f"캐시 히트 {self.cache_hit_count}회 (히트율 {hit_rate:.0f}%)"
+        )
+
+    def reset_stats(self) -> None:
+        """카운터 초기화"""
+        self.api_call_count = 0
+        self.cache_hit_count = 0
 
     @property
     def corp_code_map(self) -> dict[str, str]:
@@ -570,6 +588,7 @@ class DartClient:
                 continue
 
             try:
+                self.api_call_count += 1
                 resp = requests.get(
                     f"{DART_BASE_URL}/fnlttMultiAcnt.json",
                     params={

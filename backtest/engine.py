@@ -61,10 +61,20 @@ class MultiFactorBacktest:
         Returns:
             DataFrame(index=date, columns=[portfolio_value, cash, n_holdings, returns])
         """
+        import time as _time
+
         market = market or settings.universe.market
+        run_start = _time.monotonic()
         logger.info(f"백테스트 시작: {start_date} ~ {end_date} ({market})")
 
+        # DART 통계 초기화
+        if hasattr(self.krx, "dart_client") and self.krx.dart_client:
+            self.krx.dart_client.reset_stats()
+
         rebal_dates = self._generate_rebalance_dates(start_date, end_date, market)
+
+        # 펀더멘털 프리페치: 리밸런싱 날짜별 DART 데이터를 사전 수집하여 DB 캐시
+        self._prefetch_fundamentals(rebal_dates, market)
 
         cash = self.initial_cash
         holdings: dict[str, int] = {}  # {ticker: shares}
@@ -197,12 +207,78 @@ class MultiFactorBacktest:
             logger.info(f"평균 턴오버: {avg_turnover:.1%} ({len(turnover_log)}회 리밸런싱)")
 
         total_ret = result["portfolio_value"].iloc[-1] / self.initial_cash - 1
-        logger.info(f"백테스트 완료 | 총 수익률: {total_ret * 100:.2f}%")
+        elapsed = _time.monotonic() - run_start
+        logger.info(
+            f"백테스트 완료 | 총 수익률: {total_ret * 100:.2f}% | "
+            f"소요 시간: {elapsed:.0f}초 ({elapsed / 60:.1f}분)"
+        )
+
+        # DART API 통계 출력
+        if hasattr(self.krx, "dart_client") and self.krx.dart_client:
+            self.krx.dart_client.log_stats()
+
         return result
 
     # ─────────────────────────────────────────────
     # run() 서브 메서드: 책임별 분리
     # ─────────────────────────────────────────────
+
+    def _prefetch_fundamentals(
+        self, rebal_dates: list[pd.Timestamp], market: str,
+    ) -> None:
+        """백테스트 시작 전 펀더멘털 데이터 일괄 프리페치
+
+        각 리밸런싱 날짜에 필요한 DART 데이터를 미리 수집하여 DB에 저장합니다.
+        두 번째 이후 백테스트는 DB 캐시 히트로 DART API 호출 없이 수 분 내에 완료됩니다.
+
+        Args:
+            rebal_dates: 리밸런싱 날짜 목록
+            market: 대상 시장
+        """
+        import time as _time
+        from data.collector import _parse_date
+
+        markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
+
+        # 이미 캐시된 날짜 확인 → 미스된 날짜만 프리페치
+        missing_dates: list[str] = []
+        for rdt in rebal_dates:
+            date_str = rdt.strftime("%Y%m%d")
+            dt = _parse_date(date_str)
+            all_cached = True
+            for m in markets:
+                cached = self.krx.storage.load_fundamentals(dt, market=m)
+                if cached.empty:
+                    all_cached = False
+                    break
+            if not all_cached:
+                missing_dates.append(date_str)
+
+        if not missing_dates:
+            logger.info(
+                f"펀더멘털 프리페치: {len(rebal_dates)}개 날짜 모두 캐시 히트 — 스킵"
+            )
+            return
+
+        logger.info(
+            f"펀더멘털 프리페치: {len(missing_dates)}/{len(rebal_dates)}개 날짜 "
+            f"DART 수집 필요"
+        )
+        prefetch_start = _time.monotonic()
+
+        for i, date_str in enumerate(missing_dates):
+            for m in markets:
+                # get_fundamentals_all 내부에서 DART 조회 + DB 저장
+                self.krx.get_fundamentals_all(date_str, m)
+            if (i + 1) % 10 == 0:
+                elapsed = _time.monotonic() - prefetch_start
+                logger.info(
+                    f"  프리페치 진행: {i + 1}/{len(missing_dates)} "
+                    f"({elapsed:.0f}초)"
+                )
+
+        elapsed = _time.monotonic() - prefetch_start
+        logger.info(f"펀더멘털 프리페치 완료: {elapsed:.0f}초 ({elapsed / 60:.1f}분)")
 
     def _generate_rebalance_dates(
         self, start_date: str, end_date: str, market: str,
