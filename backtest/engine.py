@@ -89,6 +89,43 @@ class MultiFactorBacktest:
             logger.info(f"[{i + 1}/{len(rebal_dates)}] 리밸런싱 신호 계산: {date_str}")
 
             try:
+                # T+1 영업일 시가 체결 (선견 편향 방지, KRX 캘린더)
+                trade_dt = next_krx_business_day(rebal_dt)
+                trade_date_str = trade_dt.strftime("%Y%m%d")
+
+                # ── 서킷브레이커 활성 상태: 재진입 체크 (포트폴리오 계산 전) ──
+                if circuit_breaker_active:
+                    total_value = cash  # 현금 100%
+                    circuit_breaker_active, peak_value, cash = (
+                        self._apply_circuit_breaker(
+                            holdings, cost_basis, {}, cash,
+                            total_value, peak_value, circuit_breaker_active,
+                            date_str, turnover_log,
+                        )
+                    )
+                    if circuit_breaker_active:
+                        # 여전히 활성 → 현금 유지, 다음 리밸런싱으로
+                        period_end = (
+                            rebal_dates[i + 1]
+                            if i + 1 < len(rebal_dates)
+                            else pd.Timestamp(end_date)
+                        )
+                        if trade_dt > period_end:
+                            period_end = trade_dt + pd.Timedelta(days=20)
+                        dates = get_krx_sessions(
+                            trade_dt.strftime("%Y%m%d"),
+                            period_end.strftime("%Y%m%d"),
+                        )
+                        for dt in dates:
+                            history.append({
+                                "date": dt,
+                                "portfolio_value": cash,
+                                "cash": cash,
+                                "n_holdings": 0,
+                            })
+                        continue
+                    # 재진입 허용됨 → 아래로 진행하여 포트폴리오 계산
+
                 # T일 팩터 계산 → 목표 포트폴리오 (홀딩 버퍼 적용)
                 new_tickers = self._calc_portfolio_with_buffer(
                     date_str, market, holdings
@@ -96,10 +133,6 @@ class MultiFactorBacktest:
                 if not new_tickers:
                     logger.warning(f"{date_str}: 포트폴리오 계산 실패, 스킵")
                     continue
-
-                # T+1 영업일 시가 체결 (선견 편향 방지, KRX 캘린더)
-                trade_dt = next_krx_business_day(rebal_dt)
-                trade_date_str = trade_dt.strftime("%Y%m%d")
 
                 # T+1일 전체 OHLCV 프리페치 (개별 조회 대신 배치)
                 self.krx.prefetch_daily_trade(trade_date_str, market)
@@ -516,6 +549,8 @@ class MultiFactorBacktest:
                 holdings.clear()
                 cost_basis.clear()
                 circuit_breaker_active = True
+                # 발동 후 peak를 현재 현금으로 리셋 → 재진입 DD 계산이 초기화됨
+                peak_value = cash
 
                 turnover_log.append({
                     "date": date_str,
@@ -530,20 +565,21 @@ class MultiFactorBacktest:
                 })
 
         elif circuit_breaker_active:
-            # 재진입 조건: DD가 발동 기준의 절반 이내로 회복
-            reentry_threshold = -max_dd_threshold * 0.5
-            if current_dd >= reentry_threshold:
+            # 재진입 조건: 시장 레짐 필터가 "강세" 또는 "중립"
+            # (현금 상태에서 DD 기반 재진입은 불가능하므로 시장 상태로 판단)
+            regime_ratio = self.regime_filter.get_invest_ratio(date_str)
+            if regime_ratio >= settings.market_regime.partial_ratio:
                 logger.info(
                     f"[{date_str}] MDD 서킷브레이커 해제: "
-                    f"DD={current_dd:.1%} >= {reentry_threshold:.1%} → 재진입 허용"
+                    f"시장 레짐 투자비중={regime_ratio:.0%} >= "
+                    f"{settings.market_regime.partial_ratio:.0%} → 재진입"
                 )
                 circuit_breaker_active = False
-                # 고점을 현재 자산(현금)으로 리셋하여 재발동 방지
                 peak_value = total_value
             else:
                 logger.info(
                     f"[{date_str}] 서킷브레이커 유지: "
-                    f"DD={current_dd:.1%} (해제 기준: {reentry_threshold:.1%})"
+                    f"시장 레짐={regime_ratio:.0%} (약세 → 현금 대피 유지)"
                 )
 
         return circuit_breaker_active, peak_value, cash
@@ -1144,11 +1180,10 @@ class MultiFactorBacktest:
             if ticker not in keep:
                 new_portfolio.append(ticker)
 
-        if held_outside:
-            logger.debug(
-                f"[{date_str}] 홀딩 버퍼: 유지 {len(held_in_buffer)}, "
-                f"매도 {len(held_outside)}, 신규 {len(new_portfolio) - len(keep)}"
-            )
+        logger.info(
+            f"[{date_str}] 홀딩 버퍼: 유지 {len(held_in_buffer)}/{len(current_holdings)}, "
+            f"매도 {len(held_outside)}, 신규 {len(new_portfolio) - len(keep)}"
+        )
 
         return new_portfolio[:n_stocks]
 
