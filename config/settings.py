@@ -99,7 +99,7 @@ class PortfolioConfig:
 @dataclass
 class TradingConfig:
     commission_rate: float = 0.00015  # 수수료 0.015%
-    tax_rate: float = 0.0018  # 거래세 0.18% (매도만)
+    tax_rate: float = 0.0015  # 거래세 0.15% (매도만, 2025년 기준)
     slippage: float = 0.001  # 슬리피지 0.1%
     max_position_pct: float = 0.10  # 단일 종목 최대 비중 10%
     max_turnover_pct: float = 0.50  # 월간 최대 교체율 50%

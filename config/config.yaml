@@ -39,6 +39,7 @@ sizing: "중액"
 #   holding_buffer_ratio: 1.5          # 교체 버퍼 (n × ratio 이내 유지)
 #
 # trading:
+#   tax_rate: 0.0015              # 거래세 0.15% (2025년 기준, 매도만)
 #   max_drawdown_pct: 0.25
 #   vol_target: 0.15
 
