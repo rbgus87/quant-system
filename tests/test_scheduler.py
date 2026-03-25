@@ -90,12 +90,6 @@ class TestRunMonthlyRebalancing:
         from scheduler.main import run_monthly_rebalancing
 
         mock_notifier_instance = MagicMock()
-        mock_screener = MagicMock()
-        mock_screener.screen.return_value = pd.DataFrame(
-            {"composite_score": [0.9]}, index=["000660"]
-        )
-        mock_screener_module = MagicMock()
-        mock_screener_module.MultiFactorScreener.return_value = mock_screener
 
         with patch(
             "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
@@ -104,10 +98,7 @@ class TestRunMonthlyRebalancing:
                 "scheduler.main.KiwoomRestClient",
                 side_effect=RuntimeError("API 연결 실패"),
             ):
-                with patch.dict(
-                    "sys.modules",
-                    {"strategy.screener": mock_screener_module},
-                ):
+                with patch("time.sleep"):
                     run_monthly_rebalancing()
                     mock_notifier_instance.send_error.assert_called_once()
                     error_arg = mock_notifier_instance.send_error.call_args[0][0]

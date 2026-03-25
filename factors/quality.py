@@ -11,15 +11,16 @@ logger = logging.getLogger(__name__)
 
 
 class QualityFactor:
-    """퀄리티 팩터 계산
+    """퀄리티 팩터 계산 (v2.0)
 
     구성 지표:
-    - ROE = EPS / BPS * 100 (수익성)
-    - Earnings Yield = 1 / PER (이익수익률, 수익 안정성)
-    - 배당 지급 여부 (기업 질 신호)
-    - 부채비율 역수 (선택, 외부 데이터 필요)
-    - F-Score 필터 (간소화 5점 피오트로스키)
+    - GP/A = 매출총이익 / 총자산 (Novy-Marx 2013, Value와 음의 상관 → 분산 효과)
+    - Earnings Yield = 1 / PER (이익수익률)
+    - F-Score (간소화 5점 피오트로스키, 0~100 정규화)
     """
+
+    # F-Score 최대 점수 (calc_fscore의 5점 만점 기준)
+    FSCORE_MAX = 5
 
     def calculate(
         self,
@@ -29,28 +30,29 @@ class QualityFactor:
         """복합 퀄리티 스코어 계산
 
         Args:
-            fundamentals: DataFrame (index=ticker, EPS·BPS·PER·DIV 컬럼 필요)
-            debt_ratio: 부채비율 Series (선택, index=ticker)
+            fundamentals: DataFrame (index=ticker, EPS·BPS·PER·GROSS_PROFIT·TOTAL_ASSETS 등)
+            debt_ratio: 부채비율 Series (선택, index=ticker) — 사용 시 가중치 재분배
 
         Returns:
             Series (index=ticker, values=quality_score 0~100)
         """
         score_parts: dict[str, tuple[pd.Series, float]] = {}
 
-        # ROE 스코어 (40% 가중)
-        roe_score = self._calc_roe_score(fundamentals)
-        if not roe_score.empty:
-            score_parts["roe"] = (roe_score, 0.40)
+        # GP/A 스코어 (40% 가중)
+        gpa_score = self._calc_gpa_score(fundamentals)
+        if not gpa_score.empty:
+            score_parts["gpa"] = (gpa_score, 0.40)
 
         # Earnings Yield 스코어 (30% 가중)
         ey_score = self._calc_earnings_yield_score(fundamentals)
         if not ey_score.empty:
             score_parts["earnings_yield"] = (ey_score, 0.30)
 
-        # 배당 지급 스코어 (30% 가중)
-        div_score = self._calc_dividend_score(fundamentals)
-        if not div_score.empty:
-            score_parts["dividend"] = (div_score, 0.30)
+        # F-Score 스코어 (30% 가중, 0~100 정규화)
+        fscore_raw = self.calc_fscore(fundamentals)
+        if not fscore_raw.empty:
+            fscore_normalized = (fscore_raw / self.FSCORE_MAX) * 100
+            score_parts["fscore"] = (fscore_normalized, 0.30)
 
         # 부채비율 역수 스코어 (데이터 있을 때만, 가중치 재분배)
         if debt_ratio is not None and not debt_ratio.empty:
@@ -69,30 +71,65 @@ class QualityFactor:
         return result
 
     @staticmethod
-    def _calc_roe_score(fundamentals: pd.DataFrame) -> pd.Series:
-        """ROE = EPS / BPS * 100 계산 후 순위 스코어 변환
+    def _calc_gpa_score(fundamentals: pd.DataFrame) -> pd.Series:
+        """GP/A = 매출총이익 / 총자산 순위 스코어
+
+        데이터 소스: DART 손익계산서(매출총이익) + 재무상태표(총자산)
+        매출총이익 없으면: GROSS_PROFIT 컬럼이 NaN인 종목은 제외
+        (weighted_average_nan_safe가 나머지 팩터로 가중치 재분배)
 
         처리 기준:
-        - BPS <= 0: 자본잠식 → 제외
-        - ROE 범위: -50% ~ +100% (극단값 클리핑)
+        - TOTAL_ASSETS <= 0: 제외
+        - GP/A 상하위 1% Winsorize
 
         Args:
-            fundamentals: DataFrame (index=ticker, columns=[EPS, BPS, ...])
+            fundamentals: DataFrame (GROSS_PROFIT, TOTAL_ASSETS 컬럼 필요)
 
         Returns:
             0~100 범위의 순위 스코어 Series
         """
-        if "EPS" not in fundamentals.columns or "BPS" not in fundamentals.columns:
-            logger.warning("EPS 또는 BPS 컬럼 없음")
+        if "GROSS_PROFIT" not in fundamentals.columns or "TOTAL_ASSETS" not in fundamentals.columns:
+            # GP/A 데이터가 없으면 ROE 폴백 (BPS/EPS가 있는 경우)
+            if "EPS" in fundamentals.columns and "BPS" in fundamentals.columns:
+                return QualityFactor._calc_roe_score_fallback(fundamentals)
             return pd.Series(dtype=float)
 
+        gp = fundamentals["GROSS_PROFIT"]
+        ta = fundamentals["TOTAL_ASSETS"]
+
+        valid = ta[ta > 0].index
+        if len(valid) == 0:
+            return pd.Series(dtype=float)
+
+        gpa = gp[valid] / ta[valid]
+
+        # NaN 제거 (매출총이익이 없는 종목)
+        gpa = gpa.dropna()
+        if gpa.empty:
+            return pd.Series(dtype=float)
+
+        # 상하위 1% Winsorize
+        lower = gpa.quantile(0.01)
+        upper = gpa.quantile(0.99)
+        gpa = gpa.clip(lower=lower, upper=upper)
+
+        return gpa.rank(pct=True) * 100
+
+    @staticmethod
+    def _calc_roe_score_fallback(fundamentals: pd.DataFrame) -> pd.Series:
+        """ROE 폴백: GP/A 데이터가 없을 때 사용
+
+        Args:
+            fundamentals: DataFrame (EPS, BPS 컬럼 필요)
+
+        Returns:
+            0~100 범위의 순위 스코어 Series
+        """
         eps = fundamentals["EPS"]
         bps = fundamentals["BPS"]
 
-        valid = bps[bps > 0].index  # 자본잠식 제거
+        valid = bps[bps > 0].index
         roe = (eps[valid] / bps[valid]) * 100
-
-        # 극단값 클리핑
         roe = roe.clip(lower=-50, upper=100)
 
         return roe.rank(pct=True) * 100
@@ -121,30 +158,6 @@ class QualityFactor:
         ey = 1 / valid  # Earnings Yield
         ey = ey.clip(upper=ey.quantile(0.99))
         return ey.rank(pct=True) * 100
-
-    @staticmethod
-    def _calc_dividend_score(fundamentals: pd.DataFrame) -> pd.Series:
-        """배당수익률 기반 퀄리티 스코어
-
-        배당을 지급하는 기업일수록 높은 스코어.
-        배당 미지급(DIV=0 or NaN) 종목도 포함하되 낮은 스코어 부여.
-
-        Args:
-            fundamentals: DataFrame (DIV 컬럼 필요)
-
-        Returns:
-            0~100 범위의 순위 스코어 Series
-        """
-        if "DIV" not in fundamentals.columns:
-            return pd.Series(dtype=float)
-
-        div = fundamentals["DIV"].fillna(0)
-        valid = div[div >= 0]
-        if valid.empty:
-            return pd.Series(dtype=float)
-
-        valid = valid.clip(upper=valid.quantile(0.99))
-        return valid.rank(pct=True) * 100
 
     @staticmethod
     def calc_fscore(fundamentals: pd.DataFrame) -> pd.Series:

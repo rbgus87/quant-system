@@ -211,7 +211,9 @@ class TestSchedulerTelegramFlow:
                         "sys.modules",
                         {"strategy.screener": mock_screener_module},
                     ):
-                        run_monthly_rebalancing()
+                        with patch("scheduler.main._save_screening_results"):
+                            with patch("scheduler.main._calc_vol_target_scale", return_value=1.0):
+                                run_monthly_rebalancing()
 
         # 시작 알림 + 결과 알림
         assert mock_notifier.send.called
@@ -240,7 +242,8 @@ class TestSchedulerTelegramFlow:
                     "sys.modules",
                     {"strategy.screener": mock_screener_module},
                 ):
-                    run_monthly_rebalancing()
+                    with patch("time.sleep"):
+                        run_monthly_rebalancing()
 
         # 에러 알림 발송
         mock_notifier.send_error.assert_called_once()

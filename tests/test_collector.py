@@ -163,7 +163,7 @@ class TestKRXDataCollector:
 
         df = self.collector.get_fundamentals_all("20240102", "KOSPI")
 
-        assert list(df.columns) == ["BPS", "PER", "PBR", "EPS", "DIV"]
+        assert list(df.columns) == ["BPS", "PER", "PBR", "PCR", "EPS", "DIV"]
         assert df.index.name == "ticker"
         assert len(df) == 2
 

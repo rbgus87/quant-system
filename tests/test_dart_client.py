@@ -165,7 +165,7 @@ class TestParseAmount:
 class TestExtractFinancialItems:
     def test_extracts_eps_and_equity(self, dart_client, sample_dart_response):
         items = sample_dart_response["list"]
-        eps_map, net_income_map, equity_map = dart_client._extract_financial_items(items)
+        eps_map, net_income_map, equity_map, operating_cf_map = dart_client._extract_financial_items(items)
 
         assert "005930" in eps_map
         assert eps_map["005930"] == 4091.0  # CFS 우선
@@ -185,14 +185,14 @@ class TestExtractFinancialItems:
                 "thstrm_amount": "15,487,000,000,000",
             },
         ]
-        _, net_income_map, _ = dart_client._extract_financial_items(items)
+        _, net_income_map, _, _ = dart_client._extract_financial_items(items)
         assert "005930" in net_income_map
         assert net_income_map["005930"] == 15487000000000.0
 
     def test_cfs_preferred_over_ofs(self, dart_client, sample_dart_response):
         """연결재무제표(CFS) 우선, 별도(OFS) 폴백"""
         items = sample_dart_response["list"]
-        eps_map, _, _ = dart_client._extract_financial_items(items)
+        eps_map, _, _, _ = dart_client._extract_financial_items(items)
 
         # CFS EPS=4091, OFS EPS=3500 → CFS 선택
         assert eps_map["005930"] == 4091.0
@@ -207,14 +207,29 @@ class TestExtractFinancialItems:
                 "thstrm_amount": "5,000",
             }
         ]
-        eps_map, _, _ = dart_client._extract_financial_items(items)
+        eps_map, _, _, _ = dart_client._extract_financial_items(items)
         assert eps_map["035420"] == 5000.0
 
     def test_empty_items(self, dart_client):
-        eps_map, net_income_map, equity_map = dart_client._extract_financial_items([])
+        eps_map, net_income_map, equity_map, operating_cf_map = dart_client._extract_financial_items([])
         assert len(eps_map) == 0
         assert len(net_income_map) == 0
         assert len(equity_map) == 0
+        assert len(operating_cf_map) == 0
+
+    def test_extracts_operating_cashflow(self, dart_client):
+        """영업활동현금흐름 추출 테스트"""
+        items = [
+            {
+                "stock_code": "005930",
+                "account_nm": "영업활동현금흐름",
+                "fs_div": "CFS",
+                "thstrm_amount": "50,000,000,000,000",
+            },
+        ]
+        _, _, _, operating_cf_map = dart_client._extract_financial_items(items)
+        assert "005930" in operating_cf_map
+        assert operating_cf_map["005930"] == 50000000000000.0
 
 
 # ───────────────────────────────────────────────

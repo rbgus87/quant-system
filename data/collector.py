@@ -863,12 +863,14 @@ class ReturnCalculator:
             first_prices = grp.first()
             last_prices = grp.last()
             counts = grp.count()
-            valid_mask = (counts >= 10) & (first_prices > 0)
+            lookback_trading_days = int(lookback_months * 21)
+            min_required = max(int(lookback_trading_days * 0.7), 20)
+            valid_mask = (counts >= min_required) & (first_prices > 0)
             valid_returns = (last_prices[valid_mask] / first_prices[valid_mask] - 1)
             results = {str(k): float(v) for k, v in valid_returns.dropna().items()}
 
             # 데이터 부족 종목 → remaining
-            short = counts[counts < 10].index.tolist()
+            short = counts[counts < min_required].index.tolist()
             remaining = [str(t) for t in short]
             found = set(bulk_df["ticker"].unique())
             remaining.extend([t for t in tickers if t not in found])
@@ -902,7 +904,8 @@ class ReturnCalculator:
                     fp2 = grp2.first()
                     lp2 = grp2.last()
                     cnt2 = grp2.count()
-                    valid2 = (cnt2 >= 2) & (fp2 > 0)
+                    min_req2 = max(int(lookback_months * 21 * 0.7), 20)
+                    valid2 = (cnt2 >= min_req2) & (fp2 > 0)
                     new_rets = (lp2[valid2] / fp2[valid2] - 1).dropna()
                     filled = len(new_rets)
                     results.update({str(k): float(v) for k, v in new_rets.items()})
@@ -996,7 +999,9 @@ class ReturnCalculator:
                 grp = period_df.groupby("ticker")["close"]
                 first_prices = grp.first()
                 counts = grp.count()
-                valid_mask = (counts >= 10) & (first_prices > 0)
+                lookback_trading_days = int(months * 21)
+                min_required = max(int(lookback_trading_days * 0.7), 20)
+                valid_mask = (counts >= min_required) & (first_prices > 0)
                 valid_first = first_prices[valid_mask]
                 valid_last = last_prices.reindex(valid_first.index)
                 returns = (valid_last / valid_first - 1).dropna()
@@ -1036,7 +1041,8 @@ class ReturnCalculator:
                         grp = p_df.groupby("ticker")["close"]
                         first_p = grp.first()
                         cnt = grp.count()
-                        valid = (cnt >= 2) & (first_p > 0)
+                        min_req_m = max(int(months * 21 * 0.7), 20)
+                        valid = (cnt >= min_req_m) & (first_p > 0)
                         vf = first_p[valid]
                         vl = last_p2.reindex(vf.index)
                         rets = (vl / vf - 1).dropna()

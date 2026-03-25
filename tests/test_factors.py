@@ -22,7 +22,7 @@ class TestValueFactor:
         df = pd.DataFrame(
             {
                 "PBR": [0.5, 1.0, 2.0, 3.0, 5.0],
-                "PER": [5.0, 10.0, 15.0, 20.0, 30.0],
+                "PCR": [3.0, 6.0, 9.0, 12.0, 15.0],
                 "DIV": [4.0, 3.0, 2.0, 1.0, 0.5],
             },
             index=["A", "B", "C", "D", "E"],
@@ -31,48 +31,94 @@ class TestValueFactor:
 
         assert result.name == "value_score"
         assert len(result) == 5
-        # PBR 낮고, PER 낮고, DIV 높은 A가 최고 스코어
+        # PBR 낮고, PCR 낮고, DIV 높은 A가 최고 스코어
         assert result.index[0] == "A"
         # 모든 스코어가 0~100 범위
         assert result.min() >= 0
         assert result.max() <= 100
 
     def test_negative_pbr_included_via_other_factors(self) -> None:
-        """PBR <= 0인 종목도 PER+DIV로 스코어 산출 (union 방식)"""
+        """PBR <= 0인 종목도 PCR+DIV로 스코어 산출 (union 방식)"""
         df = pd.DataFrame(
             {
                 "PBR": [-1.0, 0.0, 1.0, 2.0],
-                "PER": [10.0, 10.0, 10.0, 10.0],
+                "PCR": [5.0, 5.0, 5.0, 5.0],
                 "DIV": [1.0, 1.0, 1.0, 1.0],
             },
             index=["A", "B", "C", "D"],
         )
         result = self.factor.calculate(df)
-        # PBR <= 0인 A, B도 PER+DIV 스코어로 포함됨
+        # PBR <= 0인 A, B도 PCR+DIV 스코어로 포함됨
         assert "A" in result.index
         assert "B" in result.index
         # PBR이 유효한 C, D는 3개 지표 모두 반영
         assert "C" in result.index
         assert "D" in result.index
 
-    def test_negative_per_included_via_other_factors(self) -> None:
-        """적자 기업(PER <= 0)도 PBR+DIV로 스코어 산출 (union 방식)"""
+    def test_negative_pcr_excluded_via_other_factors(self) -> None:
+        """영업CF 마이너스(PCR <= 0)도 PBR+DIV로 스코어 산출 (union 방식)"""
         df = pd.DataFrame(
             {
                 "PBR": [1.0, 1.0, 1.0],
-                "PER": [-5.0, 0.0, 10.0],
+                "PCR": [-5.0, 0.0, 10.0],
                 "DIV": [1.0, 1.0, 1.0],
             },
             index=["A", "B", "C"],
         )
         result = self.factor.calculate(df)
-        # PER이 무효해도 PBR+DIV로 스코어 산출
+        # PCR이 무효해도 PBR+DIV로 스코어 산출
         assert "A" in result.index
         assert "B" in result.index
         assert "C" in result.index
 
+    def test_pcr_positive_inverse_ranking(self) -> None:
+        """PCR 양수일 때 역수 변환 + 순위 정상 동작"""
+        df = pd.DataFrame(
+            {
+                "PCR": [3.0, 6.0, 12.0, 24.0, 48.0],
+            },
+            index=["A", "B", "C", "D", "E"],
+        )
+        result = self.factor.calculate(df)
+        assert len(result) == 5
+        # PCR 낮을수록 고득점 → A가 최고
+        assert result.idxmax() == "A"
+        assert result.idxmin() == "E"
+
+    def test_pcr_zero_or_negative_excluded(self) -> None:
+        """PCR 0 이하 종목은 PCR 스코어에서 제외"""
+        df = pd.DataFrame(
+            {
+                "PCR": [-5.0, 0.0, 5.0, 10.0],
+            },
+            index=["A", "B", "C", "D"],
+        )
+        result = self.factor.calculate(df)
+        # PCR <= 0인 A, B는 PCR만 있으므로 제외됨
+        assert "A" not in result.index
+        assert "B" not in result.index
+        assert "C" in result.index
+        assert "D" in result.index
+
+    def test_pcr_missing_reweights_to_pbr_div(self) -> None:
+        """PCR 결측 시 PBR+DIV 가중치 재분배 확인"""
+        df = pd.DataFrame(
+            {
+                "PBR": [0.5, 1.0, 2.0],
+                "PCR": [float("nan"), float("nan"), float("nan")],
+                "DIV": [4.0, 2.0, 1.0],
+            },
+            index=["A", "B", "C"],
+        )
+        result = self.factor.calculate(df)
+        # PCR이 모두 NaN이면 PBR+DIV만으로 스코어 산출
+        assert len(result) == 3
+        assert result.name == "value_score"
+        # A가 PBR 낮고 DIV 높으므로 최고
+        assert result.idxmax() == "A"
+
     def test_empty_input(self) -> None:
-        df = pd.DataFrame(columns=["PBR", "PER", "DIV"])
+        df = pd.DataFrame(columns=["PBR", "PCR", "DIV"])
         result = self.factor.calculate(df)
         assert result.empty
         assert result.name == "value_score"
@@ -149,47 +195,57 @@ class TestQualityFactor:
     def setup_method(self) -> None:
         self.factor = QualityFactor()
 
-    def test_basic_roe_calculation(self) -> None:
+    def test_basic_gpa_calculation(self) -> None:
+        """GP/A 기반 퀄리티 스코어 계산"""
         df = pd.DataFrame(
             {
-                "EPS": [5000, 3000, 1000, -500, 8000],
-                "BPS": [50000, 30000, 20000, 10000, 40000],
+                "GROSS_PROFIT": [5e9, 3e9, 1e9, 8e9, 2e9],
+                "TOTAL_ASSETS": [10e9, 10e9, 10e9, 10e9, 10e9],
+                "EPS": [5000, 3000, 1000, 8000, 2000],
+                "BPS": [50000, 30000, 20000, 40000, 25000],
+                "PER": [10.0, 15.0, 25.0, 5.0, 20.0],
             },
             index=["A", "B", "C", "D", "E"],
         )
         result = self.factor.calculate(df)
 
         assert result.name == "quality_score"
-        # ROE: A=10%, B=10%, C=5%, D=-5%, E=20%
-        # E가 최고, D가 최하 (음수 ROE도 포함되지만 낮은 순위)
         assert len(result) == 5
 
-    def test_bps_zero_excluded(self) -> None:
-        """자본잠식(BPS <= 0) 종목 제외"""
+    def test_total_assets_zero_excluded(self) -> None:
+        """총자산 <= 0인 종목 제외"""
         df = pd.DataFrame(
             {
-                "EPS": [5000, 3000, 1000],
-                "BPS": [-1000, 0, 50000],
+                "GROSS_PROFIT": [5e9, 3e9, 1e9],
+                "TOTAL_ASSETS": [-1e9, 0, 10e9],
             },
             index=["A", "B", "C"],
         )
-        result = self.factor.calculate(df)
-        assert "A" not in result.index
-        assert "B" not in result.index
-        assert "C" in result.index
+        gpa = QualityFactor._calc_gpa_score(df)
+        assert "A" not in gpa.index
+        assert "B" not in gpa.index
+        assert "C" in gpa.index
 
-    def test_roe_clipping(self) -> None:
-        """ROE -50% ~ +100% 클리핑"""
+    def test_gpa_ranking(self) -> None:
+        """GP/A 높을수록 높은 스코어"""
         df = pd.DataFrame(
             {
-                "EPS": [200000, -100000, 5000],
-                "BPS": [10000, 10000, 50000],
+                "GROSS_PROFIT": [1e9, 5e9, 10e9],
+                "TOTAL_ASSETS": [10e9, 10e9, 10e9],
             },
-            index=["A", "B", "C"],
+            index=["LOW", "MID", "HIGH"],
+        )
+        gpa = QualityFactor._calc_gpa_score(df)
+        assert gpa["HIGH"] > gpa["LOW"]
+
+    def test_gpa_missing_falls_back_to_roe(self) -> None:
+        """GROSS_PROFIT/TOTAL_ASSETS 없으면 ROE 폴백"""
+        df = pd.DataFrame(
+            {"EPS": [5000, 3000], "BPS": [50000, 30000]},
+            index=["A", "B"],
         )
         result = self.factor.calculate(df)
-        # A: ROE=2000% → 클리핑 100%, B: ROE=-1000% → 클리핑 -50%
-        assert len(result) == 3
+        assert len(result) == 2  # ROE 폴백으로 작동
 
     def test_with_debt_ratio(self) -> None:
         df = pd.DataFrame(
@@ -200,12 +256,13 @@ class TestQualityFactor:
 
         result = self.factor.calculate(df, debt_ratio=debt)
         assert len(result) == 2
-        # A가 부채비율 낮으므로 총합에서 유리
 
-    def test_missing_eps_bps(self) -> None:
+    def test_no_quality_columns_uses_fscore(self) -> None:
+        """GP/A·EY 데이터 없어도 F-Score(0점)로 스코어 산출"""
         df = pd.DataFrame({"PBR": [1.0, 2.0]}, index=["A", "B"])
         result = self.factor.calculate(df)
-        assert result.empty
+        # F-Score가 PBR 기반으로 계산되므로 결과 존재
+        assert len(result) == 2
 
     def test_empty_input(self) -> None:
         df = pd.DataFrame(columns=["EPS", "BPS"])
@@ -219,38 +276,42 @@ class TestQualityFactor:
                 "EPS": [5000, 3000, 8000],
                 "BPS": [50000, 30000, 40000],
                 "PER": [5.0, 15.0, 10.0],
-                "DIV": [2.0, 1.0, 3.0],
             },
             index=["A", "B", "C"],
         )
         result = self.factor.calculate(df)
         assert len(result) == 3
-        # A: PER=5 → EY=0.2 (최고), C: PER=10, B: PER=15 (최저)
 
-    def test_dividend_component(self) -> None:
-        """배당수익률 지표 포함 확인"""
+    def test_fscore_normalized_in_quality(self) -> None:
+        """F-Score가 0~100으로 정규화되어 퀄리티 스코어에 포함"""
         df = pd.DataFrame(
             {
-                "EPS": [5000, 5000, 5000],
-                "BPS": [50000, 50000, 50000],
-                "PER": [10.0, 10.0, 10.0],
-                "DIV": [0.0, 2.0, 5.0],
+                "EPS": [5000, 1000, -500],
+                "BPS": [25000, 25000, 25000],
+                "PER": [5.0, 25.0, -10.0],
+                "PBR": [0.3, 0.8, 3.0],
+                "DIV": [5.0, 1.0, 0.0],
             },
-            index=["A", "B", "C"],
+            index=["GOOD", "MID", "BAD"],
         )
         result = self.factor.calculate(df)
         assert len(result) == 3
-        # C가 배당 가장 높으므로 퀄리티 스코어 최고
-        assert result["C"] > result["A"]
+        # GOOD: F-Score 최고 → 퀄리티 높아야 함
+        assert result["GOOD"] > result["BAD"]
 
-    def test_quality_without_per_div(self) -> None:
-        """PER/DIV 없이도 ROE만으로 계산 가능"""
+    def test_quality_without_per(self) -> None:
+        """PER 없이도 GP/A + F-Score로 계산 가능"""
         df = pd.DataFrame(
-            {"EPS": [5000, 3000], "BPS": [50000, 30000]},
+            {
+                "GROSS_PROFIT": [5e9, 3e9],
+                "TOTAL_ASSETS": [10e9, 10e9],
+                "EPS": [5000, 3000],
+                "BPS": [50000, 30000],
+            },
             index=["A", "B"],
         )
         result = self.factor.calculate(df)
-        assert len(result) == 2  # ROE만으로 작동
+        assert len(result) == 2
 
 
 # ───────────────────────────────────────────────

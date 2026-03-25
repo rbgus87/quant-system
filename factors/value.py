@@ -11,18 +11,18 @@ class ValueFactor:
     """밸류 팩터 계산
 
     - PBR (Price-to-Book Ratio): 낮을수록 저평가 → 역수 변환 후 순위
-    - PER (Price-to-Earnings Ratio): 낮을수록 저평가 → 역수 변환 후 순위 (적자 제외)
+    - PCR (Price-to-Cashflow Ratio): 낮을수록 저평가 → 역수 변환 후 순위 (영업CF 마이너스 제외)
     - DIV (Dividend Yield): 높을수록 선호 → 그대로 순위
     """
 
     def __init__(self) -> None:
-        self.w = settings.value_weights  # ValueWeights (pbr=0.5, per=0.3, div=0.2)
+        self.w = settings.value_weights  # ValueWeights (pbr=0.5, pcr=0.3, div=0.2)
 
     def calculate(self, fundamentals: pd.DataFrame) -> pd.Series:
         """복합 밸류 스코어 계산
 
         Args:
-            fundamentals: DataFrame (index=ticker, columns 중 PBR·PER·DIV 포함)
+            fundamentals: DataFrame (index=ticker, columns 중 PBR·PCR·DIV 포함)
 
         Returns:
             Series (index=ticker, values=value_score 0~100, name='value_score')
@@ -36,12 +36,13 @@ class ValueFactor:
             pbr = pbr.clip(upper=pbr.quantile(0.99))
             score_parts["PBR"] = (self._rank_score(1 / pbr), self.w.pbr)
 
-        # PER 스코어 (낮을수록 고득점, 적자 기업 제외)
-        if "PER" in fundamentals.columns:
-            per = fundamentals["PER"].copy()
-            per = per[per > 0]
-            per = per.clip(upper=per.quantile(0.99))
-            score_parts["PER"] = (self._rank_score(1 / per), self.w.per)
+        # PCR 스코어 (낮을수록 고득점, 영업현금흐름 마이너스 제외)
+        if "PCR" in fundamentals.columns:
+            pcr = fundamentals["PCR"].copy()
+            pcr = pcr[pcr > 0]
+            if not pcr.empty:
+                pcr = pcr.clip(upper=pcr.quantile(0.99))
+                score_parts["PCR"] = (self._rank_score(1 / pcr), self.w.pcr)
 
         # DIV 스코어 (높을수록 고득점)
         if "DIV" in fundamentals.columns:

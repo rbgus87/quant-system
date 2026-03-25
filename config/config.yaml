@@ -29,7 +29,7 @@ sizing: "1000만"
 #
 # value_weights:
 #   pbr: 0.50
-#   per: 0.30
+#   pcr: 0.30
 #   div: 0.20
 #
 # universe:
@@ -93,7 +93,7 @@ presets:
       quality: 0.20
     value_weights:
       pbr: 0.50
-      per: 0.30
+      pcr: 0.30
       div: 0.20
     volatility:
       max_percentile: 80.0
@@ -121,7 +121,7 @@ presets:
       quality: 0.20
     value_weights:
       pbr: 0.40
-      per: 0.40
+      pcr: 0.40
       div: 0.20
     volatility:
       max_percentile: 90.0              # 변동성 필터 완화 (저PBR 소형주 살리기)
@@ -148,7 +148,7 @@ presets:
       quality: 0.15
     value_weights:
       pbr: 0.50
-      per: 0.30
+      pcr: 0.30
       div: 0.20
     volatility:
       max_percentile: 70.0              # 고변동성 종목 적극 제거 (30% 제외)
@@ -175,7 +175,7 @@ presets:
       quality: 0.40
     value_weights:
       pbr: 0.20
-      per: 0.30
+      pcr: 0.30
       div: 0.50                         # 배당수익률 비중 극대화
     volatility:
       max_percentile: 60.0              # 저변동성 종목 선호
@@ -203,7 +203,7 @@ presets:
       quality: 0.10
     value_weights:
       pbr: 0.60                         # PBR 극단 비중 (소형 저PBR = 한국 최강 팩터)
-      per: 0.20
+      pcr: 0.20
       div: 0.20
     universe:
       min_market_cap_percentile: 5.0    # 시총 하위 5%만 제외 (더 작은 종목 포함)
@@ -233,7 +233,7 @@ presets:
       quality: 0.30
     value_weights:
       pbr: 0.30
-      per: 0.40                         # PER 비중 높임 (수익성 검증된 저평가주)
+      pcr: 0.40                         # PCR 비중 높임 (현금흐름 기반 저평가주)
       div: 0.30
     volatility:
       max_percentile: 70.0
@@ -260,7 +260,7 @@ presets:
       quality: 0.25
     value_weights:
       pbr: 0.40
-      per: 0.40
+      pcr: 0.40
       div: 0.20
     universe:
       market: "ALL"                     # KOSPI + KOSDAQ
@@ -292,7 +292,7 @@ presets:
       quality: 0.40
     value_weights:
       pbr: 0.30
-      per: 0.30
+      pcr: 0.30
       div: 0.40
     volatility:
       max_percentile: 50.0              # 상위 50% 변동성 종목 제거 (핵심)
@@ -320,7 +320,7 @@ presets:
       quality: 0.25                        # B(20%)보다 높음: KOSDAQ 부실주 방어
     value_weights:
       pbr: 0.40
-      per: 0.40
+      pcr: 0.40
       div: 0.20
     universe:
       market: "KOSDAQ"                     # KOSDAQ 전용

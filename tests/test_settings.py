@@ -97,9 +97,9 @@ class TestApplyYaml:
         """value_weights 값을 덮어쓴다."""
         monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "x.yaml"))
         s = Settings()
-        _apply_yaml(s, {"value_weights": {"pbr": 0.40, "per": 0.40, "div": 0.20}})
+        _apply_yaml(s, {"value_weights": {"pbr": 0.40, "pcr": 0.40, "div": 0.20}})
         assert s.value_weights.pbr == 0.40
-        assert s.value_weights.per == 0.40
+        assert s.value_weights.pcr == 0.40
 
     def test_apply_unknown_section_ignored(self, monkeypatch, tmp_path):
         """알 수 없는 섹션은 무시한다."""
@@ -139,7 +139,7 @@ class TestValidateSettings:
         monkeypatch.setenv("CONFIG_PATH", str(tmp_path / "x.yaml"))
         s = Settings()
         s.value_weights.pbr = 0.80
-        s.value_weights.per = 0.30
+        s.value_weights.pcr = 0.30
         s.value_weights.div = 0.20
         with pytest.raises(ValueError, match="value_weights 합이 1.0이 아닙니다"):
             validate_settings(s)

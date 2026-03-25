@@ -57,7 +57,7 @@ class DailyPrice(Base):
 
 
 class Fundamental(Base):
-    """기본 지표 데이터 (PBR, PER, EPS, BPS, DIV)"""
+    """기본 지표 데이터 (PBR, PER, PCR, EPS, BPS, DIV)"""
 
     __tablename__ = "fundamental"
     __table_args__ = (
@@ -71,6 +71,7 @@ class Fundamental(Base):
     bps = Column(Float)
     per = Column(Float)
     pbr = Column(Float)
+    pcr = Column(Float)
     eps = Column(Float)
     div = Column(Float)
 
@@ -168,6 +169,7 @@ class DataStorage:
 
         Base.metadata.create_all(self.engine)
         self._migrate_fundamental_market_column()
+        self._migrate_fundamental_pcr_column()
         self._migrate_daily_price_market_column()
         self._migrate_market_cap_market_column()
         self.SessionLocal = sessionmaker(bind=self.engine)
@@ -187,6 +189,21 @@ class DataStorage:
                     logger.info("DB 마이그레이션: fundamental.market 컬럼 추가 완료")
         except Exception as e:
             logger.debug(f"fundamental 마이그레이션 스킵: {e}")
+
+    def _migrate_fundamental_pcr_column(self) -> None:
+        """기존 DB에 fundamental.pcr 컬럼이 없으면 추가 (하위 호환)"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(fundamental)"))
+                columns = [row[1] for row in result]
+                if "pcr" not in columns:
+                    conn.execute(
+                        text("ALTER TABLE fundamental ADD COLUMN pcr FLOAT")
+                    )
+                    conn.commit()
+                    logger.info("DB 마이그레이션: fundamental.pcr 컬럼 추가 완료")
+        except Exception as e:
+            logger.debug(f"fundamental pcr 마이그레이션 스킵: {e}")
 
     def _migrate_daily_price_market_column(self) -> None:
         """기존 DB에 daily_price.market 컬럼이 없으면 추가 (하위 호환)"""
@@ -370,7 +387,7 @@ class DataStorage:
 
         Args:
             dt: 기준 날짜
-            df: DataFrame(index=ticker, columns=[BPS, PER, PBR, EPS, DIV])
+            df: DataFrame(index=ticker, columns=[BPS, PER, PBR, PCR, EPS, DIV])
             market: 시장 구분 (KOSPI/KOSDAQ)
 
         Returns:
@@ -383,18 +400,18 @@ class DataStorage:
         tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
         tmp["date"] = dt
         tmp["market"] = market
-        col_map = {"BPS": "bps", "PER": "per", "PBR": "pbr", "EPS": "eps", "DIV": "div"}
+        col_map = {"BPS": "bps", "PER": "per", "PBR": "pbr", "PCR": "pcr", "EPS": "eps", "DIV": "div"}
         for old, new in col_map.items():
             if old in tmp.columns:
                 tmp[new] = tmp[old]
             else:
                 tmp[new] = None
-        rows = tmp[["ticker", "date", "market", "bps", "per", "pbr", "eps", "div"]].to_dict("records")
+        rows = tmp[["ticker", "date", "market", "bps", "per", "pbr", "pcr", "eps", "div"]].to_dict("records")
 
         self._upsert(
             Fundamental, rows,
             conflict_cols=["ticker", "date", "market"],
-            update_cols=["bps", "per", "pbr", "eps", "div"],
+            update_cols=["bps", "per", "pbr", "pcr", "eps", "div"],
         )
 
         logger.info(f"기본 지표 저장: {dt} ({len(rows)}건)")
@@ -408,10 +425,10 @@ class DataStorage:
             market: 시장 구분 (KOSPI/KOSDAQ). 해당 시장 데이터만 반환.
 
         Returns:
-            DataFrame(index=ticker, columns=[BPS, PER, PBR, EPS, DIV])
+            DataFrame(index=ticker, columns=[BPS, PER, PBR, PCR, EPS, DIV])
         """
         sql = (
-            "SELECT ticker, bps AS BPS, per AS PER, pbr AS PBR, eps AS EPS, div AS DIV "
+            "SELECT ticker, bps AS BPS, per AS PER, pbr AS PBR, pcr AS PCR, eps AS EPS, div AS DIV "
             "FROM fundamental WHERE date = :dt AND (market = :market OR market IS NULL)"
         )
         with self.engine.connect() as conn:

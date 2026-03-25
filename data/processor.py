@@ -35,6 +35,12 @@ class DataProcessor:
                 upper = cleaned[col].quantile(0.99)
                 cleaned[col] = cleaned[col].clip(upper=upper)
 
+        # PCR: 0 이하 → NaN (영업현금흐름 마이너스 = 배제) + 상위 1% Winsorize
+        if "PCR" in cleaned.columns:
+            cleaned["PCR"] = cleaned["PCR"].where(cleaned["PCR"] > 0, np.nan)
+            upper = cleaned["PCR"].quantile(0.99)
+            cleaned["PCR"] = cleaned["PCR"].clip(upper=upper)
+
         # DIV: 음수 → NaN
         if "DIV" in cleaned.columns:
             cleaned["DIV"] = cleaned["DIV"].where(cleaned["DIV"] >= 0, np.nan)

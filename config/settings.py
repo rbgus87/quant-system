@@ -26,7 +26,7 @@ class ValueWeights:
     """밸류 팩터 내 세부 지표 가중치"""
 
     pbr: float = 0.50
-    per: float = 0.30
+    pcr: float = 0.30
     div: float = 0.20
 
 
@@ -185,7 +185,7 @@ def validate_settings(s: "Settings") -> None:
     if abs(fw_sum - 1.0) > 0.001:
         errors.append(f"factor_weights 합이 1.0이 아닙니다: {fw_sum}")
 
-    vw_sum = s.value_weights.pbr + s.value_weights.per + s.value_weights.div
+    vw_sum = s.value_weights.pbr + s.value_weights.pcr + s.value_weights.div
     if abs(vw_sum - 1.0) > 0.001:
         errors.append(f"value_weights 합이 1.0이 아닙니다: {vw_sum}")
 

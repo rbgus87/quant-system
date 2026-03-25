@@ -42,6 +42,7 @@ REPRT_CODES = {
 EPS_ACCOUNT_NAMES = {"기본주당이익", "기본주당이익(손실)", "기본주당순이익", "주당이익"}
 NET_INCOME_ACCOUNT_NAMES = {"당기순이익", "당기순이익(손실)", "분기순이익", "반기순이익"}
 EQUITY_ACCOUNT_NAMES = {"자본총계"}
+OPERATING_CF_ACCOUNT_NAMES = {"영업활동현금흐름", "영업활동으로인한현금흐름"}
 
 
 class DartClient:
@@ -342,7 +343,7 @@ class DartClient:
             shares: 발행주식수 Series (index=ticker)
 
         Returns:
-            DataFrame(index=ticker, columns=[BPS, PER, PBR, EPS, DIV])
+            DataFrame(index=ticker, columns=[BPS, PER, PBR, PCR, EPS, DIV])
         """
         if not self.api_key:
             return pd.DataFrame()
@@ -382,7 +383,7 @@ class DartClient:
             logger.warning(f"[{date_str}] DART 재무제표 데이터 없음")
             return pd.DataFrame()
 
-        eps_map, net_income_map, equity_map = self._extract_financial_items(
+        eps_map, net_income_map, equity_map, operating_cf_map = self._extract_financial_items(
             raw_data
         )
 
@@ -423,6 +424,14 @@ class DartClient:
             if close and bps and bps > 0:
                 pbr = close / bps
 
+            # PCR = 종가 / (영업활동현금흐름 / 발행주식수)
+            pcr = None
+            op_cf = operating_cf_map.get(ticker)
+            if close and op_cf and num_shares and num_shares > 0:
+                cfps = op_cf / num_shares  # 주당영업현금흐름
+                if cfps > 0:
+                    pcr = close / cfps
+
             # DIV = DPS / 종가 × 100 (배당수익률 %)
             div = None
             dps = dps_map.get(ticker)
@@ -435,6 +444,7 @@ class DartClient:
                 "BPS": bps,
                 "PER": per,
                 "PBR": pbr,
+                "PCR": pcr,
                 "DIV": div,
             })
 
@@ -444,10 +454,11 @@ class DartClient:
         df = pd.DataFrame(rows).set_index("ticker")
         n_eps = df["EPS"].notna().sum()
         n_pbr = df["PBR"].notna().sum()
+        n_pcr = df["PCR"].notna().sum() if "PCR" in df.columns else 0
         n_div = df["DIV"].notna().sum()
         logger.info(
             f"[{date_str}] DART 펀더멘털 완료: {len(df)}개 종목 "
-            f"(EPS={n_eps}, PBR={n_pbr}, DIV={n_div})"
+            f"(EPS={n_eps}, PBR={n_pbr}, PCR={n_pcr}, DIV={n_div})"
         )
         return df
 
@@ -577,19 +588,20 @@ class DartClient:
 
     def _extract_financial_items(
         self, items: list[dict]
-    ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
-        """DART 응답에서 EPS, 당기순이익, 자본총계 추출
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, float], dict[str, float]]:
+        """DART 응답에서 EPS, 당기순이익, 자본총계, 영업활동현금흐름 추출
 
         fnlttMultiAcnt는 주요 재무제표 계정만 반환하므로
         "기본주당이익" 대신 "당기순이익"을 가져와 EPS를 직접 계산합니다.
         연결재무제표(CFS) 우선, 없으면 별도재무제표(OFS) 사용.
 
         Returns:
-            (eps_map, net_income_map, equity_map) - {ticker: value}
+            (eps_map, net_income_map, equity_map, operating_cf_map) - {ticker: value}
         """
         eps_data: dict[str, dict[str, float]] = {}
         net_income_data: dict[str, dict[str, float]] = {}
         equity_data: dict[str, dict[str, float]] = {}
+        operating_cf_data: dict[str, dict[str, float]] = {}
 
         for item in items:
             stock_code = (item.get("stock_code") or "").strip()
@@ -614,6 +626,9 @@ class DartClient:
             if account_nm in EQUITY_ACCOUNT_NAMES:
                 equity_data.setdefault(ticker, {})[fs_div] = amount
 
+            if account_nm in OPERATING_CF_ACCOUNT_NAMES:
+                operating_cf_data.setdefault(ticker, {})[fs_div] = amount
+
         # 연결(CFS) 우선
         eps_map: dict[str, float] = {}
         for ticker, vals in eps_data.items():
@@ -627,12 +642,17 @@ class DartClient:
         for ticker, vals in equity_data.items():
             equity_map[ticker] = vals.get("CFS", vals.get("OFS", 0))
 
+        operating_cf_map: dict[str, float] = {}
+        for ticker, vals in operating_cf_data.items():
+            operating_cf_map[ticker] = vals.get("CFS", vals.get("OFS", 0))
+
         logger.info(
             f"DART 추출: EPS(직접) {len(eps_map)}개, "
             f"당기순이익 {len(net_income_map)}개, "
-            f"자본총계 {len(equity_map)}개 종목"
+            f"자본총계 {len(equity_map)}개, "
+            f"영업활동CF {len(operating_cf_map)}개 종목"
         )
-        return eps_map, net_income_map, equity_map
+        return eps_map, net_income_map, equity_map, operating_cf_map
 
     @staticmethod
     def _parse_amount(s: str) -> Optional[float]:
