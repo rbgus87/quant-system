@@ -47,6 +47,8 @@ class MultiFactorScreener:
         - 1~3월 리밸런싱: 전전년도 연간 보고서 사용 (전년도 미공시)
         - 4~12월 리밸런싱: 전년도 연간 보고서 사용 (3월 말 공시 완료)
 
+        반환값은 해당 연도 12월의 마지막 KRX 거래일 (비거래일 회피).
+
         Args:
             rebalance_date: 리밸런싱 날짜 (YYYYMMDD)
 
@@ -60,13 +62,18 @@ class MultiFactorScreener:
         month = dt.month
 
         if month <= 3:
-            # 전년도 사업보고서 미공시 → 전전년도 12/31
             effective_year = year - 2
         else:
-            # 전년도 사업보고서 공시 완료 (3월 말)
             effective_year = year - 1
 
-        return f"{effective_year}1231"
+        # 12/31이 비거래일일 수 있으므로 직전 거래일로 조정
+        try:
+            target_date = datetime(effective_year, 12, 31).date()
+            prev = previous_krx_business_day(target_date)
+            return prev.strftime("%Y%m%d")
+        except Exception:
+            # 캘린더 실패 시 12/28 사용 (거의 항상 거래일)
+            return f"{effective_year}1228"
 
     def __init__(self, request_delay: float = 0.5) -> None:
         self.collector = KRXDataCollector(request_delay=request_delay)
