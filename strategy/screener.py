@@ -108,8 +108,10 @@ class MultiFactorScreener:
         n_stocks = n_stocks or settings.portfolio.n_stocks
 
         try:
-            # 0. 팩터 스코어 캐시 확인 (인메모리 → DB 순)
-            cache_key = (date, market)
+            # 0. 팩터 스코어 캐시 확인 (인메모리)
+            # 캐시 키에 팩터 가중치를 포함하여 프리셋 간 오염 방지
+            fw = settings.factor_weights
+            cache_key = (date, market, fw.value, fw.momentum, fw.quality)
             if cache_key in MultiFactorScreener._factor_cache:
                 composite_df = MultiFactorScreener._factor_cache[cache_key]
                 portfolio = self.composite.select_top(composite_df, n=n_stocks)
