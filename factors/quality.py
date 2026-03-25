@@ -72,48 +72,70 @@ class QualityFactor:
 
     @staticmethod
     def _calc_gpa_score(fundamentals: pd.DataFrame) -> pd.Series:
-        """GP/A = 매출총이익 / 총자산 순위 스코어
+        """GP/A (또는 OP/A 폴백) 순위 스코어
 
-        데이터 소스: DART 손익계산서(매출총이익) + 재무상태표(총자산)
-        매출총이익 없으면: GROSS_PROFIT 컬럼이 NaN인 종목은 제외
-        (weighted_average_nan_safe가 나머지 팩터로 가중치 재분배)
-
-        처리 기준:
-        - TOTAL_ASSETS <= 0: 제외
-        - GP/A 상하위 1% Winsorize
+        우선순위:
+        1. GP/A = 매출총이익(GROSS_PROFIT) / 총자산(TOTAL_ASSETS)
+        2. OP/A = 영업이익(OPERATING_INCOME) / 총자산 (fnlttMultiAcnt 폴백)
+        3. ROE = EPS / BPS (최종 폴백)
 
         Args:
-            fundamentals: DataFrame (GROSS_PROFIT, TOTAL_ASSETS 컬럼 필요)
+            fundamentals: DataFrame
 
         Returns:
             0~100 범위의 순위 스코어 Series
         """
-        if "GROSS_PROFIT" not in fundamentals.columns or "TOTAL_ASSETS" not in fundamentals.columns:
-            # GP/A 데이터가 없으면 ROE 폴백 (BPS/EPS가 있는 경우)
-            if "EPS" in fundamentals.columns and "BPS" in fundamentals.columns:
-                return QualityFactor._calc_roe_score_fallback(fundamentals)
-            return pd.Series(dtype=float)
+        ta_col = "TOTAL_ASSETS"
+        has_total_assets = ta_col in fundamentals.columns and fundamentals[ta_col].notna().any()
 
-        gp = fundamentals["GROSS_PROFIT"]
-        ta = fundamentals["TOTAL_ASSETS"]
+        # 1순위: GP/A (매출총이익 / 총자산)
+        if has_total_assets and "GROSS_PROFIT" in fundamentals.columns:
+            gp = fundamentals["GROSS_PROFIT"]
+            if gp.notna().any():
+                result = QualityFactor._ratio_score(gp, fundamentals[ta_col])
+                if not result.empty:
+                    return result
 
-        valid = ta[ta > 0].index
+        # 2순위: OP/A (영업이익 / 총자산) — fnlttMultiAcnt에서 제공
+        if has_total_assets and "OPERATING_INCOME" in fundamentals.columns:
+            oi = fundamentals["OPERATING_INCOME"]
+            if oi.notna().any():
+                logger.debug("GP/A 불가 -> OP/A(영업이익/총자산) 폴백")
+                result = QualityFactor._ratio_score(oi, fundamentals[ta_col])
+                if not result.empty:
+                    return result
+
+        # 3순위: ROE (EPS / BPS)
+        if "EPS" in fundamentals.columns and "BPS" in fundamentals.columns:
+            logger.debug("GP/A, OP/A 불가 -> ROE 폴백")
+            return QualityFactor._calc_roe_score_fallback(fundamentals)
+
+        return pd.Series(dtype=float)
+
+    @staticmethod
+    def _ratio_score(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+        """분자/분모 비율의 순위 스코어 계산 (공통 유틸)
+
+        Args:
+            numerator: 분자 Series (매출총이익, 영업이익 등)
+            denominator: 분모 Series (총자산 등, > 0만 유효)
+
+        Returns:
+            0~100 범위의 순위 스코어 Series
+        """
+        valid = denominator[denominator > 0].index
         if len(valid) == 0:
             return pd.Series(dtype=float)
 
-        gpa = gp[valid] / ta[valid]
-
-        # NaN 제거 (매출총이익이 없는 종목)
-        gpa = gpa.dropna()
-        if gpa.empty:
+        ratio = numerator[valid] / denominator[valid]
+        ratio = ratio.dropna()
+        if ratio.empty:
             return pd.Series(dtype=float)
 
-        # 상하위 1% Winsorize
-        lower = gpa.quantile(0.01)
-        upper = gpa.quantile(0.99)
-        gpa = gpa.clip(lower=lower, upper=upper)
-
-        return gpa.rank(pct=True) * 100
+        lower = ratio.quantile(0.01)
+        upper = ratio.quantile(0.99)
+        ratio = ratio.clip(lower=lower, upper=upper)
+        return ratio.rank(pct=True) * 100
 
     @staticmethod
     def _calc_roe_score_fallback(fundamentals: pd.DataFrame) -> pd.Series:

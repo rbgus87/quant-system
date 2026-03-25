@@ -224,21 +224,23 @@ class MultiFactorScreener:
                 value_score = self.value_factor.calculate(filtered_fund)
                 quality_score = self.quality_factor.calculate(filtered_fund)
 
-            # 모멘텀 (멀티기간: 12M 60% + 6M 30% + 3M 10%)
-            # 12M 데이터로 한 번 조회 후 6M은 슬라이싱으로 재사용
-            multi_returns = self.return_calc.get_returns_multi_period(
-                tickers, data_date, lookback_months_list=[12, 6], skip_months=1
-            )
-            returns_12m = multi_returns[12]
-            returns_6m = multi_returns[6]
+            # 모멘텀 (가중치 0이면 데이터 조회 스킵)
+            momentum_score = pd.Series(dtype=float, name="momentum_score")
+            if settings.factor_weights.momentum > 0:
+                multi_returns = self.return_calc.get_returns_multi_period(
+                    tickers, data_date, lookback_months_list=[12, 6], skip_months=1
+                )
+                returns_12m = multi_returns[12]
+                returns_6m = multi_returns[6]
 
-            # 듀얼 모멘텀: 절대 모멘텀 필터 (하락장 방어, 12M 기준)
-            if settings.momentum.absolute_momentum_enabled:
-                returns_12m = self.momentum_factor.apply_absolute_momentum(returns_12m)
+                if settings.momentum.absolute_momentum_enabled:
+                    returns_12m = self.momentum_factor.apply_absolute_momentum(returns_12m)
 
-            momentum_score = self.momentum_factor.calculate(
-                returns_12m, returns_6m=returns_6m
-            )
+                momentum_score = self.momentum_factor.calculate(
+                    returns_12m, returns_6m=returns_6m
+                )
+            else:
+                logger.info(f"[{date}] 모멘텀 가중치 0 → 데이터 조회 스킵")
 
             # 4. 복합 스코어 + 상위 N개
             min_factors = 2 if has_fundamentals else 1

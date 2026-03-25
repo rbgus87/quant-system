@@ -41,6 +41,12 @@ class DataProcessor:
             upper = cleaned["PCR"].quantile(0.99)
             cleaned["PCR"] = cleaned["PCR"].clip(upper=upper)
 
+        # PSR: 0 이하 → NaN + 상위 1% Winsorize (PCR 폴백용)
+        if "PSR" in cleaned.columns:
+            cleaned["PSR"] = cleaned["PSR"].where(cleaned["PSR"] > 0, np.nan)
+            upper = cleaned["PSR"].quantile(0.99)
+            cleaned["PSR"] = cleaned["PSR"].clip(upper=upper)
+
         # DIV: 음수 → NaN
         if "DIV" in cleaned.columns:
             cleaned["DIV"] = cleaned["DIV"].where(cleaned["DIV"] >= 0, np.nan)

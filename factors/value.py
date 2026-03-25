@@ -37,8 +37,16 @@ class ValueFactor:
             score_parts["PBR"] = (self._rank_score(1 / pbr), self.w.pbr)
 
         # PCR 스코어 (낮을수록 고득점, 영업현금흐름 마이너스 제외)
-        if "PCR" in fundamentals.columns:
-            pcr = fundamentals["PCR"].copy()
+        # PCR 데이터가 없으면 PSR(주가매출비율)로 폴백
+        pcr_col = None
+        if "PCR" in fundamentals.columns and fundamentals["PCR"].notna().any():
+            pcr_col = "PCR"
+        elif "PSR" in fundamentals.columns and fundamentals["PSR"].notna().any():
+            pcr_col = "PSR"
+            logger.debug("PCR 데이터 없음 → PSR 폴백")
+
+        if pcr_col is not None:
+            pcr = fundamentals[pcr_col].copy()
             pcr = pcr[pcr > 0]
             if not pcr.empty:
                 pcr = pcr.clip(upper=pcr.quantile(0.99))
