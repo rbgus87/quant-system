@@ -29,6 +29,36 @@ class MultiFactorScreener:
     # 클래스 레벨 인메모리 캐시: {(date, market): composite_df}
     _factor_cache: dict[tuple[str, str], pd.DataFrame] = {}
 
+    @staticmethod
+    def _get_effective_fundamental_date(rebalance_date: str) -> str:
+        """리밸런싱 날짜 기준으로 사용 가능한 재무 데이터 날짜 결정
+
+        Reporting Lag 처리 — Look-Ahead Bias 차단.
+        12월 결산 기업 기준:
+        - 1~3월 리밸런싱: 전전년도 연간 보고서 사용 (전년도 미공시)
+        - 4~12월 리밸런싱: 전년도 연간 보고서 사용 (3월 말 공시 완료)
+
+        Args:
+            rebalance_date: 리밸런싱 날짜 (YYYYMMDD)
+
+        Returns:
+            사용 가능한 재무 데이터 기준 날짜 (YYYYMMDD)
+        """
+        from datetime import datetime
+
+        dt = datetime.strptime(rebalance_date, "%Y%m%d")
+        year = dt.year
+        month = dt.month
+
+        if month <= 3:
+            # 전년도 사업보고서 미공시 → 전전년도 12/31
+            effective_year = year - 2
+        else:
+            # 전년도 사업보고서 공시 완료 (3월 말)
+            effective_year = year - 1
+
+        return f"{effective_year}1231"
+
     def __init__(self, request_delay: float = 0.5) -> None:
         self.collector = KRXDataCollector(request_delay=request_delay)
         self.return_calc = ReturnCalculator(collector=self.collector)
@@ -72,12 +102,16 @@ class MultiFactorScreener:
 
             # 1. 데이터 수집 (ALL = KOSPI+KOSDAQ 통합)
             markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
-            logger.info(f"[{date}] 스크리닝 시작 — {'+'.join(markets)}")
+            effective_date = self._get_effective_fundamental_date(date)
+            logger.info(
+                f"[{date}] 스크리닝 시작 — {'+'.join(markets)}, "
+                f"재무데이터={effective_date} (Reporting Lag)"
+            )
 
             fundamentals_list = []
             market_cap_list = []
             for m in markets:
-                f = self.collector.get_fundamentals_all(date, m)
+                f = self.collector.get_fundamentals_all(effective_date, m)
                 if not f.empty:
                     fundamentals_list.append(f)
                 mc = self.collector.get_market_cap(date, m)
@@ -97,8 +131,9 @@ class MultiFactorScreener:
                         f"[{date}] 데이터 없음 → "
                         f"직전 영업일 {fallback_date} 폴백 (시도 {attempt + 1}/5)"
                     )
+                    fallback_effective = self._get_effective_fundamental_date(fallback_date)
                     for m in markets:
-                        f = self.collector.get_fundamentals_all(fallback_date, m)
+                        f = self.collector.get_fundamentals_all(fallback_effective, m)
                         if not f.empty:
                             fundamentals_list.append(f)
                         mc = self.collector.get_market_cap(fallback_date, m)

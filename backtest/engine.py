@@ -164,10 +164,10 @@ class MultiFactorBacktest:
                 if turnover_log:
                     turnover_log[-1]["trade_date"] = trade_date_str
 
-                # ── 배당금 추정 (보유 기간 1개월분) ──
-                cash = self._estimate_dividend_income(
-                    holdings, prices, date_str, market, cash,
-                )
+                # 배당금 추정 제거 (v2.0):
+                # 한국 시장은 연 1회 배당 집중 → 월별 균등 배분은 부정확.
+                # 백테스트 수익률에 배당 미포함 (보수적 추정).
+                # 실전에서는 키움 API 잔고 조회 시 배당금 자동 반영.
 
                 # ── 일별 포트폴리오 가치 기록 ──
                 self._record_daily_values(
@@ -742,121 +742,122 @@ class MultiFactorBacktest:
                 "n_holdings": len(holdings),
             })
 
-    def walk_forward(
+    def run_walk_forward(
         self,
-        start_date: str,
-        end_date: str,
-        n_splits: int = 3,
-        train_ratio: float = 0.7,
-        market: str = "KOSPI",
+        full_start: str,
+        full_end: str,
+        train_years: int = 4,
+        test_years: int = 2,
+        step_years: int = 2,
+        market: str | None = None,
     ) -> list[dict]:
-        """워크-포워드 검증
+        """Walk-Forward 백테스트 (슬라이딩 윈도우)
 
-        전체 기간을 n_splits 구간으로 나누고, 각 구간 내
-        앞 train_ratio를 in-sample, 나머지를 out-of-sample로 분할하여
-        백테스트를 실행합니다.
+        4~5년 학습 → 2년 검증 윈도우를 step_years씩 슬라이딩.
+        각 윈도우의 검증 성과를 기록하여 과적합 여부를 판단합니다.
 
         Args:
-            start_date: 전체 시작일 (YYYY-MM-DD)
-            end_date: 전체 종료일 (YYYY-MM-DD)
-            n_splits: 분할 구간 수
-            train_ratio: in-sample 비율 (0~1)
-            market: 대상 시장
+            full_start: 전체 시작일 (YYYY-MM-DD)
+            full_end: 전체 종료일 (YYYY-MM-DD)
+            train_years: 학습 기간 (년)
+            test_years: 검증 기간 (년)
+            step_years: 윈도우 이동 간격 (년)
+            market: 대상 시장 (기본: settings.universe.market)
 
         Returns:
-            각 구간별 결과 리스트 [{split, train_start, train_end,
-            test_start, test_end, train_cagr, test_cagr, ...}]
+            각 윈도우별 결과 리스트
         """
+        from datetime import datetime
+        from dateutil.relativedelta import relativedelta
         from backtest.metrics import PerformanceAnalyzer
 
+        market = market or settings.universe.market
+
         logger.info(
-            f"워크-포워드 검증: {start_date} ~ {end_date}, "
-            f"{n_splits}분할, train={train_ratio:.0%}"
+            f"Walk-Forward: {full_start} ~ {full_end}, "
+            f"학습={train_years}년, 검증={test_years}년, 스텝={step_years}년"
         )
 
-        all_dates = get_krx_sessions(
-            start_date.replace("-", ""), end_date.replace("-", "")
-        )
-        if len(all_dates) < n_splits * 20:
-            raise ValueError(
-                f"기간이 너무 짧습니다: {len(all_dates)}거래일 "
-                f"(최소 {n_splits * 20}거래일 필요)"
-            )
+        start_dt = datetime.strptime(full_start, "%Y-%m-%d")
+        end_dt = datetime.strptime(full_end, "%Y-%m-%d")
 
-        split_size = len(all_dates) // n_splits
         analyzer = PerformanceAnalyzer()
         results: list[dict] = []
+        window_idx = 0
 
-        for i in range(n_splits):
-            seg_start = i * split_size
-            seg_end = (i + 1) * split_size if i < n_splits - 1 else len(all_dates)
-            segment = all_dates[seg_start:seg_end]
+        cursor = start_dt
+        while True:
+            train_start = cursor
+            train_end = cursor + relativedelta(years=train_years) - relativedelta(days=1)
+            test_start = train_end + relativedelta(days=1)
+            test_end = test_start + relativedelta(years=test_years) - relativedelta(days=1)
 
-            train_len = int(len(segment) * train_ratio)
-            if train_len < 20 or (len(segment) - train_len) < 10:
-                logger.warning(f"구간 {i + 1} 데이터 부족, 스킵")
-                continue
+            if test_end > end_dt:
+                break
 
-            train_start = segment[0].strftime("%Y-%m-%d")
-            train_end = segment[train_len - 1].strftime("%Y-%m-%d")
-            test_start = segment[train_len].strftime("%Y-%m-%d")
-            test_end = segment[-1].strftime("%Y-%m-%d")
+            window_idx += 1
+            ts = train_start.strftime("%Y-%m-%d")
+            te = train_end.strftime("%Y-%m-%d")
+            vs = test_start.strftime("%Y-%m-%d")
+            ve = test_end.strftime("%Y-%m-%d")
 
             logger.info(
-                f"[구간 {i + 1}/{n_splits}] "
-                f"Train: {train_start}~{train_end}, "
-                f"Test: {test_start}~{test_end}"
+                f"[윈도우 {window_idx}] Train: {ts}~{te}, Test: {vs}~{ve}"
             )
 
-            split_result: dict = {
-                "split": i + 1,
-                "train_start": train_start,
-                "train_end": train_end,
-                "test_start": test_start,
-                "test_end": test_end,
+            result: dict = {
+                "window": window_idx,
+                "train_start": ts,
+                "train_end": te,
+                "test_start": vs,
+                "test_end": ve,
             }
 
-            # In-sample 백테스트
+            # Train 백테스트
             try:
                 bt_train = MultiFactorBacktest(self.initial_cash)
-                train_df = bt_train.run(train_start, train_end, market)
+                train_df = bt_train.run(ts, te, market)
                 train_vals = train_df["portfolio_value"]
                 train_rets = train_df["returns"].dropna()
-                split_result["train_cagr"] = analyzer.calculate_cagr(train_vals)
-                split_result["train_sharpe"] = analyzer.calculate_sharpe(train_rets)
-                split_result["train_mdd"] = analyzer.calculate_mdd(train_vals)
+                result["train_cagr"] = analyzer.calculate_cagr(train_vals)
+                result["train_sharpe"] = analyzer.calculate_sharpe(train_rets)
+                result["train_mdd"] = analyzer.calculate_mdd(train_vals)
             except Exception as e:
-                logger.warning(f"구간 {i + 1} train 실패: {e}")
-                split_result["train_cagr"] = None
-                split_result["train_sharpe"] = None
-                split_result["train_mdd"] = None
+                logger.warning(f"윈도우 {window_idx} train 실패: {e}")
+                result["train_cagr"] = None
+                result["train_sharpe"] = None
+                result["train_mdd"] = None
 
-            # Out-of-sample 백테스트
+            # Test 백테스트
             try:
                 bt_test = MultiFactorBacktest(self.initial_cash)
-                test_df = bt_test.run(test_start, test_end, market)
+                test_df = bt_test.run(vs, ve, market)
                 test_vals = test_df["portfolio_value"]
                 test_rets = test_df["returns"].dropna()
-                split_result["test_cagr"] = analyzer.calculate_cagr(test_vals)
-                split_result["test_sharpe"] = analyzer.calculate_sharpe(test_rets)
-                split_result["test_mdd"] = analyzer.calculate_mdd(test_vals)
+                result["test_cagr"] = analyzer.calculate_cagr(test_vals)
+                result["test_sharpe"] = analyzer.calculate_sharpe(test_rets)
+                result["test_mdd"] = analyzer.calculate_mdd(test_vals)
             except Exception as e:
-                logger.warning(f"구간 {i + 1} test 실패: {e}")
-                split_result["test_cagr"] = None
-                split_result["test_sharpe"] = None
-                split_result["test_mdd"] = None
+                logger.warning(f"윈도우 {window_idx} test 실패: {e}")
+                result["test_cagr"] = None
+                result["test_sharpe"] = None
+                result["test_mdd"] = None
 
-            results.append(split_result)
+            results.append(result)
+            cursor += relativedelta(years=step_years)
 
         # 요약 로그
         valid = [r for r in results if r.get("test_cagr") is not None]
         if valid:
             avg_train = sum(r["train_cagr"] for r in valid) / len(valid)
             avg_test = sum(r["test_cagr"] for r in valid) / len(valid)
+            positive_windows = sum(1 for r in valid if r["test_cagr"] > 0)
             logger.info(
-                f"워크-포워드 요약: 평균 Train CAGR={avg_train:.2%}, "
+                f"Walk-Forward 요약: {len(valid)}개 윈도우, "
+                f"평균 Train CAGR={avg_train:.2%}, "
                 f"평균 Test CAGR={avg_test:.2%}, "
-                f"과적합 갭={avg_train - avg_test:.2%}"
+                f"과적합 갭={avg_train - avg_test:.2%}, "
+                f"양의 수익 비율={positive_windows}/{len(valid)}"
             )
 
         return results
@@ -873,11 +874,11 @@ class MultiFactorBacktest:
         market: str,
         cash: float,
     ) -> float:
-        """보유 종목의 월간 배당금 추정 및 현금 반영
+        """[DEPRECATED v2.0] 월별 배당금 추정 - 한국 시장에 부적합
 
-        pykrx는 수정주가가 아닌 실제 종가를 반환하므로,
-        배당락일에 종가가 하락하면 배당금 없이는 손실로 기록됩니다.
-        펀더멘털의 연간 배당수익률(DIV)을 기준으로 월간 배당을 추정합니다.
+        v2.0에서 비활성화됨. 한국 시장은 12월 결산 기업이 대부분이라
+        배당이 연 1회(3~4월) 집중됨. 월별 균등 배분(연간/12)은 현실과 괴리.
+        향후 DART 배당락일 데이터를 활용한 정확한 배당 반영 시 재활용 가능.
 
         Args:
             holdings: 보유 종목 {ticker: shares}

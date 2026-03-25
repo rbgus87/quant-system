@@ -7,10 +7,6 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# 무위험 수익률: config/settings.py의 momentum.risk_free_rate를 단일 소스로 사용
-RF_ANNUAL: float = settings.momentum.risk_free_rate
-
-
 class PerformanceAnalyzer:
     """백테스트 성과 분석"""
 
@@ -52,17 +48,19 @@ class PerformanceAnalyzer:
         return float(drawdown.min())
 
     def calculate_sharpe(
-        self, returns: pd.Series, risk_free: float = RF_ANNUAL
+        self, returns: pd.Series, risk_free: float | None = None
     ) -> float:
         """샤프 비율 (연환산)
 
         Args:
             returns: 일별 수익률 Series
-            risk_free: 연간 무위험 수익률
+            risk_free: 연간 무위험 수익률 (None이면 settings에서 동적 참조)
 
         Returns:
             샤프 비율 (float)
         """
+        if risk_free is None:
+            risk_free = settings.momentum.risk_free_rate
         if len(returns) < 2:
             return 0.0
 
@@ -114,17 +112,19 @@ class PerformanceAnalyzer:
         return float(returns.std() * np.sqrt(252))
 
     def calculate_sortino(
-        self, returns: pd.Series, risk_free: float = RF_ANNUAL
+        self, returns: pd.Series, risk_free: float | None = None
     ) -> float:
         """소르티노 비율 (하방 변동성 기반)
 
         Args:
             returns: 일별 수익률 Series
-            risk_free: 연간 무위험 수익률
+            risk_free: 연간 무위험 수익률 (None이면 settings에서 동적 참조)
 
         Returns:
             소르티노 비율
         """
+        if risk_free is None:
+            risk_free = settings.momentum.risk_free_rate
         if len(returns) < 2:
             return 0.0
 
@@ -278,7 +278,7 @@ class PerformanceAnalyzer:
         return portfolio_values.pct_change(window).dropna()
 
     def rolling_sharpe(
-        self, returns: pd.Series, window: int = 252, risk_free: float = RF_ANNUAL
+        self, returns: pd.Series, window: int = 252, risk_free: float | None = None
     ) -> pd.Series:
         """롤링 샤프 비율
 
@@ -293,6 +293,8 @@ class PerformanceAnalyzer:
         if len(returns) < window:
             return pd.Series(dtype=float)
 
+        if risk_free is None:
+            risk_free = settings.momentum.risk_free_rate
         rf_daily = risk_free / 252
         excess = returns - rf_daily
         roll_mean = excess.rolling(window).mean()
@@ -566,7 +568,7 @@ class PerformanceAnalyzer:
         self,
         portfolio_values: pd.Series,
         returns: pd.Series,
-        risk_free: float = RF_ANNUAL,
+        risk_free: float | None = None,
         benchmark_values: pd.Series | None = None,
         benchmark_returns: pd.Series | None = None,
     ) -> dict:

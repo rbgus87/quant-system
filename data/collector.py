@@ -202,8 +202,26 @@ class KRXDataCollector:
             except Exception as e:
                 logger.warning(f"KRX API 종목 조회 실패: {e}")
 
-        # pykrx 배치 API는 KRX Data Marketplace 로그인 필수화(2025-12-27~)로 차단됨
-        logger.warning(f"[{date}] {market} 종목 조회 실패: KRX API 미사용 가능")
+        # KRX API 실패 → DB에서 가장 최근 유니버스 폴백 (생존자 편향 방지)
+        try:
+            recent_caps = self.storage.load_market_caps(
+                _parse_date(date), market=market
+            )
+            if not recent_caps.empty:
+                tickers = recent_caps.index.tolist()
+                rows = [
+                    {"ticker": t, "name": self.get_ticker_name(t) or t, "market": market}
+                    for t in tickers
+                ]
+                logger.warning(
+                    f"[{date}] {market} 종목 DB 폴백: {len(rows)}개 "
+                    f"(KRX API 실패, 직전 시가총액 데이터 사용)"
+                )
+                return pd.DataFrame(rows)
+        except Exception as e2:
+            logger.warning(f"DB 폴백 실패: {e2}")
+
+        logger.warning(f"[{date}] {market} 종목 조회 실패: KRX API 및 DB 폴백 모두 불가")
         return pd.DataFrame()
 
     # ───────────────────────────────────────────────

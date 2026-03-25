@@ -6,6 +6,28 @@ from unittest.mock import patch, MagicMock
 from strategy.screener import MultiFactorScreener
 
 
+class TestReportingLag:
+    """Reporting Lag 처리 테스트"""
+
+    def test_jan_uses_two_years_ago(self) -> None:
+        """1~3월 리밸런싱 → 전전년도 데이터"""
+        assert MultiFactorScreener._get_effective_fundamental_date("20240229") == "20221231"
+        assert MultiFactorScreener._get_effective_fundamental_date("20240115") == "20221231"
+        assert MultiFactorScreener._get_effective_fundamental_date("20240331") == "20221231"
+
+    def test_apr_uses_prev_year(self) -> None:
+        """4월 리밸런싱 → 전년도 데이터"""
+        assert MultiFactorScreener._get_effective_fundamental_date("20240430") == "20231231"
+
+    def test_dec_uses_prev_year(self) -> None:
+        """12월 리밸런싱 → 전년도 데이터"""
+        assert MultiFactorScreener._get_effective_fundamental_date("20241231") == "20231231"
+
+    def test_jun_uses_prev_year(self) -> None:
+        """6월 리밸런싱 → 전년도 데이터"""
+        assert MultiFactorScreener._get_effective_fundamental_date("20240628") == "20231231"
+
+
 class TestMultiFactorScreener:
     """MultiFactorScreener 통합 테스트 (mock 기반)"""
 
