@@ -117,17 +117,15 @@ class MultiFactorScreener:
                 return portfolio
 
             # 1. 데이터 수집 (ALL = KOSPI+KOSDAQ 통합)
+            # Reporting Lag는 DART 내부(_determine_report_period)에서 자동 처리됨
+            # screener에서는 당일(date) 기준으로 조회 (종가/주식수 = 당일, 재무 = DART 래그 적용)
             markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
-            effective_date = self._get_effective_fundamental_date(date)
-            logger.info(
-                f"[{date}] 스크리닝 시작 — {'+'.join(markets)}, "
-                f"재무데이터={effective_date} (Reporting Lag)"
-            )
+            logger.info(f"[{date}] 스크리닝 시작 — {'+'.join(markets)}")
 
             fundamentals_list = []
             market_cap_list = []
             for m in markets:
-                f = self.collector.get_fundamentals_all(effective_date, m)
+                f = self.collector.get_fundamentals_all(date, m)
                 if not f.empty:
                     fundamentals_list.append(f)
                 mc = self.collector.get_market_cap(date, m)
@@ -147,9 +145,8 @@ class MultiFactorScreener:
                         f"[{date}] 데이터 없음 → "
                         f"직전 영업일 {fallback_date} 폴백 (시도 {attempt + 1}/5)"
                     )
-                    fallback_effective = self._get_effective_fundamental_date(fallback_date)
                     for m in markets:
-                        f = self.collector.get_fundamentals_all(fallback_effective, m)
+                        f = self.collector.get_fundamentals_all(fallback_date, m)
                         if not f.empty:
                             fundamentals_list.append(f)
                         mc = self.collector.get_market_cap(fallback_date, m)
