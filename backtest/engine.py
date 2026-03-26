@@ -682,11 +682,23 @@ class MultiFactorBacktest:
         Returns:
             매매 후 현금 잔액
         """
-        # 비중 리밸런싱 주문 계산 (기존 보유종목 포함 재조정)
+        # 비중 리밸런싱 주문 계산
         old_tickers = set(holdings.keys())
-        orders = self.rebalancer.compute_weight_rebalance(
-            holdings, new_tickers, prices, rebal_value
-        )
+        if settings.portfolio.weight_method == "value_weighted":
+            # 시가총액 가중: 시총 데이터 조회
+            from data.collector import _parse_date
+            dt = _parse_date(date_str)
+            mc_df = self.krx.storage.load_market_caps(dt)
+            market_caps = {}
+            if not mc_df.empty and "market_cap" in mc_df.columns:
+                market_caps = mc_df["market_cap"].to_dict()
+            orders = self.rebalancer.compute_value_weighted_rebalance(
+                holdings, new_tickers, prices, rebal_value, market_caps
+            )
+        else:
+            orders = self.rebalancer.compute_weight_rebalance(
+                holdings, new_tickers, prices, rebal_value
+            )
 
         # 턴오버 기록
         new_set = set(new_tickers)

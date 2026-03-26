@@ -139,6 +139,86 @@ class Rebalancer:
 
         return orders
 
+    def compute_value_weighted_rebalance(
+        self,
+        current_holdings: dict[str, int],
+        target_tickers: list[str],
+        prices: dict[str, float],
+        total_value: float,
+        market_caps: dict[str, float],
+    ) -> dict[str, int]:
+        """시가총액 가중 리밸런싱 주문 계산
+
+        각 종목의 시가총액 비중으로 목표 비중을 결정합니다.
+        max_position_pct로 단일 종목 비중 상한을 적용합니다.
+
+        Args:
+            current_holdings: 현재 보유 {ticker: shares}
+            target_tickers: 목표 종목 코드 리스트
+            prices: 종목별 체결 가격 {ticker: price}
+            total_value: 총 포트폴리오 가치
+            market_caps: 종목별 시가총액 {ticker: cap}
+
+        Returns:
+            {ticker: delta_shares}
+        """
+        target_set = set(target_tickers)
+        if not target_set:
+            return {t: -s for t, s in current_holdings.items() if s > 0}
+
+        # 가격 + 시총 모두 있는 종목만
+        valid = [
+            t for t in target_tickers
+            if prices.get(t, 0) > 0 and market_caps.get(t, 0) > 0
+        ]
+        if not valid:
+            return {}
+
+        # 시총 비중 계산 + max_position_pct 상한 적용
+        caps = {t: market_caps[t] for t in valid}
+        total_cap = sum(caps.values())
+        raw_weights = {t: c / total_cap for t, c in caps.items()}
+
+        max_w = self.cfg.max_position_pct
+        capped_weights: dict[str, float] = {}
+        excess = 0.0
+        uncapped: list[str] = []
+
+        for t, w in raw_weights.items():
+            if w > max_w:
+                capped_weights[t] = max_w
+                excess += w - max_w
+            else:
+                uncapped.append(t)
+                capped_weights[t] = w
+
+        # 초과분을 uncapped 종목에 비례 재분배
+        if excess > 0 and uncapped:
+            uncapped_total = sum(capped_weights[t] for t in uncapped)
+            if uncapped_total > 0:
+                for t in uncapped:
+                    capped_weights[t] += excess * (capped_weights[t] / uncapped_total)
+
+        orders: dict[str, int] = {}
+
+        # 퇴출 종목 전량 매도
+        for ticker, shares in current_holdings.items():
+            if ticker not in target_set and shares > 0:
+                orders[ticker] = -shares
+
+        # 목표 비중대로 주식 수 계산
+        for ticker in valid:
+            weight = capped_weights.get(ticker, 0)
+            target_amount = total_value * weight
+            price = prices[ticker]
+            target_shares = self.calc_buy_shares(target_amount, price)
+            current_shares = current_holdings.get(ticker, 0)
+            delta = target_shares - current_shares
+            if delta != 0:
+                orders[ticker] = delta
+
+        return orders
+
     def calc_sell_proceed(self, price: float, shares: int) -> float:
         """매도 수익금 계산 (수수료 + 세금 + 슬리피지 차감)
 
