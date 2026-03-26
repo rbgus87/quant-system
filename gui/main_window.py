@@ -197,12 +197,32 @@ class MainWindow(QMainWindow):
         )
         self._scheduler_panel.status_changed.connect(self._update_tray_tooltip)
 
+        # 프리셋 변경 시 상태바 업데이트
+        self._preset_panel.preset_changed.connect(self._on_preset_changed)
+        self._update_status_bar_strategy()
+
         # 키보드 단축키
         QShortcut(QKeySequence("Ctrl+R"), self, self._scheduler_panel.start_scheduler)
         QShortcut(QKeySequence("Ctrl+T"), self, self._toggle_theme)
         QShortcut(QKeySequence("Ctrl+L"), self, self._log_viewer.clear)
         QShortcut(QKeySequence("Ctrl+F"), self, self._log_viewer.focus_search)
         QShortcut(QKeySequence("F5"), self, self._portfolio_view.refresh)
+
+    def _on_preset_changed(self, preset: str, sizing: str) -> None:
+        """프리셋 변경 시 상태바 업데이트"""
+        self._update_status_bar_strategy()
+        # 스케줄러 패널의 다음 리밸런싱 정보도 갱신
+        self._scheduler_panel._update_buttons()
+
+    def _update_status_bar_strategy(self) -> None:
+        """상태바에 현재 전략 요약 표시"""
+        preset = self._preset_panel.current_preset()
+        sizing = self._preset_panel.current_sizing()
+        summary = self._preset_panel.strategy_summary
+        if summary:
+            self._status_widget.set_strategy_info(f"{preset} | {summary}")
+        else:
+            self._status_widget.set_strategy_info(f"프리셋 {preset} / {sizing}")
 
     def _check_critical_error(self, line: str) -> None:
         """매매/API 관련 심각한 에러 발생 시 팝업 알림"""

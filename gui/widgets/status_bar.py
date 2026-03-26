@@ -28,6 +28,14 @@ class StatusBarWidget(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
 
+        self._strategy_label = QLabel("")
+        self._strategy_label.setStyleSheet("color: #4DABF7; font-size: 11px;")
+        layout.addWidget(self._strategy_label)
+
+        separator1 = QLabel("|")
+        separator1.setStyleSheet("color: gray;")
+        layout.addWidget(separator1)
+
         self._scheduler_status = QLabel("스케줄러: 중지")
         layout.addWidget(self._scheduler_status)
 
@@ -77,6 +85,10 @@ class StatusBarWidget(QWidget):
         else:
             self._market_label.setText("장 마감")
             self._market_label.setStyleSheet("color: gray;")
+
+    def set_strategy_info(self, info: str) -> None:
+        """전략 요약 정보를 상태바에 표시"""
+        self._strategy_label.setText(info)
 
     def _update_trading_mode(self) -> None:
         """모의/실전 투자 모드 표시"""

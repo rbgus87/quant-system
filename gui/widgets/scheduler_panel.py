@@ -4,6 +4,7 @@
 import logging
 import os
 import sys
+from datetime import datetime, timedelta
 from typing import Optional
 
 from PyQt6.QtCore import QProcess, QTimer, pyqtSignal
@@ -229,17 +230,59 @@ class SchedulerPanel(QWidget):
         if running:
             self._status_label.setText("실행 중")
             self._status_label.setStyleSheet("font-weight: bold; color: green;")
-            self._next_run_label.setText(
-                "08:50 리밸런싱 | 15:15 방어 체크 | 15:35 리포트"
-            )
+            self._next_run_label.setText(self._build_schedule_info())
         else:
             self._status_label.setText("중지됨")
             self._status_label.setStyleSheet("font-weight: bold; color: gray;")
-            self._next_run_label.setText("")
+            # 중지 상태에서도 다음 리밸런싱 정보 표시
+            self._next_run_label.setText(self._build_schedule_info())
 
     def _check_status(self) -> None:
         """프로세스 상태 주기적 확인"""
         self._update_buttons()
+
+    def _build_schedule_info(self) -> str:
+        """리밸런싱 빈도 + 다음 예정일 + 모드 정보 문자열"""
+        try:
+            from config.settings import settings
+
+            freq = settings.portfolio.rebalance_frequency
+            is_paper = os.getenv("IS_PAPER_TRADING", "true").lower() == "true"
+            mode = "모의투자" if is_paper else "실전투자"
+
+            if freq == "quarterly":
+                freq_desc = "분기 리밸런싱 (3/6/9/12월)"
+            else:
+                freq_desc = "월간 리밸런싱 (매월)"
+
+            next_date = self._calc_next_rebalance_date(freq)
+            next_str = next_date if next_date else "계산 불가"
+            return f"[{mode}] {freq_desc} | 다음: {next_str}"
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _calc_next_rebalance_date(freq: str) -> str:
+        """다음 리밸런싱 예정일 계산"""
+        try:
+            from config.calendar import get_krx_month_end_sessions
+
+            now = datetime.now()
+            # 앞으로 6개월 범위에서 월말 영업일 탐색
+            end = now + timedelta(days=200)
+            month_ends = get_krx_month_end_sessions(
+                now.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+            )
+            for dt in month_ends:
+                if dt.date() < now.date():
+                    continue
+                if freq == "quarterly" and dt.month not in (3, 6, 9, 12):
+                    continue
+                weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][dt.weekday()]
+                return f"{dt.strftime('%Y-%m-%d')} ({weekday_kr}) 08:50"
+        except Exception:
+            pass
+        return ""
 
     def cleanup(self) -> None:
         """앱 종료 시 프로세스 정리"""

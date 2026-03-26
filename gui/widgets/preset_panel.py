@@ -31,6 +31,12 @@ STRATEGY_PRESETS = {
 SIZING_PRESETS = ["소액", "중액", "대액", "거액"]
 
 
+REBAL_FREQ_OPTIONS = [
+    ("quarterly", "분기 (3,6,9,12월)"),
+    ("monthly", "월간 (매월)"),
+]
+
+
 class PresetPanel(QWidget):
     """프리셋 선택 및 적용 위젯"""
 
@@ -95,6 +101,27 @@ class PresetPanel(QWidget):
         group_layout.addWidget(self._nstocks_hint)
         self._nstocks_spin.valueChanged.connect(self._update_nstocks_hint)
 
+        # 리밸런싱 빈도
+        row_freq = QHBoxLayout()
+        row_freq.addWidget(QLabel("리밸런싱:"))
+        self._freq_combo = QComboBox()
+        for key, desc in REBAL_FREQ_OPTIONS:
+            self._freq_combo.addItem(desc, key)
+        row_freq.addWidget(self._freq_combo, 1)
+        group_layout.addLayout(row_freq)
+
+        # 전략 요약 라벨
+        self._summary_label = QLabel("")
+        self._summary_label.setStyleSheet(
+            "color: #4DABF7; font-size: 11px; padding: 4px; "
+            "border: 1px solid #4DABF7; border-radius: 3px;"
+        )
+        self._summary_label.setWordWrap(True)
+        group_layout.addWidget(self._summary_label)
+
+        # 프리셋 변경 시 요약 자동 업데이트
+        self._strategy_combo.currentIndexChanged.connect(self._update_summary)
+
         # 적용 버튼
         row3 = QHBoxLayout()
         row3.addStretch()
@@ -137,6 +164,17 @@ class PresetPanel(QWidget):
             self._nstocks_spin.setValue(n_stocks)
             self._update_nstocks_hint(n_stocks)
 
+            # 리밸런싱 빈도
+            freq = (
+                data.get("portfolio", {}).get("rebalance_frequency")
+                or data.get("presets", {}).get(preset, {}).get("portfolio", {}).get("rebalance_frequency")
+                or "quarterly"
+            )
+            idx = self._freq_combo.findData(freq)
+            if idx >= 0:
+                self._freq_combo.setCurrentIndex(idx)
+
+            self._update_summary()
             self._status_label.setText(f"현재: {preset} / {sizing} / {n_stocks}종목")
         except Exception as e:
             logger.warning(f"config.yaml 로드 실패: {e}")
@@ -149,6 +187,7 @@ class PresetPanel(QWidget):
         preset = self._strategy_combo.currentData()
         sizing = self._sizing_combo.currentData()
         n_stocks = self._nstocks_spin.value()
+        freq = self._freq_combo.currentData()
 
         try:
             with open(self._config_path, encoding="utf-8") as f:
@@ -167,6 +206,21 @@ class PresetPanel(QWidget):
                 content,
                 flags=re.MULTILINE,
             )
+
+            # 리밸런싱 빈도 오버라이드
+            if re.search(r"^portfolio:\s*\n(?:\s+\S.*\n)*\s+rebalance_frequency:", content, re.MULTILINE):
+                content = re.sub(
+                    r"(rebalance_frequency:\s*)\"?\w+\"?",
+                    rf'\1"{freq}"',
+                    content,
+                )
+            elif re.search(r"^portfolio:\s*\n", content, re.MULTILINE):
+                content = re.sub(
+                    r"^(portfolio:\s*\n)",
+                    rf'\1  rebalance_frequency: "{freq}"\n',
+                    content,
+                    flags=re.MULTILINE,
+                )
 
             # n_stocks 개별 오버라이드 (sizing 프리셋의 기본값과 다를 때만)
             data = yaml.safe_load(content) or {}
@@ -244,6 +298,34 @@ class PresetPanel(QWidget):
                 f"{sizing} 기본값: {preset_n}개 (커스텀)"
             )
             self._nstocks_hint.setStyleSheet("color: #4DABF7; font-size: 10px;")
+
+    def _update_summary(self) -> None:
+        """현재 프리셋의 전략 요약을 표시"""
+        preset = self._strategy_combo.currentData()
+        try:
+            with open(self._config_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            preset_data = data.get("presets", {}).get(preset, {})
+            fw = preset_data.get("factor_weights", {})
+            v = int(fw.get("value", 0) * 100)
+            m = int(fw.get("momentum", 0) * 100)
+            q = int(fw.get("quality", 0) * 100)
+            vol = int(preset_data.get("volatility", {}).get("max_percentile", 80))
+            fscore = preset_data.get("quality", {}).get("min_fscore", 4)
+            n = self._nstocks_spin.value()
+            freq = self._freq_combo.currentData() or "quarterly"
+            freq_label = "분기" if freq == "quarterly" else "월간"
+            self._summary_label.setText(
+                f"V{v}% M{m}% Q{q}% | Vol{vol} | "
+                f"{freq_label} | {n}종목 | F-Score>={fscore}"
+            )
+        except Exception:
+            self._summary_label.setText("")
+
+    @property
+    def strategy_summary(self) -> str:
+        """상태바용 전략 요약 문자열"""
+        return self._summary_label.text()
 
     def current_preset(self) -> str:
         return self._strategy_combo.currentData()

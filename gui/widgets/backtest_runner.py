@@ -60,6 +60,15 @@ class BacktestRunner(QWidget):
         self._end_edit.setMaximumWidth(140)
         period_row.addWidget(self._end_edit)
 
+        period_row.addWidget(QLabel("프리셋:"))
+        self._preset_combo = QComboBox()
+        self._preset_combo.addItem("현재 설정", "")
+        self._preset_combo.addItem("A: 핵심 추천", "A")
+        self._preset_combo.addItem("B: 보수적", "B")
+        self._preset_combo.addItem("C: 공격적", "C")
+        self._preset_combo.setMaximumWidth(150)
+        period_row.addWidget(self._preset_combo)
+
         period_row.addWidget(QLabel("초기자본:"))
         self._cash_edit = QLineEdit("10,000,000")
         self._cash_edit.setMaximumWidth(120)
@@ -149,6 +158,9 @@ class BacktestRunner(QWidget):
             "--cash", cash,
             "--auto-lead",
         ]
+        preset = self._preset_combo.currentData()
+        if preset:
+            args.extend(["--preset", preset])
         self._process.start(python, args)
 
     def _stop_backtest(self) -> None:
@@ -177,6 +189,15 @@ class BacktestRunner(QWidget):
         if exit_code == 0:
             self._status_label.setText("완료")
             self._status_label.setStyleSheet("color: green; font-weight: bold;")
+            # 결과 요약 하이라이트
+            summary = self._extract_result_summary()
+            if summary:
+                self._output.moveCursor(self._output.textCursor().MoveOperation.Start)
+                self._output.insertHtml(
+                    f"<div style='background:#1a3a5c; color:#4DABF7; padding:6px; "
+                    f"margin-bottom:4px; border-radius:3px; font-weight:bold;'>"
+                    f"{summary}</div><br>"
+                )
             # 리포트 경로 탐색
             self._report_path = self._find_report_path()
             if self._report_path:
@@ -213,6 +234,32 @@ class BacktestRunner(QWidget):
         if self._report_path and os.path.exists(self._report_path):
             import webbrowser
             webbrowser.open(f"file:///{self._report_path}")
+
+    def _extract_result_summary(self) -> str:
+        """백테스트 출력에서 핵심 성과 지표를 추출"""
+        import re
+
+        cagr = mdd = sharpe = ""
+        for line in self._output_lines:
+            if m := re.search(r"CAGR[:\s]+([-\d.]+)%", line):
+                cagr = m.group(1) + "%"
+            if m := re.search(r"MDD[:\s]+([-\d.]+)%", line):
+                mdd = m.group(1) + "%"
+            if m := re.search(r"[Ss]harpe[:\s]+([-\d.]+)", line):
+                sharpe = m.group(1)
+            # 총 수익률 라인에서도 추출
+            if m := re.search(r"총 수익률[:\s]+([-\d.]+)%", line, re.IGNORECASE):
+                if not cagr:
+                    cagr = m.group(1) + "% (total)"
+
+        parts = []
+        if cagr:
+            parts.append(f"CAGR: {cagr}")
+        if mdd:
+            parts.append(f"MDD: {mdd}")
+        if sharpe:
+            parts.append(f"Sharpe: {sharpe}")
+        return " | ".join(parts) if parts else ""
 
     def _format_cash(self) -> None:
         """초기자본 천 단위 콤마 포맷"""
