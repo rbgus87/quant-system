@@ -329,7 +329,7 @@ class DataStorage:
         conflict_cols: list[str],
         update_cols: list[str],
     ) -> None:
-        """공통 upsert 실행
+        """공통 upsert 실행 (SQLite 변수 제한 999 대응 — 자동 청크 분할)
 
         Args:
             model: SQLAlchemy ORM 모델 클래스
@@ -337,13 +337,22 @@ class DataStorage:
             conflict_cols: 충돌 판단 컬럼 (index_elements)
             update_cols: 충돌 시 갱신할 컬럼
         """
+        if not rows:
+            return
+
+        # SQLite 변수 제한: 한 행당 컬럼 수 × 행 수 < 999
+        cols_per_row = len(rows[0])
+        chunk_size = max(1, 900 // cols_per_row)
+
         with self.SessionLocal() as session:
-            stmt = sqlite_insert(model).values(rows)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=conflict_cols,
-                set_={col: getattr(stmt.excluded, col) for col in update_cols},
-            )
-            session.execute(stmt)
+            for i in range(0, len(rows), chunk_size):
+                chunk = rows[i:i + chunk_size]
+                stmt = sqlite_insert(model).values(chunk)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=conflict_cols,
+                    set_={col: getattr(stmt.excluded, col) for col in update_cols},
+                )
+                session.execute(stmt)
             session.commit()
 
     def _df_to_rows(
