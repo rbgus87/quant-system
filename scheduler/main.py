@@ -232,16 +232,29 @@ def run_monthly_rebalancing() -> None:
     """월말 리밸런싱 실행 (스케줄러 호출)
 
     - 영업일이 아니거나 월말이 아니면 스킵
+    - quarterly 모드일 때 3/6/9/12월만 실행 (백테스트 엔진과 동일)
     - 리밸런싱 실패 시 최대 2회 재시도 (30분, 60분 후)
     - 최종 실패 시 텔레그램 에러 알림
     """
     if not (is_business_day() and is_last_business_day_of_month()):
         return
 
+    # 분기 리밸런싱: 3/6/9/12월만 실행
+    freq = settings.portfolio.rebalance_frequency
+    if freq == "quarterly":
+        current_month = datetime.now().month
+        if current_month not in (3, 6, 9, 12):
+            logger.info(
+                f"분기 리밸런싱 모드: {current_month}월은 리밸런싱 대상이 아닙니다 "
+                f"(3/6/9/12월만 실행)"
+            )
+            return
+
     logger.info("=" * 50)
-    logger.info("월말 리밸런싱 시작")
+    freq_label = "분기" if freq == "quarterly" else "월말"
+    logger.info(f"{freq_label} 리밸런싱 시작")
     notifier = TelegramNotifier()
-    notifier.send("[월말] 리밸런싱을 시작합니다...")
+    notifier.send(f"[{freq_label}] 리밸런싱을 시작합니다...")
 
     import time as _time
 
@@ -251,7 +264,7 @@ def run_monthly_rebalancing() -> None:
     for attempt in range(1 + max_retries):
         try:
             _execute_rebalancing_core(notifier)
-            logger.info("월말 리밸런싱 완료")
+            logger.info(f"{freq_label} 리밸런싱 완료")
             return
         except Exception as e:
             if attempt < max_retries:
@@ -557,8 +570,10 @@ def main() -> None:
         id="daily_report",
     )
 
+    freq = settings.portfolio.rebalance_frequency
+    freq_desc = "분기(3/6/9/12월)" if freq == "quarterly" else "월말"
     logger.info("스케줄러 시작 (Ctrl+C로 종료)")
-    logger.info("  08:50 월말 리밸런싱 | 15:15 방어 체크 | 15:35 일별 리포트")
+    logger.info(f"  08:50 {freq_desc} 리밸런싱 | 15:15 방어 체크 | 15:35 일별 리포트")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     TelegramNotifier().send(f"퀀트 스케줄러가 시작되었습니다.\n{now}")
 
