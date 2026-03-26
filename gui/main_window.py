@@ -26,9 +26,11 @@ from gui.tray_icon import TrayIcon
 from gui.widgets.backtest_runner import BacktestRunner
 from gui.widgets.chart_view import ChartView
 from gui.widgets.emergency_panel import EmergencyPanel
+from gui.widgets.factor_scores import FactorScores
 from gui.widgets.log_viewer import LogViewer
 from gui.widgets.portfolio_view import PortfolioView
 from gui.widgets.preset_panel import PresetPanel
+from gui.widgets.rebalance_history import RebalanceHistory
 from gui.widgets.scheduler_panel import SchedulerPanel
 from gui.widgets.status_bar import StatusBarWidget
 
@@ -113,6 +115,14 @@ class MainWindow(QMainWindow):
         auto_row.addStretch()
         portfolio_layout.addLayout(auto_row)
         self._tabs.addTab(portfolio_tab, "포트폴리오")
+
+        # 팩터 스코어 탭
+        self._factor_scores = FactorScores()
+        self._tabs.addTab(self._factor_scores, "팩터 스코어")
+
+        # 리밸런싱 이력 탭
+        self._rebalance_history = RebalanceHistory()
+        self._tabs.addTab(self._rebalance_history, "리밸런싱 이력")
 
         # 차트 탭
         self._chart_view = ChartView()
