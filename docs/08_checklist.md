@@ -63,7 +63,7 @@
   ■ 수익률 Winsorize 검증
 
 ■ factors/quality.py 작성 (QualityFactor.calculate)
-  ■ ROE(40%) + Earnings Yield(30%) + 배당(30%) + 부채비율(선택 20%)
+  ■ OP/A(40%) + EY(30%) + F-Score(30%) (v2.0: 복합 스코어 제외, F-Score>=4 필터 전용)
   ■ NaN-aware 가중 합산 (종목별 가용 가중치 정규화)
   ■ 자본잠식(BPS ≤ 0) 제거 확인
 

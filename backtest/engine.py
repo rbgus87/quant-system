@@ -1066,66 +1066,6 @@ class MultiFactorBacktest:
     # 내부 메서드
     # ─────────────────────────────────────────────
 
-    def _estimate_dividend_income(
-        self,
-        holdings: dict[str, int],
-        prices: dict[str, float],
-        date_str: str,
-        market: str,
-        cash: float,
-    ) -> float:
-        """[DEPRECATED v2.0] 월별 배당금 추정 - 한국 시장에 부적합
-
-        v2.0에서 비활성화됨. 한국 시장은 12월 결산 기업이 대부분이라
-        배당이 연 1회(3~4월) 집중됨. 월별 균등 배분(연간/12)은 현실과 괴리.
-        향후 DART 배당락일 데이터를 활용한 정확한 배당 반영 시 재활용 가능.
-
-        Args:
-            holdings: 보유 종목 {ticker: shares}
-            prices: 당일 시가 {ticker: price}
-            date_str: 기준 날짜 (YYYYMMDD)
-            market: 시장
-            cash: 현재 현금
-
-        Returns:
-            배당금 반영 후 현금
-        """
-        if not holdings:
-            return cash
-
-        try:
-            fundamentals = self.krx.get_fundamentals_all(date_str, market)
-            if fundamentals is None or fundamentals.empty:
-                return cash
-
-            total_div_income = 0.0
-            for ticker, shares in holdings.items():
-                if shares <= 0:
-                    continue
-                if ticker not in fundamentals.index:
-                    continue
-                div_yield = fundamentals.loc[ticker].get("DIV", 0)
-                if not div_yield or div_yield <= 0:
-                    continue
-                price = prices.get(ticker)
-                if not price or price <= 0:
-                    continue
-                # 연간 배당수익률 → 월간 배당금
-                monthly_div = price * shares * (div_yield / 100) / 12
-                total_div_income += monthly_div
-
-            if total_div_income > 0:
-                cash += total_div_income
-                logger.debug(
-                    f"[{date_str}] 배당금 추정: {total_div_income:,.0f}원 "
-                    f"({len(holdings)}종목 보유)"
-                )
-
-        except Exception as e:
-            logger.debug(f"[{date_str}] 배당금 추정 실패: {e}")
-
-        return cash
-
     def _calc_portfolio(self, date_str: str, market: str) -> list[str]:
         """T일 기준 팩터 계산 후 상위 N개 종목 반환
 

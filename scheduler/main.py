@@ -235,8 +235,8 @@ def _execute_rebalancing_core(
     )
 
 
-def run_monthly_rebalancing() -> None:
-    """월말 리밸런싱 실행 (스케줄러 호출)
+def run_scheduled_rebalancing() -> None:
+    """월말/분기 리밸런싱 실행 (스케줄러 호출)
 
     - 영업일이 아니거나 월말이 아니면 스킵
     - quarterly 모드일 때 3/6/9/12월만 실행 (백테스트 엔진과 동일)
@@ -551,12 +551,12 @@ def main() -> None:
     scheduler = BlockingScheduler(timezone="Asia/Seoul")
 
     scheduler.add_job(
-        run_monthly_rebalancing,
+        run_scheduled_rebalancing,
         trigger="cron",
         day_of_week="mon-fri",
         hour=8,
         minute=50,
-        id="monthly_rebalancing",
+        id="scheduled_rebalancing",
     )
 
     scheduler.add_job(

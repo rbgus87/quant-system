@@ -59,35 +59,35 @@ class TestIsBusinessDay:
         assert is_krx_business_day(date(2024, 9, 17)) is False
 
 
-class TestRunMonthlyRebalancing:
+class TestRunScheduledRebalancing:
     """월별 리밸런싱 작업 함수 테스트"""
 
     @patch("scheduler.main.is_last_business_day_of_month", return_value=False)
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_skip_if_not_last_bday(self, mock_bday, mock_last) -> None:
         """월말이 아니면 스킵"""
-        from scheduler.main import run_monthly_rebalancing
+        from scheduler.main import run_scheduled_rebalancing
 
         # 아무 것도 하지 않아야 함 (TelegramNotifier 미생성)
         with patch("scheduler.main.TelegramNotifier") as mock_notifier:
-            run_monthly_rebalancing()
+            run_scheduled_rebalancing()
             mock_notifier.assert_not_called()
 
     @patch("scheduler.main.is_last_business_day_of_month", return_value=True)
     @patch("scheduler.main.is_business_day", return_value=False)
     def test_skip_if_not_business_day(self, mock_bday, mock_last) -> None:
         """영업일이 아니면 스킵"""
-        from scheduler.main import run_monthly_rebalancing
+        from scheduler.main import run_scheduled_rebalancing
 
         with patch("scheduler.main.TelegramNotifier") as mock_notifier:
-            run_monthly_rebalancing()
+            run_scheduled_rebalancing()
             mock_notifier.assert_not_called()
 
     @patch("scheduler.main.is_last_business_day_of_month", return_value=True)
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_rebalancing_error_sends_telegram(self, mock_bday, mock_last) -> None:
         """리밸런싱 실패 시 텔레그램 에러 알림"""
-        from scheduler.main import run_monthly_rebalancing
+        from scheduler.main import run_scheduled_rebalancing
 
         mock_notifier_instance = MagicMock()
 
@@ -99,7 +99,7 @@ class TestRunMonthlyRebalancing:
                 side_effect=RuntimeError("API 연결 실패"),
             ):
                 with patch("time.sleep"):
-                    run_monthly_rebalancing()
+                    run_scheduled_rebalancing()
                     mock_notifier_instance.send_error.assert_called_once()
                     error_arg = mock_notifier_instance.send_error.call_args[0][0]
                     assert "API 연결 실패" in error_arg

@@ -183,7 +183,7 @@ class TestSchedulerTelegramFlow:
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_rebalancing_success_sends_report(self, mock_bday, mock_last) -> None:
         """리밸런싱 성공 → 텔레그램 리밸런싱 리포트 발송"""
-        from scheduler.main import run_monthly_rebalancing
+        from scheduler.main import run_scheduled_rebalancing
 
         mock_notifier = MagicMock()
         mock_api = MagicMock()
@@ -213,7 +213,7 @@ class TestSchedulerTelegramFlow:
                     ):
                         with patch("scheduler.main._save_screening_results"):
                             with patch("scheduler.main._calc_vol_target_scale", return_value=1.0):
-                                run_monthly_rebalancing()
+                                run_scheduled_rebalancing()
 
         # 시작 알림 + 결과 알림
         assert mock_notifier.send.called
@@ -223,7 +223,7 @@ class TestSchedulerTelegramFlow:
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_rebalancing_failure_sends_error(self, mock_bday, mock_last) -> None:
         """리밸런싱 실패 → 텔레그램 에러 알림"""
-        from scheduler.main import run_monthly_rebalancing
+        from scheduler.main import run_scheduled_rebalancing
 
         mock_notifier = MagicMock()
         mock_screener = MagicMock()
@@ -243,7 +243,7 @@ class TestSchedulerTelegramFlow:
                     {"strategy.screener": mock_screener_module},
                 ):
                     with patch("time.sleep"):
-                        run_monthly_rebalancing()
+                        run_scheduled_rebalancing()
 
         # 에러 알림 발송
         mock_notifier.send_error.assert_called_once()

@@ -1,6 +1,6 @@
 # 한국 주식 멀티팩터 퀀트 자동매매 시스템 — 개발 문서
 
-> **전략**: 2계층 프리셋 시스템 (전략 A~H + 금액 7단계) | KOSPI/KOSDAQ | 월 1회 자동 리밸런싱
+> **전략**: V70M30+Vol70 (전략 A/B/C 3개 + 금액 4단계) | KOSPI | 분기 리밸런싱
 > **개발 환경**: Python 3.14 + Claude Code CLI + 키움 REST API
 
 ---
@@ -22,7 +22,7 @@
 | `docs/09_investment_sizing.md` | 투자금별 최적 설정, 파라미터 가이드 |
 | `docs/10_factor_analysis.md` | 멀티팩터 구성 분석, 팩터 가중치 상세 |
 | `docs/11_mock_trading_test_plan.md` | 모의투자 검증 계획 |
-| `docs/12_preset_compatibility.md` | 전략 프리셋(A~H) + 금액 프리셋 궁합 분석 |
+| `docs/12_preset_compatibility.md` | 전략 프리셋 궁합 분석 (v1.1 기준, v2.0은 프리셋 A/B/C 3개) |
 | `docs/13_oracle_cloud_deployment.md` | Oracle Cloud Always Free 배포 가이드 |
 
 ---

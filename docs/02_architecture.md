@@ -12,11 +12,11 @@
 [factors/]
   value.py     → 밸류 스코어 (0~100)
   momentum.py  → 모멘텀 스코어 (0~100)
-  quality.py   → 퀄리티 스코어 (0~100)
+  quality.py   → 퀄리티 스코어 (OP/A + EY + F-Score, v2.0: 필터 전용)
      │
      ▼
 [factors/composite.py]
-  → 복합 스코어 = V×0.4 + M×0.4 + Q×0.2
+  → 복합 스코어 = V×0.7 + M×0.3 + Q×0.0 (v2.0)
   → 유니버스 필터 적용
   → 상위 30개 종목 선정
      │
@@ -38,7 +38,7 @@
           [dashboard/app.py]      → Streamlit 모니터링
           [gui/]                  → PyQt6 데스크탑 GUI
 
-[scheduler/main.py]  → 월말 자동 실행 트리거 (APScheduler)
+[scheduler/main.py]  → 분기/월말 자동 실행 트리거 (APScheduler)
 ```
 
 ---
