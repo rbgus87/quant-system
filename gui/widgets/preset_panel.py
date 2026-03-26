@@ -23,18 +23,12 @@ from PyQt6.QtWidgets import (
 logger = logging.getLogger(__name__)
 
 STRATEGY_PRESETS = {
-    "A": "균형 (40-40-20)",
-    "B": "순수 밸류 (70-10-20)",
-    "C": "모멘텀 중심 (15-70-15)",
-    "D": "고배당 방어 (50-10-40)",
-    "E": "소형 밸류 (60-30-10)",
-    "F": "올시즌 방어 (50-20-30)",
-    "G": "KOSDAQ 성장 (25-50-25)",
-    "H": "최소 변동성 (40-20-40)",
-    "I": "KOSDAQ 밸류 (60-15-25)",
+    "A": "핵심 추천 (V70-M30, Vol70)",
+    "B": "보수적 (V70-M30, Vol50)",
+    "C": "공격적 (V100, Vol70)",
 }
 
-SIZING_PRESETS = ["100만", "500만", "1000만", "3000만", "5000만", "1억", "5억"]
+SIZING_PRESETS = ["소액", "중액", "대액", "거액"]
 
 
 class PresetPanel(QWidget):
@@ -123,8 +117,8 @@ class PresetPanel(QWidget):
             with open(self._config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
 
-            preset = data.get("preset", "B")
-            sizing = data.get("sizing", "3000만")
+            preset = data.get("preset", "A")
+            sizing = data.get("sizing", "중액")
 
             idx = self._strategy_combo.findData(preset)
             if idx >= 0:
