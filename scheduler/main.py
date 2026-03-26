@@ -119,6 +119,13 @@ def _execute_rebalancing_core(
 
     start_ts = _time.monotonic()
 
+    # DB 백업 (리밸런싱 전 안전장치)
+    try:
+        storage = DataStorage()
+        storage.backup()
+    except Exception as e:
+        logger.warning(f"DB 백업 실패 (계속 진행): {e}")
+
     # 현재 잔고 조회 후 OrderExecutor에 총 평가금액 전달 (MDD 기준값)
     api = KiwoomRestClient()
     balance = api.get_balance()

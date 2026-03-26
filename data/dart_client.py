@@ -75,6 +75,44 @@ class DartClient:
         if not self.api_key:
             logger.warning("DART_API_KEY 미설정. .env 파일에 추가하세요.")
 
+    def _request_with_retry(
+        self,
+        url: str,
+        params: dict,
+        max_retries: int = 3,
+        timeout: int = 30,
+    ) -> requests.Response:
+        """HTTP GET 요청 + 지수 백오프 재시도
+
+        Args:
+            url: 요청 URL
+            params: 쿼리 파라미터
+            max_retries: 최대 재시도 횟수
+            timeout: 요청 타임아웃 (초)
+
+        Returns:
+            Response 객체
+
+        Raises:
+            requests.RequestException: 모든 재시도 실패 시
+        """
+        last_error: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, params=params, timeout=timeout)
+                resp.raise_for_status()
+                return resp
+            except (requests.RequestException, ConnectionError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    delay = 2 ** (attempt + 1)  # 2, 4, 8초
+                    logger.warning(
+                        f"DART API 재시도 {attempt + 1}/{max_retries}: {e} "
+                        f"({delay}초 후 재시도)"
+                    )
+                    time.sleep(delay)
+        raise last_error  # type: ignore[misc]
+
     def log_stats(self) -> None:
         """API 호출 통계 로그 출력"""
         total = self.api_call_count + self.cache_hit_count
@@ -126,12 +164,10 @@ class DartClient:
             return {}
 
         try:
-            resp = requests.get(
+            resp = self._request_with_retry(
                 f"{DART_BASE_URL}/corpCode.xml",
                 params={"crtfc_key": self.api_key},
-                timeout=30,
             )
-            resp.raise_for_status()
 
             with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
                 xml_data = zf.read(zf.namelist()[0])
@@ -316,7 +352,7 @@ class DartClient:
             주당 현금배당금 (원) 또는 None
         """
         try:
-            resp = requests.get(
+            resp = self._request_with_retry(
                 f"{DART_BASE_URL}/alotMatter.json",
                 params={
                     "crtfc_key": self.api_key,
@@ -326,7 +362,6 @@ class DartClient:
                 },
                 timeout=15,
             )
-            resp.raise_for_status()
             data = resp.json()
 
             if data.get("status") != "000":
@@ -589,7 +624,7 @@ class DartClient:
 
             try:
                 self.api_call_count += 1
-                resp = requests.get(
+                resp = self._request_with_retry(
                     f"{DART_BASE_URL}/fnlttMultiAcnt.json",
                     params={
                         "crtfc_key": self.api_key,
@@ -597,9 +632,7 @@ class DartClient:
                         "bsns_year": bsns_year,
                         "reprt_code": reprt_code,
                     },
-                    timeout=30,
                 )
-                resp.raise_for_status()
                 data = resp.json()
 
                 status = data.get("status", "")

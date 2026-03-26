@@ -43,6 +43,7 @@ class DailyPrice(Base):
     __table_args__ = (
         UniqueConstraint("ticker", "date", name="uq_daily_price_ticker_date"),
         Index("ix_daily_price_date_ticker", "date", "ticker"),
+        Index("ix_daily_price_ticker_date", "ticker", "date"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -57,7 +58,7 @@ class DailyPrice(Base):
 
 
 class Fundamental(Base):
-    """기본 지표 데이터 (PBR, PER, PCR, EPS, BPS, DIV)"""
+    """기본 지표 데이터 (PBR, PER, PCR, EPS, BPS, DIV + v2.0 확장)"""
 
     __tablename__ = "fundamental"
     __table_args__ = (
@@ -74,6 +75,13 @@ class Fundamental(Base):
     pcr = Column(Float)
     eps = Column(Float)
     div = Column(Float)
+    # v2.0 확장 필드
+    psr = Column(Float)                # 주가매출비율
+    revenue = Column(Float)            # 매출액
+    operating_income = Column(Float)   # 영업이익
+    total_assets = Column(Float)       # 총자산
+    opa = Column(Float)                # 영업이익/총자산 (OP/A)
+    data_source = Column(String(10), default="DART")  # 데이터 출처
 
 
 class MarketCap(Base):
@@ -140,6 +148,7 @@ class Trade(Base):
     commission = Column(Float)
     tax = Column(Float)
     is_paper = Column(Boolean, default=True)
+    rebalance_date = Column(Date, nullable=True, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
@@ -170,8 +179,10 @@ class DataStorage:
         Base.metadata.create_all(self.engine)
         self._migrate_fundamental_market_column()
         self._migrate_fundamental_pcr_column()
+        self._migrate_fundamental_v2_columns()
         self._migrate_daily_price_market_column()
         self._migrate_market_cap_market_column()
+        self._migrate_trade_rebalance_column()
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info(f"DB 연결: {path}")
 
@@ -234,6 +245,78 @@ class DataStorage:
                     logger.info("DB 마이그레이션: market_cap.market 컬럼 추가 완료")
         except Exception as e:
             logger.debug(f"market_cap 마이그레이션 스킵: {e}")
+
+    def _migrate_fundamental_v2_columns(self) -> None:
+        """기존 DB에 v2.0 fundamental 확장 컬럼이 없으면 추가"""
+        v2_cols = {
+            "psr": "FLOAT",
+            "revenue": "FLOAT",
+            "operating_income": "FLOAT",
+            "total_assets": "FLOAT",
+            "opa": "FLOAT",
+            "data_source": "VARCHAR(10) DEFAULT 'DART'",
+        }
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(fundamental)"))
+                existing = {row[1] for row in result}
+                added = []
+                for col, col_type in v2_cols.items():
+                    if col not in existing:
+                        conn.execute(
+                            text(f"ALTER TABLE fundamental ADD COLUMN {col} {col_type}")
+                        )
+                        added.append(col)
+                if added:
+                    conn.commit()
+                    logger.info(f"DB 마이그레이션: fundamental v2 컬럼 추가 ({', '.join(added)})")
+        except Exception as e:
+            logger.debug(f"fundamental v2 마이그레이션 스킵: {e}")
+
+    def _migrate_trade_rebalance_column(self) -> None:
+        """기존 DB에 trade.rebalance_date 컬럼이 없으면 추가"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(text("PRAGMA table_info(trade)"))
+                columns = {row[1] for row in result}
+                if "rebalance_date" not in columns:
+                    conn.execute(
+                        text("ALTER TABLE trade ADD COLUMN rebalance_date DATE")
+                    )
+                    conn.commit()
+                    logger.info("DB 마이그레이션: trade.rebalance_date 컬럼 추가 완료")
+        except Exception as e:
+            logger.debug(f"trade 마이그레이션 스킵: {e}")
+
+    def backup(self) -> str:
+        """DB 파일을 backups/ 디렉토리에 타임스탬프로 복사. 최근 5개만 유지.
+
+        Returns:
+            백업 파일 경로
+        """
+        import shutil
+        from pathlib import Path
+
+        db_path = Path(str(self.engine.url).replace("sqlite:///", ""))
+        if not db_path.exists():
+            logger.warning(f"DB 파일이 없습니다: {db_path}")
+            return ""
+
+        backup_dir = db_path.parent / "backups"
+        backup_dir.mkdir(exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"{db_path.stem}_{timestamp}{db_path.suffix}"
+        shutil.copy2(db_path, backup_path)
+        logger.info(f"DB 백업 완료: {backup_path}")
+
+        # 최근 5개만 유지
+        backups = sorted(backup_dir.glob(f"{db_path.stem}_*{db_path.suffix}"))
+        for old in backups[:-5]:
+            old.unlink()
+            logger.debug(f"오래된 백업 삭제: {old}")
+
+        return str(backup_path)
 
     # ───────────────────────────────────────────────
     # 내부 헬퍼
@@ -400,18 +483,31 @@ class DataStorage:
         tmp = tmp.rename(columns={tmp.columns[0]: "ticker"})
         tmp["date"] = dt
         tmp["market"] = market
-        col_map = {"BPS": "bps", "PER": "per", "PBR": "pbr", "PCR": "pcr", "EPS": "eps", "DIV": "div"}
+        col_map = {
+            "BPS": "bps", "PER": "per", "PBR": "pbr", "PCR": "pcr",
+            "EPS": "eps", "DIV": "div",
+            "PSR": "psr", "REVENUE": "revenue",
+            "OPERATING_INCOME": "operating_income",
+            "TOTAL_ASSETS": "total_assets", "OPA": "opa",
+            "DATA_SOURCE": "data_source",
+        }
+        all_db_cols = ["bps", "per", "pbr", "pcr", "eps", "div",
+                       "psr", "revenue", "operating_income", "total_assets", "opa", "data_source"]
         for old, new in col_map.items():
             if old in tmp.columns:
                 tmp[new] = tmp[old]
-            else:
+            elif new not in tmp.columns:
                 tmp[new] = None
-        rows = tmp[["ticker", "date", "market", "bps", "per", "pbr", "pcr", "eps", "div"]].to_dict("records")
+        present_cols = [c for c in all_db_cols if c in tmp.columns]
+        rows = tmp[["ticker", "date", "market"] + present_cols].to_dict("records")
 
+        update_cols = [c for c in present_cols if c != "data_source"]
+        if "data_source" in present_cols:
+            update_cols.append("data_source")
         self._upsert(
             Fundamental, rows,
             conflict_cols=["ticker", "date", "market"],
-            update_cols=["bps", "per", "pbr", "pcr", "eps", "div"],
+            update_cols=update_cols or ["bps", "per", "pbr", "pcr", "eps", "div"],
         )
 
         logger.info(f"기본 지표 저장: {dt} ({len(rows)}건)")
@@ -428,7 +524,9 @@ class DataStorage:
             DataFrame(index=ticker, columns=[BPS, PER, PBR, PCR, EPS, DIV])
         """
         sql = (
-            "SELECT ticker, bps AS BPS, per AS PER, pbr AS PBR, pcr AS PCR, eps AS EPS, div AS DIV "
+            "SELECT ticker, bps AS BPS, per AS PER, pbr AS PBR, pcr AS PCR, eps AS EPS, div AS DIV,"
+            " psr AS PSR, revenue AS REVENUE, operating_income AS OPERATING_INCOME,"
+            " total_assets AS TOTAL_ASSETS, opa AS OPA, data_source AS DATA_SOURCE "
             "FROM fundamental WHERE date = :dt AND (market = :market OR market IS NULL)"
         )
         with self.engine.connect() as conn:
@@ -687,6 +785,7 @@ class DataStorage:
         commission: float = 0.0,
         tax: float = 0.0,
         is_paper: bool = True,
+        rebalance_date: Optional[date] = None,
     ) -> None:
         """거래 이력 저장
 
@@ -700,6 +799,7 @@ class DataStorage:
             commission: 수수료
             tax: 거래세
             is_paper: 모의 거래 여부
+            rebalance_date: 리밸런싱 신호 날짜 (None이면 미연결)
         """
         with self.SessionLocal() as session:
             session.add(
@@ -713,6 +813,7 @@ class DataStorage:
                     commission=commission,
                     tax=tax,
                     is_paper=is_paper,
+                    rebalance_date=rebalance_date,
                 )
             )
             session.commit()
@@ -752,6 +853,7 @@ class DataStorage:
                     "commission": r.commission,
                     "tax": r.tax,
                     "is_paper": r.is_paper,
+                    "rebalance_date": r.rebalance_date,
                 }
                 for r in query.all()
             ]

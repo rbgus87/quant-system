@@ -163,7 +163,9 @@ class TestKRXDataCollector:
 
         df = self.collector.get_fundamentals_all("20240102", "KOSPI")
 
-        assert list(df.columns) == ["BPS", "PER", "PBR", "PCR", "EPS", "DIV"]
+        # v2.0 확장 필드 포함 (PSR, REVENUE, OPERATING_INCOME, TOTAL_ASSETS, OPA, DATA_SOURCE)
+        required_cols = {"BPS", "PER", "PBR", "PCR", "EPS", "DIV"}
+        assert required_cols.issubset(set(df.columns))
         assert df.index.name == "ticker"
         assert len(df) == 2
 
