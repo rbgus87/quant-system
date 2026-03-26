@@ -80,6 +80,33 @@ def run(
     )
 
 
+def _apply_preset(preset_name: str) -> None:
+    """config.yaml에서 프리셋을 읽어 settings에 적용
+
+    Args:
+        preset_name: 프리셋 이름 (A/B/C)
+    """
+    import yaml
+    from config.settings import _apply_section_data
+
+    config_path = os.environ.get("CONFIG_PATH", "config/config.yaml")
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.error(f"config.yaml 로드 실패: {e}")
+        return
+
+    presets = data.get("presets", {})
+    if preset_name not in presets:
+        logger.error(f"프리셋 '{preset_name}'이 config.yaml에 없습니다. 사용 가능: {list(presets.keys())}")
+        return
+
+    preset_data = presets[preset_name]
+    _apply_section_data(settings, preset_data)
+    logger.info(f"프리셋 '{preset_name}' 적용: {preset_data.get('factor_weights', {})}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="멀티팩터 퀀트 백테스트")
     parser.add_argument(
@@ -109,6 +136,12 @@ def main() -> None:
         help="start 날짜를 자동으로 1개월 앞당겨 첫 달부터 매매 결과 포함. "
         "예: --start 2025-01-01 --auto-lead → 내부적으로 2024-12-01 시작",
     )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        help="전략 프리셋 (A/B/C). 지정 시 config.yaml의 프리셋 설정으로 덮어쓰기",
+    )
     # config.yaml의 portfolio.initial_cash 사용 (기본 1000만원)
     default_cash = settings.portfolio.initial_cash
     parser.add_argument(
@@ -121,6 +154,10 @@ def main() -> None:
 
     setup_logging()
 
+    # 프리셋 적용
+    if args.preset:
+        _apply_preset(args.preset)
+
     if args.mode == "custom":
         if not args.start or not args.end:
             parser.error("--mode custom 사용 시 --start, --end 필수")
@@ -132,11 +169,12 @@ def main() -> None:
             start = lead_dt.strftime("%Y-%m-%d")
             logger.info(f"--auto-lead: 시작일 {args.start} → {start} (1개월 선행)")
 
+        preset_tag = f" [{args.preset}]" if args.preset else ""
         run(
             start_date=start,
             end_date=args.end,
             initial_cash=args.cash,
-            label=f"Custom ({args.start}~{args.end})",
+            label=f"Custom{preset_tag} ({args.start}~{args.end})",
             report_path="reports/custom_report.html",
         )
         return
