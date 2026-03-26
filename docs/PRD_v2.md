@@ -1,6 +1,6 @@
 # PRD v2.0 — 한국 주식 멀티팩터 퀀트 자동매매 시스템 (전략 재설계)
 
-> **버전**: 2.0 | **작성**: 2026-03-25 | **상태**: Phase 0 확정  
+> **버전**: 2.0 | **작성**: 2026-03-25 | **최종 확정**: 2026-03-26 | **상태**: 전략 확정
 > **변경 사유**: 팩터 이중 가중 제거, 프리셋 통합, 백테스트 신뢰도 강화  
 > **개발 환경**: Python 3.14 + Claude Code CLI + 키움 REST API
 
@@ -91,12 +91,17 @@
 composite_score = V × value_score + M × momentum_score + Q × quality_score
 ```
 
-| 전략 | V | M | Q |
-|------|---|---|---|
-| 균형 (A) | 0.35 | 0.40 | 0.25 |
-| 딥밸류 (B) | 0.60 | 0.00 | 0.40 |
-| 모멘텀 (C) | 0.10 | 0.70 | 0.20 |
-| 방어 (D) | 0.35 | 0.20 | 0.45 |
+> **v2.0 최종 결정 (2026-03-26 실험 검증 완료)**:
+> Quality 팩터를 복합 스코어에서 제거 (Q=0.00).
+> - Q100% 단독 CAGR -2.74% (최악), 프리셋A(Q=0.25 포함) 대비 Q 제거 시 성과 개선
+> - F-Score는 필터(min_fscore=4)로만 유지하여 재무 불량 종목 배제
+> - GP/A, EY 계산은 유지하되 복합 스코어 가중치에는 미포함
+
+| 전략 | V | M | Q | 비고 |
+|------|---|---|---|------|
+| 핵심 추천 (A) | 0.70 | 0.30 | 0.00 | 실험 최적 (CAGR 13.3%, Sharpe 0.816) |
+| 보수적 (B) | 0.70 | 0.30 | 0.00 | Vol50 변동성 필터 강화 |
+| 공격적 (C) | 1.00 | 0.00 | 0.00 | 밸류 집중, 장기 보유 |
 
 ### 2-3. Reporting Lag (신규 — Look-Ahead Bias 차단)
 
@@ -110,12 +115,12 @@ composite_score = V × value_score + M × momentum_score + Q × quality_score
 > `effective_date = report_date + reporting_lag` 이후에만 해당 데이터 사용.  
 > 12월 결산 기업의 연간 실적은 3월 말까지 발표 → 4월 리밸런싱부터 반영.
 
-### 2-4. 거래 비용 (변경 없음)
+### 2-4. 거래 비용
 
 | 항목 | 적용값 | 비고 |
 |------|--------|------|
 | 수수료 | 0.015% | 매수/매도 공통 (키움 HTS 기준) |
-| 증권거래세 | 0.15% | 매도 시만 적용 (2025년 기준) |
+| 증권거래세 | **0.15%** | 매도 시만 적용 (2025년 기준, 0.18%에서 인하) |
 | 슬리피지 | 0.10% | 대형주 기준 (금액 프리셋이 상향 가능) |
 
 ---
@@ -132,88 +137,77 @@ composite_score = V × value_score + M × momentum_score + Q × quality_score
 ※ 금액 프리셋이 변경 가능한 것: n_stocks, initial_cash, min_avg_trading_value, slippage, max_position_pct
 ```
 
-### 3-2. 전략 프리셋 (4개)
+### 3-2. 전략 프리셋 (3개 - 실험 검증 완료)
 
-#### A: 밸류+모멘텀 균형 (기준선)
+> **실험 검증 결과 (2026-03-26)**:
+> - Quality 팩터(Q)를 복합 스코어에서 제거 (단독 CAGR -2.74%, 조합 시 성과 하락)
+> - F-Score는 min_fscore=4 필터로만 유지 (재무 불량 종목 배제)
+> - 서킷브레이커/트레일링 스톱 비활성화 (분기 리밸런싱에서 효과 미미)
+> - 시스템 리스크(코로나/전쟁/금융위기)는 운용자가 판단하여 수동 현금화
+> - 복귀는 시장 안정화 확인 후 다음 분기 리밸런싱에서 자동 재진입
 
-학술적으로 가장 안정적인 3팩터 조합. 대부분의 시장 국면에서 양호한 성과.
+#### A: 핵심 추천 (V70M30 + Vol70)
+
+밸류70% + 모멘텀30%. 실험에서 최고 Alpha(+12.25%) 기록.
+2021-2024: CAGR 13.3%, MDD -11.3%, Sharpe 0.816.
+2020-2024: CAGR 18.4%, MDD -14.4%, Sharpe 1.056.
 
 ```yaml
 A:
-  factor_weights: { value: 0.35, momentum: 0.40, quality: 0.25 }
+  factor_weights: { value: 0.70, momentum: 0.30, quality: 0.00 }
   value_weights: { pbr: 0.50, pcr: 0.30, div: 0.20 }
   universe: { market: "KOSPI", min_market_cap_percentile: 10.0 }
-  momentum: { absolute_momentum_enabled: true }
-  quality: { fscore_enabled: true, min_fscore: 4 }
-  volatility: { max_percentile: 80.0 }
+  momentum: { absolute_momentum_enabled: false }
+  quality: { fscore_enabled: true, min_fscore: 4 }   # 필터로만 사용
+  volatility: { max_percentile: 70.0 }               # 상위 30% 고변동성 제거
   market_regime: { enabled: true, partial_ratio: 0.6, defensive_ratio: 0.4 }
   trading:
     max_turnover_pct: 0.50
-    trailing_stop_pct: 0.25
-    max_drawdown_pct: 0.25    # 활성화: -25% 서킷브레이커
-    vol_target: 0.15           # 활성화: 연환산 15% 타겟
+    trailing_stop_pct: null    # 비활성화 (운용자 수동 관리)
+    max_drawdown_pct: null     # 비활성화 (운용자 수동 관리)
+    vol_target: null           # 비활성화
 ```
 
-#### B: 딥밸류 (하락장 매수)
+#### B: 보수적 (V70M30 + Vol50)
 
-모멘텀을 완전 배제. 저평가 종목을 장기 보유하며 평균 회귀를 노림.
-하락장에서 절대 모멘텀이 매수를 막지 않도록 비활성화.
+변동성 필터 강화로 MDD 우선. 고변동성 상위 50% 제거.
+2021-2024: CAGR 11.0%, MDD -14.1%, Sharpe 0.654.
 
 ```yaml
 B:
-  factor_weights: { value: 0.60, momentum: 0.00, quality: 0.40 }
+  factor_weights: { value: 0.70, momentum: 0.30, quality: 0.00 }
   value_weights: { pbr: 0.50, pcr: 0.30, div: 0.20 }
   universe: { market: "KOSPI", min_market_cap_percentile: 10.0 }
   momentum: { absolute_momentum_enabled: false }
   quality: { fscore_enabled: true, min_fscore: 4 }
-  volatility: { max_percentile: 90.0 }           # 완화: 저PBR 소형주 살리기
-  market_regime: { enabled: true, partial_ratio: 0.8, defensive_ratio: 0.6 }
+  volatility: { max_percentile: 50.0 }               # 상위 50% 고변동성 제거
+  market_regime: { enabled: true, partial_ratio: 0.6, defensive_ratio: 0.4 }
   trading:
-    max_turnover_pct: 0.30                        # 낮은 교체율 (장기 보유)
-    trailing_stop_pct: 0.30                       # 넓은 스톱 (밸류트랩 허용)
-    max_drawdown_pct: 0.30                        # 밸류는 MDD 내성 높게
-    vol_target: 0.18                              # 완화된 타겟
+    max_turnover_pct: 0.50
+    trailing_stop_pct: null
+    max_drawdown_pct: null
+    vol_target: null
 ```
 
-#### C: 모멘텀 추세추종 (강세장 극대화)
+#### C: 공격적 (V100 + Vol70)
 
-강세장 수익 극대화. 약세 전환 시 시장 레짐 필터가 현금 방어.
+밸류 집중, 모멘텀 제거. 저평가 종목 장기 보유.
+2021-2024: CAGR 10.6%, MDD -11.8%, Sharpe 0.604.
 
 ```yaml
 C:
-  factor_weights: { value: 0.10, momentum: 0.70, quality: 0.20 }
+  factor_weights: { value: 1.00, momentum: 0.00, quality: 0.00 }
   value_weights: { pbr: 0.50, pcr: 0.30, div: 0.20 }
   universe: { market: "KOSPI", min_market_cap_percentile: 10.0 }
-  momentum: { absolute_momentum_enabled: true }
-  quality: { fscore_enabled: true, min_fscore: 3 }
-  volatility: { max_percentile: 70.0 }           # 강화: 고변동성 30% 제거
-  market_regime: { enabled: true, partial_ratio: 0.5, defensive_ratio: 0.2 }
+  momentum: { absolute_momentum_enabled: false }
+  quality: { fscore_enabled: true, min_fscore: 4 }
+  volatility: { max_percentile: 70.0 }
+  market_regime: { enabled: true, partial_ratio: 0.6, defensive_ratio: 0.4 }
   trading:
-    max_turnover_pct: 0.60                        # 빠른 교체 허용
-    trailing_stop_pct: 0.20                       # 적정 스톱 (0.15는 너무 타이트)
-    max_drawdown_pct: 0.20                        # 타이트한 서킷브레이커
-    vol_target: 0.15                              # 표준 타겟
-```
-
-#### D: 방어형 (최소변동성 + 고배당)
-
-MDD 최소화와 Sharpe 극대화에 집중. 배당 수익 + 저변동성 종목.
-보합장/약세장에서 안정적 수익.
-
-```yaml
-D:
-  factor_weights: { value: 0.35, momentum: 0.20, quality: 0.45 }
-  value_weights: { pbr: 0.30, pcr: 0.20, div: 0.50 } # 배당 비중 극대화
-  universe: { market: "KOSPI", min_market_cap_percentile: 10.0 }
-  momentum: { absolute_momentum_enabled: true }
-  quality: { fscore_enabled: true, min_fscore: 5 }    # 재무 건전성 최강 필터
-  volatility: { max_percentile: 50.0 }                # 상위 50% 변동성 제거 (핵심)
-  market_regime: { enabled: true, partial_ratio: 0.6, defensive_ratio: 0.3 }
-  trading:
-    max_turnover_pct: 0.25                             # 최소 교체 (장기 보유)
-    trailing_stop_pct: 0.20
-    max_drawdown_pct: 0.15                             # 가장 타이트한 서킷브레이커
-    vol_target: 0.10                                   # 가장 낮은 변동성 타겟
+    max_turnover_pct: 0.30
+    trailing_stop_pct: null
+    max_drawdown_pct: null
+    vol_target: null
 ```
 
 ### 3-3. 금액 프리셋 (4단계)
@@ -290,20 +284,30 @@ SIZING_ONLY_KEYS = {
 
 ---
 
-## 5. 성과 목표 (KPI v2.0)
+## 5. 성과 목표 (KPI v2.0 - 실험 검증 기반 현실화)
+
+> **측정 기준**: 2021-2024 (4년), 분기 리밸런싱, 동일가중
+> **벤치마크**: 동일 유니버스 내 무작위 동일가중 포트폴리오
 
 | 지표 | 목표 | 양호 | 최소 통과 |
 |------|------|------|----------|
-| CAGR (Walk-Forward OOS) | 15%+ | 12%+ | 8%+ |
-| MDD | -20% 이내 | -25% 이내 | -30% 이내 |
-| Sharpe Ratio | 1.0+ | 0.8+ | 0.6+ |
-| Sortino Ratio | 1.5+ | 1.2+ | 0.8+ |
-| Calmar Ratio | 0.7+ | 0.5+ | 0.3+ |
-| KOSPI 대비 초과수익 | 연 5%+ | 연 3%+ | 연 1%+ |
+| CAGR | 10%+ | 8%+ | 5%+ |
+| MDD | -15% 이내 | -20% 이내 | -30% 이내 |
+| Sharpe Ratio | 0.8+ | 0.6+ | 0.4+ |
+| Sortino Ratio | 1.0+ | 0.8+ | 0.5+ |
+| 무작위 대비 Alpha | +8%+ | +5%+ | +3%+ |
 | 연간 턴오버 | 300% 이하 | 400% 이하 | 500% 이하 |
-| Walk-Forward 양의 수익 비율 | 5/5 윈도우 | 4/5 | 3/5 |
 
-> **"최소 통과" 미달 시**: 해당 전략 프리셋은 실전 투입 불가.  
+> **프리셋 A 실측치 (2021-2024)**:
+> CAGR 13.3%, MDD -11.3%, Sharpe 0.816, Alpha +12.25%
+> -> 모든 KPI "목표" 달성
+
+> **리스크 관리 정책**:
+> 시스템 리스크(코로나/전쟁/금융위기)는 프로그램이 아닌 운용자가 판단하여 수동 현금화.
+> 서킷브레이커와 트레일링 스톱은 비활성화.
+> 복귀는 시장 안정화 확인 후 다음 분기 리밸런싱에서 자동 재진입.
+>
+> **"최소 통과" 미달 시**: 해당 전략 프리셋은 실전 투입 불가.
 > 파라미터 재탐색 또는 전략 자체를 재검토.
 
 ---

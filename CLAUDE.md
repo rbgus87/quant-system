@@ -66,19 +66,18 @@ quant-system/
 └── tests/                 ← 수술 대상 모듈에 대한 테스트 업데이트
 ```
 
-## v2.0 핵심 전략 파라미터
+## v2.0 핵심 전략 파라미터 (최종 확정 2026-03-26)
 
 ```python
-# === 팩터 구성 (v2.0 변경) ===
+# === 팩터 구성 (v2.0 최종) ===
 # Value: PBR(50%) + PCR(30%) + DIV(20%)    ← PER 제거, PCR 신규
 # Momentum: 12M(60%) + 6M(30%) + 3M(10%)   ← 변경 없음
-# Quality: GP/A(40%) + EY(30%) + F-Score(30%) ← ROE→GP/A, F-Score 강화
+# Quality: 복합 스코어에서 제거 (Q=0.00)    ← F-Score는 필터(min_fscore=4)로만 유지
 
-# === 프리셋 4개 ===
-# A(균형):    V=0.35 M=0.40 Q=0.25 | MDD서킷=-25% | vol_target=15%
-# B(딥밸류):  V=0.60 M=0.00 Q=0.40 | MDD서킷=-30% | vol_target=18%
-# C(모멘텀):  V=0.10 M=0.70 Q=0.20 | MDD서킷=-20% | vol_target=15%
-# D(방어):    V=0.35 M=0.20 Q=0.45 | MDD서킷=-15% | vol_target=10%
+# === 프리셋 3개 (실험 검증 완료) ===
+# A(핵심):    V=0.70 M=0.30 Q=0.00 | Vol70 | CB/TS OFF
+# B(보수적):  V=0.70 M=0.30 Q=0.00 | Vol50 | CB/TS OFF
+# C(공격적):  V=1.00 M=0.00 Q=0.00 | Vol70 | CB/TS OFF
 
 # === 금액 프리셋 4개 ===
 # 소액(~500만):  10종목, 유동성1억
@@ -86,10 +85,10 @@ quant-system/
 # 대액(5천~1억): 25종목, 유동성5억
 # 거액(3억~):    30종목, 유동성10억
 
-# === 리스크 관리 (v2.0 — 전 프리셋 활성화) ===
-# max_drawdown_pct: 0.15 ~ 0.30 (기존 0.99 비활성화 패턴 제거)
-# vol_target: 0.10 ~ 0.18 (기존 0.99 비활성화 패턴 제거)
-# trailing_stop_pct: 0.20 ~ 0.30 (C의 0.15는 과도 → 0.20으로 상향)
+# === 리스크 관리 (v2.0 최종) ===
+# max_drawdown_pct: null (비활성화 — 운용자 수동 관리)
+# vol_target: null (비활성화)
+# trailing_stop_pct: null (비활성화 — 분기 리밸런싱에서 효과 미미)
 
 # === Reporting Lag (v2.0 신규) ===
 # 연간 보고서: 결산월 + 3개월 후 사용 가능
@@ -97,7 +96,7 @@ quant-system/
 
 # === 거래 비용 ===
 COMMISSION = 0.00015   # 0.015%
-TAX = 0.0018           # 0.18% (매도만)
+TAX = 0.0015           # 0.15% (매도만, 2025년 기준)
 SLIPPAGE = 0.001       # 0.10% (금액 프리셋이 상향 가능)
 
 # === 배당 처리 (v2.0 변경) ===
@@ -116,28 +115,33 @@ SLIPPAGE = 0.001       # 0.10% (금액 프리셋이 상향 가능)
 - **환경 변수** `.env` 파일만, 코드 하드코딩 절대 금지
 - **null 비활성화**: `max_drawdown_pct: null`은 비활성화. `0.99` 패턴 사용 금지
 
-## 현재 수술 진행 상태
+## v2.0 수술 완료 상태 (2026-03-26 최종 확정)
 
-- [ ] Phase 1: 팩터 재구축
-  - [ ] value.py: PER → PCR 교체
-  - [ ] quality.py: ROE → GP/A, F-Score 강화 또는 제거
-  - [ ] momentum.py: 유효 데이터 기준 강화 (counts >= lookback × 0.7)
-  - [ ] processor.py: PCR 전처리 블록 추가
-  - [ ] 팩터 상관관계 검증 (Value-Quality 상관 < 0.5 확인)
-- [ ] Phase 2: 스크리너 + 백테스트 개선
-  - [ ] screener.py: Reporting Lag 처리
-  - [ ] collector.py: 생존자 편향 폴백 강화
-  - [ ] engine.py: Walk-Forward 기존 메서드 교체 (신규 아님)
-  - [ ] metrics.py: RF_ANNUAL 상수 → 동적 참조
-  - [ ] engine.py: 배당 추정 제거 (_estimate_dividend_income @deprecated)
-- [ ] Phase 3: 프리셋 정리 (config.yaml 4+4, settings.py 충돌 감지)
-- [ ] Phase 4: 통합 테스트
-  - [ ] vol_target 중복 제거 (scheduler ↔ engine → market_regime 공통화)
-  - [ ] screener 캐시 메모리 제한 (maxsize 24)
-  - [ ] 전 기간 백테스트 기준선 확보
-  - [ ] Walk-Forward 검증
-- [ ] Phase 5: 파라미터 Grid Search + 인접 안정성 검증
-- [ ] Phase 6: 프리셋 최종 확정 + 실전 준비
+- [x] Phase 1: 팩터 재구축
+  - [x] value.py: PER → PCR 교체
+  - [x] quality.py: ROE → GP/A, F-Score 강화 (복합스코어에서 Q 제거, 필터로만 유지)
+  - [x] momentum.py: 유효 데이터 기준 강화 (counts >= lookback × 0.7)
+  - [x] processor.py: PCR 전처리 블록 추가
+  - [x] 팩터 상관관계 검증 (Value-Quality 상관 < 0.5 확인)
+- [x] Phase 2: 스크리너 + 백테스트 개선
+  - [x] screener.py: Reporting Lag 처리
+  - [x] collector.py: 생존자 편향 폴백 강화
+  - [x] engine.py: Walk-Forward 기존 메서드 교체
+  - [x] metrics.py: RF_ANNUAL 상수 → 동적 참조
+  - [x] engine.py: 배당 추정 제거 (_estimate_dividend_income @deprecated)
+- [x] Phase 3: 프리셋 정리 (config.yaml 3+4, settings.py 충돌 감지)
+- [x] Phase 4: 통합 테스트
+  - [x] vol_target 중복 제거 (scheduler ↔ engine → market_regime 공통화)
+  - [x] screener 캐시 메모리 제한 (maxsize 24)
+  - [x] 전 기간 백테스트 기준선 확보
+  - [x] Walk-Forward 검증
+- [x] Phase 5: 파라미터 Grid Search + 인접 안정성 검증
+  - V/M/Q 가중치, 변동성 필터, CB/TS 조합 실험 완료
+  - 최적: V70M30 + Vol70, Quality 제거, CB/TS OFF
+- [x] Phase 6: 프리셋 최종 확정 + 실전 준비
+  - config.yaml: A(핵심)/B(보수)/C(공격) 3개 확정
+  - PRD_v2.md: KPI 현실화, 리스크 정책 추가
+  - 역검증(2017-2020 최악 구간): Alpha -0.74% (과적합 미미)
 
 ## 알려진 이슈 / 주의사항
 
@@ -146,9 +150,9 @@ SLIPPAGE = 0.001       # 0.10% (금액 프리셋이 상향 가능)
 - **GP/A 데이터**: DART 손익계산서 매출총이익. 없으면 매출액-매출원가로 계산
 - **F-Score 강화**: DART 전기 데이터 필요. 확보 불가 시 F-Score 제거하고 GP/A+EY로 재분배
 - **배당 추정 제거**: v2.0에서 `_estimate_dividend_income()` 비활성화. 한국형 배당 처리는 미래 과제
-- **RF_ANNUAL 고정 문제**: metrics.py에서 모듈 로드 시점 상수 → 동적 참조로 수정 필요
-- **vol_target 중복**: scheduler/main.py와 engine.py에 동일 로직 존재 → 공통 함수로 추출
-- **screener 캐시 누수**: _factor_cache에 maxsize 미설정 → 24개월분 제한 추가
+- **RF_ANNUAL**: metrics.py에서 동적 참조로 수정 완료
+- **vol_target**: market_regime.py 공통 함수로 추출 완료
+- **screener 캐시**: maxsize 24개월 제한 적용 완료
 - **GUI 모듈**: `gui/` 폴더는 현행 유지. 수술 범위 밖. PyQt 기반 데스크톱 인터페이스
 - **키움 REST API**: 토큰 응답 필드는 `"token"` (access_token 아님)
 - **pandas 2.2+**: `freq="BME"` deprecated → `pd.offsets.BMonthEnd()` 사용

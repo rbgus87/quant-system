@@ -1,5 +1,5 @@
 # ============================================================
-# 퀀트 전략 설정 파일 (v2.0)
+# 퀀트 전략 설정 파일 (v2.0 최종 확정)
 # 코드 변경 없이 전략 파라미터를 조정합니다.
 # API 키 등 비밀정보는 .env 파일에서 관리합니다.
 # ============================================================
@@ -12,16 +12,16 @@
 # ============================================================
 
 # === 활성 프리셋 ===
-# 전략: A(균형) B(딥밸류) C(모멘텀) D(방어)
+# 전략: A(핵심 추천) B(보수적) C(공격적)
 preset: "A"
 # 금액: 소액 / 중액 / 대액 / 거액
 sizing: "중액"
 
 # === 개별 덮어쓰기 (선택) ===
 # factor_weights:
-#   value: 0.35
-#   momentum: 0.40
-#   quality: 0.25
+#   value: 0.70
+#   momentum: 0.30
+#   quality: 0.00
 #
 # value_weights:
 #   pbr: 0.50
@@ -40,56 +40,32 @@ sizing: "중액"
 #
 # trading:
 #   tax_rate: 0.0015              # 거래세 0.15% (2025년 기준, 매도만)
-#   max_drawdown_pct: 0.25
-#   vol_target: 0.15
 
 # ============================================================
-# 전략 프리셋 (4개)
+# 전략 프리셋 (3개) - 실험 검증 완료 (2017-2024)
+#
+# 핵심 결정 (실험 근거):
+#   - Quality를 복합 스코어에서 제거 (Q=0.00)
+#     * Q100% CAGR -2.74% (최악), 프리셋A에 Q25% 포함 시 성과 하락
+#     * F-Score는 필터(min_fscore=4)로만 유지하여 재무 불량 종목 배제
+#   - V70M30이 최적 조합 (CAGR 13.3%, Sharpe 0.816, 2021-2024)
+#   - Vol70(상위 30% 고변동성 제거)이 Vol60/50보다 CAGR+Sharpe 최적
+#   - CB/트레일링 스톱 비활성화: 분기 리밸런싱에서는 효과 미미
+#     시스템 리스크(코로나/전쟁/금융위기)는 운용자가 수동 관리
 # ============================================================
 presets:
 
   # ----------------------------------------------------------
-  # A: 밸류+모멘텀 균형 (기준선)
-  # 학술적으로 가장 안정적인 3팩터 조합. 대부분의 시장 국면에서 양호한 성과.
+  # A: 핵심 추천 (V70M30 + Vol70)
+  # 밸류70% + 모멘텀30%. 실험에서 최고 Alpha(+12.25%) 기록.
+  # 2021-2024: CAGR 13.3%, MDD -11.3%, Sharpe 0.816
+  # 2020-2024: CAGR 18.4%, MDD -14.4%, Sharpe 1.056
   # ----------------------------------------------------------
   A:
     factor_weights:
-      value: 0.35
-      momentum: 0.40
-      quality: 0.25
-    value_weights:
-      pbr: 0.50
-      pcr: 0.30
-      div: 0.20
-    universe:
-      market: "KOSPI"
-      min_market_cap_percentile: 10.0
-    momentum:
-      absolute_momentum_enabled: true
-    quality:
-      fscore_enabled: true
-      min_fscore: 4
-    volatility:
-      max_percentile: 80.0
-    market_regime:
-      enabled: true
-      partial_ratio: 0.6
-      defensive_ratio: 0.4
-    trading:
-      max_turnover_pct: 0.50
-      trailing_stop_pct: 0.25
-      max_drawdown_pct: 0.25
-      vol_target: 0.15
-
-  # ----------------------------------------------------------
-  # B: 딥밸류 (하락장 매수)
-  # 모멘텀 완전 배제. 저평가 종목 장기 보유, 평균 회귀 전략.
-  # ----------------------------------------------------------
-  B:
-    factor_weights:
-      value: 0.60
-      momentum: 0.00
-      quality: 0.40
+      value: 0.70
+      momentum: 0.30
+      quality: 0.00
     value_weights:
       pbr: 0.50
       pcr: 0.30
@@ -103,27 +79,27 @@ presets:
       fscore_enabled: true
       min_fscore: 4
     volatility:
-      max_percentile: 90.0
+      max_percentile: 70.0
     market_regime:
       enabled: true
-      partial_ratio: 0.8
-      defensive_ratio: 0.6
+      partial_ratio: 0.6
+      defensive_ratio: 0.4
     trading:
-      max_turnover_pct: 0.30
-      trailing_stop_pct: 0.30
-      max_drawdown_pct: 0.30
-      vol_target: 0.18
+      max_turnover_pct: 0.50
+      trailing_stop_pct: null
+      max_drawdown_pct: null
+      vol_target: null
 
   # ----------------------------------------------------------
-  # C: 모멘텀 추세추종 (강세장 극대화)
-  # 강세장 수익 극대화. 약세 전환 시 시장 레짐 필터가 현금 방어.
-  # KOSPI+KOSDAQ 전체 유니버스 사용.
+  # B: 보수적 (V70M30 + Vol50)
+  # 변동성 필터 강화로 MDD 우선. 고변동성 상위 50% 제거.
+  # 2021-2024: CAGR 11.0%, MDD -14.1%, Sharpe 0.654
   # ----------------------------------------------------------
-  C:
+  B:
     factor_weights:
-      value: 0.10
-      momentum: 0.70
-      quality: 0.20
+      value: 0.70
+      momentum: 0.30
+      quality: 0.00
     value_weights:
       pbr: 0.50
       pcr: 0.30
@@ -132,54 +108,55 @@ presets:
       market: "KOSPI"
       min_market_cap_percentile: 10.0
     momentum:
-      absolute_momentum_enabled: true
+      absolute_momentum_enabled: false
     quality:
       fscore_enabled: true
-      min_fscore: 3
-    volatility:
-      max_percentile: 70.0
-    market_regime:
-      enabled: true
-      partial_ratio: 0.5
-      defensive_ratio: 0.2
-    trading:
-      max_turnover_pct: 0.60
-      trailing_stop_pct: 0.20
-      max_drawdown_pct: 0.20
-      vol_target: 0.15
-
-  # ----------------------------------------------------------
-  # D: 방어형 (최소변동성 + 고배당)
-  # MDD 최소화와 Sharpe 극대화에 집중. 배당 수익 + 저변동성 종목.
-  # ----------------------------------------------------------
-  D:
-    factor_weights:
-      value: 0.35
-      momentum: 0.20
-      quality: 0.45
-    value_weights:
-      pbr: 0.30
-      pcr: 0.20
-      div: 0.50
-    universe:
-      market: "KOSPI"
-      min_market_cap_percentile: 10.0
-    momentum:
-      absolute_momentum_enabled: true
-    quality:
-      fscore_enabled: true
-      min_fscore: 5
+      min_fscore: 4
     volatility:
       max_percentile: 50.0
     market_regime:
       enabled: true
       partial_ratio: 0.6
-      defensive_ratio: 0.3
+      defensive_ratio: 0.4
     trading:
-      max_turnover_pct: 0.25
-      trailing_stop_pct: 0.20
-      max_drawdown_pct: 0.15
-      vol_target: 0.10
+      max_turnover_pct: 0.50
+      trailing_stop_pct: null
+      max_drawdown_pct: null
+      vol_target: null
+
+  # ----------------------------------------------------------
+  # C: 공격적 (V100 + Vol70)
+  # 밸류 집중, 모멘텀 제거. 저평가 종목 장기 보유.
+  # 2021-2024: CAGR 10.6%, MDD -11.8%, Sharpe 0.604
+  # ----------------------------------------------------------
+  C:
+    factor_weights:
+      value: 1.00
+      momentum: 0.00
+      quality: 0.00
+    value_weights:
+      pbr: 0.50
+      pcr: 0.30
+      div: 0.20
+    universe:
+      market: "KOSPI"
+      min_market_cap_percentile: 10.0
+    momentum:
+      absolute_momentum_enabled: false
+    quality:
+      fscore_enabled: true
+      min_fscore: 4
+    volatility:
+      max_percentile: 70.0
+    market_regime:
+      enabled: true
+      partial_ratio: 0.6
+      defensive_ratio: 0.4
+    trading:
+      max_turnover_pct: 0.30
+      trailing_stop_pct: null
+      max_drawdown_pct: null
+      vol_target: null
 
   # ----------------------------------------------------------
   # 금액 프리셋 (4단계)
@@ -219,8 +196,9 @@ presets:
       max_position_pct: 0.035
 
 # ============================================================
-# [ARCHIVED] v1.1 프리셋 (롤백용 보존)
+# [ARCHIVED] v2.0 이전 프리셋 (롤백용)
 # ============================================================
-# 기존 전략 프리셋 A~I (9개)와 금액 프리셋 100만~5억 (7개)은
-# v2.0 전략 재설계로 제거됨. 롤백 필요 시 git history 참조.
-# git show HEAD~3:config/config.yaml
+# v2.0 이전: 전략 A~D (4개, Quality 포함) + 금액 4단계
+# v2.0 최종: 전략 A~C (3개, Quality=0) + 금액 4단계
+# 롤백 필요 시 git history 참조:
+#   git show HEAD~1:config/config.yaml  (v2.0 이전 A~D 프리셋)

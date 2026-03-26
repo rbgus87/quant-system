@@ -104,7 +104,7 @@ class TradingConfig:
     max_position_pct: float = 0.10  # 단일 종목 최대 비중 10%
     max_turnover_pct: float = 0.50  # 월간 최대 교체율 50%
     max_drawdown_pct: Optional[float] = 0.25  # MDD 서킷브레이커 (None=비활성화)
-    trailing_stop_pct: float = 0.20  # 종목별 트레일링 스톱 (매수가 대비 -20%)
+    trailing_stop_pct: Optional[float] = 0.20  # 종목별 트레일링 스톱 (None=비활성화)
     vol_target: Optional[float] = 0.15  # 변동성 타겟팅 (None=비활성화)
     vol_lookback_days: int = 60  # 변동성 계산 기간 (거래일)
 
@@ -232,7 +232,6 @@ def validate_settings(s: "Settings") -> None:
         ("slippage", s.trading.slippage),
         ("max_position_pct", s.trading.max_position_pct),
         ("max_turnover_pct", s.trading.max_turnover_pct),
-        ("trailing_stop_pct", s.trading.trailing_stop_pct),
     ]
     for name, val in rate_fields:
         if not (0.0 <= val <= 1.0):
@@ -242,6 +241,7 @@ def validate_settings(s: "Settings") -> None:
     for name, val in [
         ("max_drawdown_pct", s.trading.max_drawdown_pct),
         ("vol_target", s.trading.vol_target),
+        ("trailing_stop_pct", s.trading.trailing_stop_pct),
     ]:
         if val is not None:
             if not (0.0 <= val <= 1.0):

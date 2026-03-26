@@ -438,7 +438,7 @@ class MultiFactorBacktest:
             (갱신된 cash, 갱신된 total_value)
         """
         trailing_stop_pct = settings.trading.trailing_stop_pct
-        if trailing_stop_pct <= 0 or not holdings:
+        if not trailing_stop_pct or trailing_stop_pct <= 0 or not holdings:
             return cash, total_value
 
         stop_sells: list[str] = []
