@@ -31,11 +31,19 @@ class _EmergencySellWorker(QThread):
 
     def run(self) -> None:
         try:
+            import time
+            from datetime import date
+
+            from config.settings import settings
+            from data.storage import DataStorage
             from trading.kiwoom_api import KiwoomRestClient
 
             api = KiwoomRestClient()
+            storage = DataStorage()
             balance = api.get_balance()
             holdings = balance.get("holdings", [])
+            exchange = "KRX" if api.is_paper else "SOR"
+            cost = settings.trading
 
             results = []
             for h in holdings:
@@ -44,10 +52,37 @@ class _EmergencySellWorker(QThread):
                 name = h.get("name", "")
                 if qty > 0:
                     try:
-                        api.sell_market(ticker, qty)
-                        results.append(f"{name}({ticker}) {qty}주 매도 주문")
+                        result = api.sell_stock(
+                            ticker=ticker,
+                            qty=qty,
+                            price=0,
+                            order_type="3",
+                            exchange=exchange,
+                        )
+                        if result.get("return_code") == 0:
+                            ord_no = result.get("ord_no", "")
+                            results.append(
+                                f"{name}({ticker}) {qty}주 매도 주문 (#{ord_no})"
+                            )
+                            price = h.get("current_price", 0)
+                            amount = price * qty
+                            storage.save_trade(
+                                trade_date=date.today(),
+                                ticker=ticker,
+                                side="SELL",
+                                quantity=qty,
+                                price=price,
+                                amount=amount,
+                                commission=amount * cost.commission_rate,
+                                tax=amount * cost.tax_rate,
+                                is_paper=settings.is_paper_trading,
+                            )
+                        else:
+                            msg = result.get("return_msg", "알 수 없는 오류")
+                            results.append(f"{name}({ticker}) 매도 실패: {msg}")
                     except Exception as e:
                         results.append(f"{name}({ticker}) 매도 실패: {e}")
+                    time.sleep(1.0)
 
             self.finished.emit(results)
         except Exception as e:

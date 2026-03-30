@@ -480,7 +480,7 @@ class KiwoomRestClient:
             for item in data.get("acnt_evlt_remn_indv_tot", []):
                 holdings.append(
                     {
-                        "ticker": item.get("stk_cd", ""),
+                        "ticker": item.get("stk_cd", "").lstrip("A"),
                         "name": item.get("stk_nm", ""),
                         "qty": _safe_int(item.get("rmnd_qty")),
                         "avg_price": _safe_float(item.get("pur_pric") or item.get("avg_prc")),
