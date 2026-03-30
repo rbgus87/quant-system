@@ -65,7 +65,7 @@ class KiwoomRestClient:
         self._token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
         self._last_request_at: float = 0.0
-        self._min_request_interval: float = 0.5  # 최소 요청 간격 (초) — 초당 2회
+        self._min_request_interval: float = 1.0  # 최소 요청 간격 (초) — 모의투자 429 방지
 
         mode = (
             "모의투자 (mockapi.kiwoom.com)"

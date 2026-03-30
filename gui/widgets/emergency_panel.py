@@ -31,7 +31,6 @@ class _EmergencySellWorker(QThread):
 
     def run(self) -> None:
         try:
-            import time
             from datetime import date
 
             from config.settings import settings
@@ -82,7 +81,6 @@ class _EmergencySellWorker(QThread):
                             results.append(f"{name}({ticker}) 매도 실패: {msg}")
                     except Exception as e:
                         results.append(f"{name}({ticker}) 매도 실패: {e}")
-                    time.sleep(1.0)
 
             self.finished.emit(results)
         except Exception as e:
