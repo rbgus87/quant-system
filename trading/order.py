@@ -195,9 +195,11 @@ class OrderExecutor:
         if self._peak_value <= 0:
             return False
 
-        drawdown = (total_value - self._peak_value) / self._peak_value
         max_dd = self.cfg.max_drawdown_pct
+        if not max_dd or max_dd <= 0:
+            return False
 
+        drawdown = (total_value - self._peak_value) / self._peak_value
         if drawdown < -max_dd:
             logger.warning(
                 f"MDD 서킷 브레이커 발동: {drawdown:.1%} < -{max_dd:.0%} "
@@ -224,8 +226,11 @@ class OrderExecutor:
         if self._peak_value <= 0 or total_value <= 0:
             return False
 
-        drawdown = (total_value - self._peak_value) / self._peak_value
         max_dd = self.cfg.max_drawdown_pct
+        if not max_dd or max_dd <= 0:
+            return True
+
+        drawdown = (total_value - self._peak_value) / self._peak_value
         reentry_threshold = -max_dd * 0.5
 
         if drawdown >= reentry_threshold:
@@ -309,7 +314,7 @@ class OrderExecutor:
             트레일링 스톱 발동 종목 코드 리스트
         """
         trailing_stop_pct = self.cfg.trailing_stop_pct
-        if trailing_stop_pct <= 0:
+        if not trailing_stop_pct or trailing_stop_pct <= 0:
             return []
 
         stop_tickers: list[str] = []
