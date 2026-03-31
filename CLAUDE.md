@@ -56,14 +56,22 @@ quant-system/
 │   ├── engine.py          ← ★ 수술 대상: Walk-Forward 모드, 생존자 편향 폴백
 │   ├── metrics.py
 │   └── report.py
+├── monitor/               ← 실전 운용 모니터링 (v2.0 이후 신규)
+│   ├── __init__.py
+│   ├── storage.py         ← 스냅샷 DB (monitor.db, quant.db와 분리)
+│   ├── snapshot.py        ← 일간 스냅샷 수집 (balance → dict)
+│   ├── benchmark.py       ← KOSPI 벤치마크 수익률 (pykrx → FDR 폴백)
+│   ├── drift.py           ← 가중치 드리프트 (목표 vs 현재 비중)
+│   ├── risk_guard.py      ← 리스크 감시 (손절/드로다운/관리종목, 알림 전용)
+│   └── alert.py           ← 리스크 경고 메시지 포맷 + 텔레그램 발송
 ├── trading/
 │   ├── kiwoom_api.py      ← 유지
 │   └── order.py           ← 유지
-├── notify/telegram.py     ← 유지
-├── scheduler/main.py      ← 부분 수정: vol_target 중복 제거
+├── notify/telegram.py     ← 확장: 벤치마크·드리프트 섹션 추가
+├── scheduler/main.py      ← 확장: 스냅샷·리스크감시 Job 추가
 ├── dashboard/app.py       ← 미세 조정
 ├── gui/                   ← 유지 (PyQt 기반 GUI, 수술 범위 밖)
-└── tests/                 ← 수술 대상 모듈에 대한 테스트 업데이트
+└── tests/                 ← 수술 대상 + monitor 모듈 테스트
 ```
 
 ## v2.0 핵심 전략 파라미터 (최종 확정 2026-03-26)
@@ -143,6 +151,29 @@ SLIPPAGE = 0.001       # 0.10% (금액 프리셋이 상향 가능)
   - PRD_v2.md: KPI 현실화, 리스크 정책 추가
   - 역검증(2017-2020 최악 구간): Alpha -0.74% (과적합 미미)
 
+## 스케줄러 Job 구조
+
+```
+08:50  run_scheduled_rebalancing   월말(또는 분기) 리밸런싱
+09:00~ run_risk_guard_check        장중 30분 간격 리스크 감시 (09:00-15:00)
+09:30  run_risk_guard_delisting    관리종목 캐시 갱신 (하루 1회)
+15:15  run_daily_defense_check     MDD 서킷브레이커 + 트레일링 스톱
+15:35  run_daily_report            일간 리포트 + 스냅샷 DB 저장 + 드리프트
+```
+
+## 모니터링 시스템 (monitor/)
+
+- **별도 DB**: `data/monitor.db` (quant.db와 write contention 방지)
+- **일간 스냅샷**: 15:35 리포트 발송 시 자동 저장 (daily_snapshots + daily_holdings 테이블)
+- **벤치마크**: KOSPI 당일 수익률 대비 초과수익률 계산 (pykrx → FDR 폴백)
+- **드리프트**: Portfolio 테이블의 목표 비중 vs 현재 비중 이탈 추적
+- **리스크 감시**: 알림 전용 (자동 매도 없음)
+  - 종목별 손절 경고 (기본 -20%)
+  - 포트폴리오 드로다운 경고 (기본 -15%)
+  - 관리종목 지정 감지 (KRX API → FDR 폴백)
+  - 동일 날짜/종목/타입 중복 경고 방지
+- **설정**: `config.yaml` → `monitoring` 섹션 (RiskGuardConfig 중첩 dataclass)
+
 ## 알려진 이슈 / 주의사항
 
 - **KRX API 변경 (2025-12-27)**: pykrx 배치 API 차단됨. multi-tier 폴백 사용 중
@@ -157,3 +188,7 @@ SLIPPAGE = 0.001       # 0.10% (금액 프리셋이 상향 가능)
 - **키움 REST API**: 토큰 응답 필드는 `"token"` (access_token 아님)
 - **pandas 2.2+**: `freq="BME"` deprecated → `pd.offsets.BMonthEnd()` 사용
 - **프리셋 충돌**: 금액 프리셋은 STRATEGY_ONLY_KEYS를 덮어쓸 수 없음 (settings.py에서 검증)
+- **monitor.db**: quant.db와 별도 파일. 스냅샷 전용. data/ 디렉토리에 생성
+- **리스크 감시**: 알림 전용 Phase 1. 자동 매도 미구현 (운용자 수동 판단)
+- **관리종목 조회**: pykrx에 전용 API 없음. KRX Open API → FDR `StockListing("KRX-ADMIN")` 폴백
+- **드리프트**: Portfolio 테이블의 weight는 0~1 비율, snapshot의 weight_pct는 퍼센트 (자동 변환)
