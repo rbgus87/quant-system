@@ -467,11 +467,10 @@ class KiwoomRestClient:
             잔고 dict {holdings, cash, total_eval_amount, total_profit}
         """
         url = f"{self.base_url}/api/dostk/acnt"
-        exchange = "KRX" if self.is_paper else "SOR"
         body = {
             "acnt_no": self.account_no,
             "qry_tp": "1",
-            "dmst_stex_tp": exchange,
+            "dmst_stex_tp": "KRX",
         }
         try:
             data = self._post_with_retry(url, "kt00018", body)
@@ -520,10 +519,9 @@ class KiwoomRestClient:
             미체결 주문 리스트
         """
         url = f"{self.base_url}/api/dostk/acnt"
-        exchange = "KRX" if self.is_paper else "SOR"
         body = {
             "acnt_no": self.account_no,
-            "dmst_stex_tp": exchange,
+            "dmst_stex_tp": "KRX",
         }
         try:
             data = self._post_with_retry(url, "kt00013", body)
