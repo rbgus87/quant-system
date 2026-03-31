@@ -161,7 +161,7 @@ class KiwoomRestClient:
     def get_current_price(self, ticker: str) -> dict:
         """주식 현재가 조회
 
-        실전: POST /api/dostk/mrkt-info (ka10001)
+        실전: POST /api/dostk/stkinfo (ka10001)
         모의: pykrx 최근 종가 폴백 (mockapi는 시세 API 미지원)
 
         Args:
@@ -172,18 +172,19 @@ class KiwoomRestClient:
         """
         # 실전 서버: 키움 REST API 사용
         if not self.is_paper:
-            url = f"{self.base_url}/api/dostk/mrkt-info"
+            url = f"{self.base_url}/api/dostk/stkinfo"
             try:
                 data = self._post_with_retry(
                     url, "ka10001", {"stk_cd": ticker}
                 )
+                # 실전 API 가격 필드에 부호(+/-)가 붙어 있으므로 abs() 처리
                 return {
                     "ticker": ticker,
-                    "current_price": _safe_int(data.get("cur_prc")),
-                    "open_price": _safe_int(data.get("opng_prc")),
-                    "high_price": _safe_int(data.get("hgst_prc")),
-                    "low_price": _safe_int(data.get("lwst_prc")),
-                    "volume": _safe_int(data.get("acc_trd_qty")),
+                    "current_price": abs(_safe_int(data.get("cur_prc"))),
+                    "open_price": abs(_safe_int(data.get("open_pric"))),
+                    "high_price": abs(_safe_int(data.get("high_pric"))),
+                    "low_price": abs(_safe_int(data.get("low_pric"))),
+                    "volume": _safe_int(data.get("trde_qty")),
                     "change_rate": _safe_float(data.get("flu_rt")),
                 }
             except Exception as e:
