@@ -429,10 +429,17 @@ def run_daily_report() -> None:
             snapshot = take_daily_snapshot(balance)
             MonitorStorage().save_snapshot(snapshot)
             logger.info("일간 스냅샷 저장 완료")
+
+            # 드리프트 계산
+            from monitor.drift import calculate_drift
+
+            drift = calculate_drift(snapshot)
+            if drift:
+                snapshot["drift"] = drift
         except Exception as e:
             logger.error(f"스냅샷 저장 실패 (리포트는 계속 발송): {e}")
 
-        # 기존 리포트 + 벤치마크 확장
+        # 기존 리포트 + 벤치마크 + 드리프트 확장
         notifier.send_detailed_daily_report(balance, snapshot=snapshot)
     except Exception as e:
         logger.error(f"일별 리포트 오류: {e}")

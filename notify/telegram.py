@@ -417,6 +417,37 @@ class TelegramNotifier:
             concentration = top3 / total_eval * 100
             lines.append(f"  상위 3종목 집중도: `{concentration:.1f}%`")
 
+        # 비중 드리프트 (snapshot에 drift가 포함된 경우만)
+        if snapshot is not None:
+            drift = snapshot.get("drift")
+            if drift is not None:
+                rb_date = drift.get("rebalance_date", "")
+                # MM/DD 포맷
+                rb_short = rb_date[5:].replace("-", "/") if len(rb_date) >= 10 else rb_date
+                days = drift.get("days_since_rebalance", 0)
+                avg_drift = drift.get("avg_abs_drift_pct", 0.0)
+                max_d = drift.get("max_drift", {})
+                max_name = max_d.get("name", "")
+                max_drift_val = max_d.get("drift_pct", 0.0)
+                max_target = max_d.get("target_weight_pct", 0.0)
+                max_current = max_d.get("current_weight_pct", 0.0)
+
+                warn = ""
+                # 5%p 이상 드리프트 종목이 있으면 경고
+                for hd in drift.get("holdings_drift", []):
+                    if abs(hd.get("drift_pct", 0.0)) >= 5.0:
+                        warn = "\u26a0\ufe0f "
+                        break
+
+                lines.append("")
+                lines.append(f"{warn}*비중 드리프트*")
+                lines.append(f"  리밸런싱: {rb_short} ({days}일 경과)")
+                lines.append(f"  평균 드리프트: `{avg_drift:.2f}%p`")
+                lines.append(
+                    f"  최대: {max_name} `{max_drift_val:+.1f}%p` "
+                    f"({max_target:.1f}\u2192{max_current:.1f}%)"
+                )
+
         msg = "\n".join(lines)
         return self.send(msg)
 
