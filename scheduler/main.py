@@ -557,6 +557,7 @@ def main() -> None:
         hour=8,
         minute=50,
         id="scheduled_rebalancing",
+        misfire_grace_time=300,
     )
 
     scheduler.add_job(
@@ -566,6 +567,7 @@ def main() -> None:
         hour=15,
         minute=15,
         id="daily_defense_check",
+        misfire_grace_time=300,
     )
 
     scheduler.add_job(
@@ -575,6 +577,7 @@ def main() -> None:
         hour=15,
         minute=35,
         id="daily_report",
+        misfire_grace_time=300,
     )
 
     freq = settings.portfolio.rebalance_frequency
