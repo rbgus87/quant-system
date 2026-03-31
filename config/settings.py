@@ -109,6 +109,14 @@ class TradingConfig:
     vol_lookback_days: int = 60  # 변동성 계산 기간 (거래일)
 
 
+@dataclass
+class MonitoringConfig:
+    """모니터링 설정"""
+
+    snapshot_enabled: bool = True  # 일간 스냅샷 DB 저장
+    benchmark_enabled: bool = True  # KOSPI 벤치마크 비교
+
+
 # --- YAML 로드 / 적용 / 검증 ---
 
 
@@ -139,6 +147,7 @@ _YAML_SECTIONS = {
     "universe": UniverseConfig,
     "portfolio": PortfolioConfig,
     "trading": TradingConfig,
+    "monitoring": MonitoringConfig,
 }
 
 
@@ -297,6 +306,7 @@ class Settings:
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
 
     # 키움 REST API
     kiwoom_app_key: str = field(default_factory=lambda: os.getenv("KIWOOM_APP_KEY", ""))

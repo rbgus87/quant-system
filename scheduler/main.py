@@ -411,7 +411,7 @@ def run_daily_defense_check() -> None:
 
 
 def run_daily_report() -> None:
-    """장 마감 후 상세 일별 수익 리포트 발송"""
+    """장 마감 후 상세 일별 수익 리포트 발송 + 스냅샷 DB 저장"""
     if not is_business_day():
         return
 
@@ -419,7 +419,21 @@ def run_daily_report() -> None:
     try:
         api = KiwoomRestClient()
         balance = api.get_balance()
-        notifier.send_detailed_daily_report(balance)
+
+        # 스냅샷 수집 + DB 저장
+        snapshot = None
+        try:
+            from monitor.snapshot import take_daily_snapshot
+            from monitor.storage import MonitorStorage
+
+            snapshot = take_daily_snapshot(balance)
+            MonitorStorage().save_snapshot(snapshot)
+            logger.info("일간 스냅샷 저장 완료")
+        except Exception as e:
+            logger.error(f"스냅샷 저장 실패 (리포트는 계속 발송): {e}")
+
+        # 기존 리포트 + 벤치마크 확장
+        notifier.send_detailed_daily_report(balance, snapshot=snapshot)
     except Exception as e:
         logger.error(f"일별 리포트 오류: {e}")
         notifier.send_error(str(e))

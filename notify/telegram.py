@@ -277,12 +277,17 @@ class TelegramNotifier:
         )
         return self.send(msg)
 
-    def send_detailed_daily_report(self, balance: dict) -> bool:
+    def send_detailed_daily_report(
+        self,
+        balance: dict,
+        snapshot: Optional[dict] = None,
+    ) -> bool:
         """상세 일별 리포트
 
         Args:
             balance: KiwoomRestClient.get_balance() 결과
                 {holdings, cash, total_eval_amount, total_profit}
+            snapshot: take_daily_snapshot() 결과 (벤치마크 섹션 추가용, 없으면 생략)
 
         Returns:
             발송 성공 여부
@@ -384,6 +389,19 @@ class TelegramNotifier:
                     f"    평단 {avg_price:,.0f} → 현재 {cur_price:,.0f} "
                     f"({profit:+,.0f}원)"
                 )
+
+        # 벤치마크 (snapshot이 있을 때만)
+        if snapshot is not None:
+            bm = snapshot.get("benchmark", {})
+            kospi_ret = bm.get("kospi_daily_return_pct", 0.0)
+            excess_ret = bm.get("excess_return_pct", 0.0)
+            lines.append("")
+            lines.append("*벤치마크*")
+            if kospi_ret == 0.0 and excess_ret == 0.0:
+                lines.append("  KOSPI 당일: N/A")
+            else:
+                lines.append(f"  KOSPI 당일: `{kospi_ret * 100:+.2f}%`")
+                lines.append(f"  초과수익률: `{excess_ret * 100:+.2f}%`")
 
         # 리스크 지표
         lines.append("")
