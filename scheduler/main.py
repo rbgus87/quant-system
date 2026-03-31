@@ -440,6 +440,59 @@ def run_daily_report() -> None:
 
 
 # ────────────────────────────────────────────
+# 리스크 감시 (알림 전용)
+# ────────────────────────────────────────────
+
+# 모듈 레벨 싱글톤 — Job 간 _today_alerts / _delisting_cache 공유
+_risk_guard = None
+
+
+def _get_risk_guard():
+    """RiskGuard 싱글톤을 반환한다 (lazy init)."""
+    global _risk_guard
+    if _risk_guard is None:
+        from monitor.risk_guard import RiskGuard
+
+        _risk_guard = RiskGuard()
+    return _risk_guard
+
+
+def run_risk_guard_check() -> None:
+    """장중 리스크 감시 (손절 + 드로다운 + 관리종목 경고)"""
+    if not is_business_day():
+        return
+
+    try:
+        api = KiwoomRestClient()
+        balance = api.get_balance()
+
+        guard = _get_risk_guard()
+        alerts = guard.check_all(balance)
+
+        if alerts:
+            from monitor.alert import send_risk_alerts
+
+            sent = send_risk_alerts(alerts)
+            logger.info("리스크 경고 %d건 발송 (총 %d건 감지)", sent, len(alerts))
+        else:
+            logger.debug("리스크 감시: 이상 없음")
+    except Exception as e:
+        logger.error(f"리스크 감시 오류: {e}")
+
+
+def run_risk_guard_delisting() -> None:
+    """관리종목 캐시 갱신 (하루 1회, 09:30)"""
+    if not is_business_day():
+        return
+
+    try:
+        guard = _get_risk_guard()
+        guard.refresh_delisting_cache()
+    except Exception as e:
+        logger.error(f"관리종목 캐시 갱신 오류: {e}")
+
+
+# ────────────────────────────────────────────
 # 스케줄러 설정 및 실행
 # ────────────────────────────────────────────
 
@@ -594,10 +647,35 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
+    # 리스크 감시: 장중 30분 간격 (09:00~15:00)
+    scheduler.add_job(
+        run_risk_guard_check,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour="9-15",
+        minute="0,30",
+        id="risk_guard_check",
+        misfire_grace_time=300,
+    )
+
+    # 관리종목 캐시 갱신: 하루 1회 (09:30)
+    scheduler.add_job(
+        run_risk_guard_delisting,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour=9,
+        minute=30,
+        id="risk_guard_delisting",
+        misfire_grace_time=300,
+    )
+
     freq = settings.portfolio.rebalance_frequency
     freq_desc = "분기(3/6/9/12월)" if freq == "quarterly" else "월말"
     logger.info("스케줄러 시작 (Ctrl+C로 종료)")
-    logger.info(f"  08:50 {freq_desc} 리밸런싱 | 15:15 방어 체크 | 15:35 일별 리포트")
+    logger.info(
+        f"  08:50 {freq_desc} 리밸런싱 | 09:00-15:00 리스크 감시 | "
+        f"15:15 방어 체크 | 15:35 일별 리포트"
+    )
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     TelegramNotifier().send(f"퀀트 스케줄러가 시작되었습니다.\n{now}")
 

@@ -199,6 +199,11 @@ presets:
 monitoring:
   snapshot_enabled: true
   benchmark_enabled: true
+  risk_guard:
+    enabled: true
+    stop_loss_pct: -20
+    max_drawdown_alert_pct: -15
+    check_interval_minutes: 30
 
 # ============================================================
 # [ARCHIVED] v2.0 이전 프리셋 (롤백용)

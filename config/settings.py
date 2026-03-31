@@ -1,5 +1,5 @@
 # config/settings.py
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 import logging
 import os
 
@@ -110,11 +110,22 @@ class TradingConfig:
 
 
 @dataclass
+class RiskGuardConfig:
+    """리스크 감시 설정"""
+
+    enabled: bool = True
+    stop_loss_pct: float = -20.0  # 종목별 손절 경고 기준 (%)
+    max_drawdown_alert_pct: float = -15.0  # 포트폴리오 드로다운 경고 기준 (%)
+    check_interval_minutes: int = 30  # 장중 체크 간격 (분)
+
+
+@dataclass
 class MonitoringConfig:
     """모니터링 설정"""
 
     snapshot_enabled: bool = True  # 일간 스냅샷 DB 저장
     benchmark_enabled: bool = True  # KOSPI 벤치마크 비교
+    risk_guard: RiskGuardConfig = field(default_factory=RiskGuardConfig)
 
 
 # --- YAML 로드 / 적용 / 검증 ---
@@ -151,6 +162,19 @@ _YAML_SECTIONS = {
 }
 
 
+def _apply_dict_to_dataclass(target: object, data: dict, prefix: str = "") -> None:
+    """dict 값을 dataclass 인스턴스에 적용한다 (중첩 dataclass 지원)."""
+    for key, val in data.items():
+        if not hasattr(target, key):
+            logger.warning("알 수 없는 설정: %s%s (무시)", prefix, key)
+            continue
+        current = getattr(target, key)
+        if isinstance(val, dict) and hasattr(current, "__dataclass_fields__"):
+            _apply_dict_to_dataclass(current, val, prefix=f"{prefix}{key}.")
+        else:
+            setattr(target, key, val)
+
+
 def _apply_section_data(settings_obj: "Settings", data: dict) -> None:
     """YAML dict의 섹션별 값을 Settings 객체에 적용한다."""
     for section in _YAML_SECTIONS:
@@ -161,11 +185,7 @@ def _apply_section_data(settings_obj: "Settings", data: dict) -> None:
             logger.warning("설정 섹션 '%s'이 dict가 아닙니다. 무시합니다.", section)
             continue
         target = getattr(settings_obj, section)
-        for key, val in sub.items():
-            if hasattr(target, key):
-                setattr(target, key, val)
-            else:
-                logger.warning("알 수 없는 설정: %s.%s (무시)", section, key)
+        _apply_dict_to_dataclass(target, sub, prefix=f"{section}.")
 
 
 def _apply_yaml(settings_obj: "Settings", data: dict) -> None:
