@@ -5,9 +5,11 @@
 기준 초과 시 Telegram 경고를 발송한다.
 """
 
+import json
 import logging
 from datetime import datetime
 from typing import Optional
+from urllib.request import urlopen, Request
 
 from config.settings import settings
 
@@ -184,30 +186,7 @@ class RiskGuard:
         Returns:
             관리종목 코드 set, 조회 실패 시 None
         """
-        # 1차: pykrx
-        try:
-            from pykrx.stock import get_market_ticker_list
-
-            today_fmt = datetime.now().strftime("%Y%m%d")
-            # KOSPI + KOSDAQ 관리종목
-            codes: set[str] = set()
-            for market in ("KOSPI", "KOSDAQ"):
-                try:
-                    tickers = get_market_ticker_list(today_fmt, market=market)
-                    # pykrx는 관리종목 전용 API가 없으므로,
-                    # get_market_fundamental_by_ticker를 이용해 거래정지/관리 확인
-                    # → pykrx에서 관리종목만 필터하는 공식 API가 없음
-                    # KRX Open API로 폴백
-                except Exception:
-                    pass
-
-            # pykrx에 관리종목 전용 API가 없으므로 KRX Open API로 전환
-            raise NotImplementedError("pykrx 관리종목 API 없음")
-
-        except Exception as e:
-            logger.debug("pykrx 관리종목 조회 불가: %s", e)
-
-        # 2차: KRX Open API (issue_stock_info)
+        # 1차: KRX Open API
         try:
             krx_key = settings.krx_openapi_key
             if krx_key:
@@ -220,9 +199,8 @@ class RiskGuard:
                 if resp.status_code == 200:
                     data = resp.json()
                     items = data.get("OutBlock_1", [])
-                    codes = set()
+                    codes: set[str] = set()
                     for item in items:
-                        # 관리종목 여부 필드: mktctg_nm 또는 admisu_yn
                         if item.get("admisu_yn") == "Y":
                             code = item.get("isu_srt_cd", "").lstrip("A")
                             if code:
@@ -231,6 +209,14 @@ class RiskGuard:
                         return codes
         except Exception as e:
             logger.warning("KRX Open API 관리종목 조회 실패: %s", e)
+
+        # 2차: KRX 웹 직접 호출 (API key 불필요)
+        try:
+            result = RiskGuard._fetch_krx_admin_direct()
+            if result:
+                return result
+        except Exception as e:
+            logger.warning("KRX 웹 관리종목 조회 실패: %s", e)
 
         # 3차: FinanceDataReader 폴백
         try:
@@ -246,3 +232,41 @@ class RiskGuard:
 
         logger.warning("관리종목 조회 실패 (모든 소스) — 관리종목 체크 스킵")
         return None
+
+    @staticmethod
+    def _fetch_krx_admin_direct() -> Optional[set[str]]:
+        """KRX data.krx.co.kr 웹 API로 관리종목 목록을 직접 조회한다.
+
+        Returns:
+            관리종목 코드 set, 조회 실패 시 None
+        """
+        url = "http://data.krx.co.kr/comm/bldAttend/getJsonData.cmd"
+        payload = (
+            "bld=dbms/MDC/STAT/issue/MDCSTAT23802"
+            "&locale=ko_KR"
+            "&mktTpCd=0"
+            "&isuSrtCd="
+            "&csvxls_isNo=false"
+        )
+        req = Request(
+            url,
+            data=payload.encode("utf-8"),
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "Mozilla/5.0",
+            },
+        )
+        with urlopen(req, timeout=15) as resp:
+            raw = resp.read()
+            data = json.loads(raw.decode("utf-8"))
+
+        items = data.get("OutBlock_1", [])
+        if not items:
+            return None
+
+        codes: set[str] = set()
+        for item in items:
+            code = item.get("ISU_SRT_CD", "")
+            if code:
+                codes.add(code)
+        return codes if codes else None

@@ -1,6 +1,7 @@
 # tests/test_risk_guard.py
 """리스크 감시 모듈 테스트"""
 
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -331,3 +332,59 @@ class TestSendRiskAlerts:
         sent = send_risk_alerts([])
         assert sent == 0
         mock_notifier_cls.assert_not_called()
+
+
+# ── 관리종목 조회 폴백 체인 테스트 ──
+
+
+class TestFetchDelistingCodes:
+    """_fetch_delisting_codes 폴백 체인 테스트"""
+
+    @patch("monitor.risk_guard.settings")
+    def test_krx_api_success(self, mock_settings) -> None:
+        """KRX Open API 성공 시 set 반환"""
+        mock_settings.krx_openapi_key = "test_key"
+        with patch("requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {
+                "OutBlock_1": [
+                    {"admisu_yn": "Y", "isu_srt_cd": "A123456"},
+                    {"admisu_yn": "N", "isu_srt_cd": "A000660"},
+                    {"admisu_yn": "Y", "isu_srt_cd": "A999999"},
+                ]
+            }
+            mock_get.return_value = mock_resp
+            result = RiskGuard._fetch_delisting_codes()
+            assert result == {"123456", "999999"}
+
+    @patch("monitor.risk_guard.urlopen")
+    @patch("monitor.risk_guard.settings")
+    def test_fallback_to_krx_direct(self, mock_settings, mock_urlopen) -> None:
+        """KRX Open API 실패 → KRX 직접 호출 폴백"""
+        mock_settings.krx_openapi_key = ""  # key 없음 → 1차 스킵
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "OutBlock_1": [
+                {"ISU_SRT_CD": "123456"},
+                {"ISU_SRT_CD": "654321"},
+            ]
+        }).encode("utf-8")
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+        result = RiskGuard._fetch_krx_admin_direct()
+        assert result == {"123456", "654321"}
+
+    @patch("monitor.risk_guard.urlopen", side_effect=Exception("network"))
+    @patch("monitor.risk_guard.settings")
+    def test_all_sources_fail_returns_none(self, mock_settings, mock_urlopen) -> None:
+        """모든 소스 실패 시 None 반환"""
+        mock_settings.krx_openapi_key = ""
+        with patch(
+            "monitor.risk_guard.RiskGuard._fetch_krx_admin_direct",
+            side_effect=Exception("fail"),
+        ):
+            with patch.dict("sys.modules", {"FinanceDataReader": None}):
+                result = RiskGuard._fetch_delisting_codes()
+                assert result is None
