@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import QApplication
 
+from config.font import setup_matplotlib_korean_font
 from config.logging_config import setup_logging
 from gui.main_window import MainWindow
 
@@ -22,6 +23,7 @@ def main() -> None:
     multiprocessing.freeze_support()
 
     setup_logging()
+    setup_matplotlib_korean_font()
 
     app = QApplication(sys.argv)
     app.setApplicationName("Korean Quant System")

@@ -56,12 +56,6 @@ class ChartView(QWidget):
         try:
             from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
             from matplotlib.figure import Figure
-            import matplotlib
-
-            # Windows 한글 폰트
-            matplotlib.rcParams["font.family"] = "Malgun Gothic"
-            matplotlib.rcParams["axes.unicode_minus"] = False
-
             self._figure = Figure(figsize=(8, 4), dpi=100)
             self._figure.set_facecolor("#25262B")
             self._canvas = FigureCanvasQTAgg(self._figure)

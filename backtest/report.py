@@ -141,8 +141,11 @@ class ReportGenerator:
         analyzer = PerformanceAnalyzer()
 
         # --- 차트 생성 ---
+        from config.font import get_korean_font_name
+
+        _kr_font = get_korean_font_name() or "Malgun Gothic"
         plt.rcParams.update({
-            "font.family": "Malgun Gothic",
+            "font.family": _kr_font,
             "axes.unicode_minus": False,
             "figure.facecolor": "#1a1a2e",
             "axes.facecolor": "#16213e",
