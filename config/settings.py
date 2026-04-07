@@ -120,12 +120,30 @@ class RiskGuardConfig:
 
 
 @dataclass
+class DartDisclosureConfig:
+    """DART 공시 알림 설정"""
+
+    enabled: bool = True
+    poll_interval_minutes: int = 5
+    instant_types: list[str] = field(default_factory=lambda: [
+        "B001", "B002", "B003", "E001", "E002",
+        "G001", "G002", "G003", "G004",
+        "H001", "H002", "H003",
+        "I001", "I002",
+    ])
+    daily_summary_types: list[str] = field(default_factory=lambda: [
+        "A001", "A002", "A003",
+    ])
+
+
+@dataclass
 class MonitoringConfig:
     """모니터링 설정"""
 
     snapshot_enabled: bool = True  # 일간 스냅샷 DB 저장
     benchmark_enabled: bool = True  # KOSPI 벤치마크 비교
     risk_guard: RiskGuardConfig = field(default_factory=RiskGuardConfig)
+    dart_disclosure: DartDisclosureConfig = field(default_factory=DartDisclosureConfig)
 
 
 # --- YAML 로드 / 적용 / 검증 ---

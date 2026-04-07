@@ -204,6 +204,27 @@ monitoring:
     stop_loss_pct: -20
     max_drawdown_alert_pct: -15
     check_interval_minutes: 30
+  dart_disclosure:
+    enabled: true
+    poll_interval_minutes: 5
+    # 즉시 알림 공시 유형 코드 (pblntf_detail_ty)
+    instant_types:
+      - B001  # 주요사항보고서
+      - B002  # 주요경영사항신고
+      - B003  # 최대주주변경
+      - E001  # 불성실공시법인지정
+      - E002  # 공정공시
+      - G001  # 전환사채등발행
+      - G002  # 신주인수권부사채발행
+      - G003  # 유상증자
+      - G004  # 무상증자
+      - H001  # 합병
+      - H002  # 분할
+    # 일일 요약 공시 유형 코드
+    daily_summary_types:
+      - A001  # 사업보고서
+      - A002  # 반기보고서
+      - A003  # 분기보고서
 
 # ============================================================
 # [ARCHIVED] v2.0 이전 프리셋 (롤백용)

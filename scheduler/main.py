@@ -500,6 +500,39 @@ def run_risk_guard_delisting() -> None:
 
 
 # ────────────────────────────────────────────
+# DART 공시 알림
+# ────────────────────────────────────────────
+
+
+def run_dart_disclosure_poll() -> None:
+    """DART 공시 폴링 (장중 5분 간격)"""
+    if not is_business_day():
+        return
+
+    try:
+        from dart_notifier.notifier import DartDisclosureNotifier
+
+        notifier = DartDisclosureNotifier()
+        notifier.poll()
+    except Exception as e:
+        logger.error("DART 공시 폴링 오류: %s", e)
+
+
+def run_dart_daily_summary() -> None:
+    """DART 일일 공시 요약 (17:00)"""
+    if not is_business_day():
+        return
+
+    try:
+        from dart_notifier.notifier import DartDisclosureNotifier
+
+        notifier = DartDisclosureNotifier()
+        notifier.send_daily_summary()
+    except Exception as e:
+        logger.error("DART 일일 공시 요약 오류: %s", e)
+
+
+# ────────────────────────────────────────────
 # 스케줄러 설정 및 실행
 # ────────────────────────────────────────────
 
@@ -676,6 +709,28 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
+    # DART 공시 폴링: 장중 5분 간격 (09:00~15:30)
+    scheduler.add_job(
+        run_dart_disclosure_poll,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour="9-15",
+        minute="*/5",
+        id="dart_disclosure_poll",
+        misfire_grace_time=300,
+    )
+
+    # DART 일일 공시 요약: 17:00
+    scheduler.add_job(
+        run_dart_daily_summary,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour=17,
+        minute=0,
+        id="dart_daily_summary",
+        misfire_grace_time=300,
+    )
+
     freq = settings.portfolio.rebalance_frequency
     freq_desc = "분기(3/6/9/12월)" if freq == "quarterly" else "월말"
     logger.info("스케줄러 시작 (Ctrl+C로 종료)")
@@ -683,6 +738,7 @@ def main() -> None:
         f"  08:50 {freq_desc} 리밸런싱 | 09:00-15:00 리스크 감시 | "
         f"15:15 방어 체크 | 15:35 일별 리포트"
     )
+    logger.info("  09:00-15:30 DART 공시 폴링 (5분) | 17:00 일일 공시 요약")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     TelegramNotifier().send(f"퀀트 스케줄러가 시작되었습니다.\n{now}")
 
