@@ -266,6 +266,7 @@ class SchedulerPanel(QWidget):
         """다음 리밸런싱 예정일 계산"""
         try:
             from config.calendar import get_krx_month_end_sessions
+            from config.settings import settings
 
             now = datetime.now()
             # 앞으로 6개월 범위에서 월말 영업일 탐색
@@ -279,7 +280,8 @@ class SchedulerPanel(QWidget):
                 if freq == "quarterly" and dt.month not in (3, 6, 9, 12):
                     continue
                 weekday_kr = ["월", "화", "수", "목", "금", "토", "일"][dt.weekday()]
-                return f"{dt.strftime('%Y-%m-%d')} ({weekday_kr}) 08:50"
+                reb_time = settings.portfolio.rebalance_time
+                return f"{dt.strftime('%Y-%m-%d')} ({weekday_kr}) {reb_time}"
         except Exception:
             pass
         return ""

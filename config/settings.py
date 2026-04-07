@@ -93,6 +93,7 @@ class PortfolioConfig:
     initial_cash: int = 10_000_000  # 백테스트 초기 자금 (기본 1000만원)
     max_investment_amount: int = 0  # 최대 투자 금액 (0=전액 투자, 양수=고정 금액)
     rebalance_frequency: str = "quarterly"  # monthly / quarterly
+    rebalance_time: str = "08:50"  # 리밸런싱 체크 시각 (HH:MM, 장 시작 전 권장)
     holding_buffer_ratio: float = 1.5  # 종목 교체 버퍼 (n_stocks × ratio 이내면 유지)
 
 
@@ -430,6 +431,14 @@ def validate_settings(s: "Settings") -> None:
         errors.append(f"지원하지 않는 weight_method: {s.portfolio.weight_method}")
     if s.portfolio.rebalance_frequency not in ("monthly", "quarterly"):
         errors.append(f"지원하지 않는 rebalance_frequency: {s.portfolio.rebalance_frequency}")
+    try:
+        from datetime import datetime as _dt
+        _dt.strptime(s.portfolio.rebalance_time, "%H:%M")
+    except ValueError:
+        errors.append(
+            f"portfolio.rebalance_time 형식 오류. HH:MM 형식이어야 합니다. "
+            f"(현재: {s.portfolio.rebalance_time})"
+        )
     if s.portfolio.holding_buffer_ratio < 1.0:
         errors.append(f"holding_buffer_ratio는 1.0 이상이어야 합니다: {s.portfolio.holding_buffer_ratio}")
 

@@ -19,6 +19,11 @@ preset: "A"
 # 금액: 소액 / 중액 / 대액 / 거액
 sizing: "중액"
 
+# === 리밸런싱 스케줄 ===
+portfolio:
+  rebalance_frequency: "quarterly"     # monthly / quarterly
+  rebalance_time: "08:50"             # 리밸런싱 체크 시각 (HH:MM, 장 시작 전 권장)
+
 # === 개별 덮어쓰기 (선택) ===
 # factor_weights:
 #   value: 0.70
@@ -37,7 +42,6 @@ sizing: "중액"
 # portfolio:
 #   n_stocks: 20
 #   initial_cash: 10000000
-#   rebalance_frequency: "quarterly"   # monthly / quarterly
 #   holding_buffer_ratio: 1.5          # 교체 버퍼 (n × ratio 이내 유지)
 #
 # trading:

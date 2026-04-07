@@ -6,7 +6,7 @@
   python scheduler/main.py --dry-run
 
 스케줄:
-  - 매 영업일 08:50  → 월말이면 리밸런싱 신호 계산 실행
+  - 매 영업일 {rebalance_time}  → 월말이면 리밸런싱 신호 계산 실행 (config.yaml)
   - 매 영업일 15:15  → 일별 방어 체크 (MDD 서킷브레이커 + 트레일링 스톱)
   - 매 영업일 15:35  → 일별 수익 리포트 발송
 """
@@ -676,12 +676,13 @@ def main() -> None:
 
     scheduler = BlockingScheduler(timezone="Asia/Seoul")
 
+    reb_h, reb_m = settings.portfolio.rebalance_time.split(":")
     scheduler.add_job(
         run_scheduled_rebalancing,
         trigger="cron",
         day_of_week="mon-fri",
-        hour=8,
-        minute=50,
+        hour=int(reb_h),
+        minute=int(reb_m),
         id="scheduled_rebalancing",
         misfire_grace_time=300,
     )
@@ -762,8 +763,8 @@ def main() -> None:
     freq_desc = "분기(3/6/9/12월)" if freq == "quarterly" else "월말"
     logger.info("스케줄러 시작 (Ctrl+C로 종료)")
     logger.info(
-        f"  08:50 {freq_desc} 리밸런싱 | 09:00-15:00 리스크 감시 | "
-        f"15:15 방어 체크 | 15:35 일별 리포트"
+        f"  {settings.portfolio.rebalance_time} {freq_desc} 리밸런싱 | "
+        f"09:00-15:00 리스크 감시 | 15:15 방어 체크 | 15:35 일별 리포트"
     )
     if dn.enabled:
         logger.info(
