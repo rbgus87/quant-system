@@ -46,10 +46,11 @@ def _setup_trading_file_handler(log_dir: str, level: int) -> None:
     os.makedirs(trading_dir, exist_ok=True)
 
     trading_path = os.path.join(trading_dir, "trading.log")
+    retention = settings.logging.trading_log_retention_days
     handler = logging.handlers.TimedRotatingFileHandler(
         trading_path,
         when="midnight",
-        backupCount=90,
+        backupCount=retention,
         encoding="utf-8",
     )
     handler.suffix = "%Y%m%d"

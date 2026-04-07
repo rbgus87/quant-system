@@ -505,9 +505,24 @@ def run_risk_guard_delisting() -> None:
 
 
 def run_dart_disclosure_poll() -> None:
-    """DART 공시 폴링 (장중 5분 간격)"""
+    """DART 공시 폴링 (장중, config 기반)"""
     if not is_business_day():
         return
+
+    dn = settings.dart_notifier
+    if not dn.enabled:
+        return
+
+    # 장중 시간 체크
+    if dn.market_hours_only:
+        now = datetime.now()
+        try:
+            t_open = datetime.strptime(dn.market_open, "%H:%M").time()
+            t_close = datetime.strptime(dn.market_close, "%H:%M").time()
+            if not (t_open <= now.time() <= t_close):
+                return
+        except ValueError:
+            pass  # 검증은 settings 로드 시 수행됨
 
     try:
         from dart_notifier.notifier import DartDisclosureNotifier
@@ -519,8 +534,12 @@ def run_dart_disclosure_poll() -> None:
 
 
 def run_dart_daily_summary() -> None:
-    """DART 일일 공시 요약 (17:00)"""
+    """DART 일일 공시 요약"""
     if not is_business_day():
+        return
+
+    dn = settings.dart_notifier
+    if not dn.enabled or not dn.daily_summary.enabled:
         return
 
     try:
@@ -709,27 +728,35 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
-    # DART 공시 폴링: 장중 5분 간격 (09:00~15:30)
-    scheduler.add_job(
-        run_dart_disclosure_poll,
-        trigger="cron",
-        day_of_week="mon-fri",
-        hour="9-15",
-        minute="*/5",
-        id="dart_disclosure_poll",
-        misfire_grace_time=300,
-    )
+    # DART 공시 폴링 + 일일 요약 (config 기반)
+    dn = settings.dart_notifier
+    if dn.enabled:
+        poll_min = dn.polling_interval_minutes
+        # 폴링: 장중 시간 범위에서 interval 간격
+        open_h = int(dn.market_open.split(":")[0])
+        close_h = int(dn.market_close.split(":")[0])
+        scheduler.add_job(
+            run_dart_disclosure_poll,
+            trigger="cron",
+            day_of_week="mon-fri",
+            hour=f"{open_h}-{close_h}",
+            minute=f"*/{poll_min}",
+            id="dart_disclosure_poll",
+            misfire_grace_time=300,
+        )
 
-    # DART 일일 공시 요약: 17:00
-    scheduler.add_job(
-        run_dart_daily_summary,
-        trigger="cron",
-        day_of_week="mon-fri",
-        hour=17,
-        minute=0,
-        id="dart_daily_summary",
-        misfire_grace_time=300,
-    )
+        # 일일 요약
+        if dn.daily_summary.enabled:
+            sum_h, sum_m = dn.daily_summary.send_time.split(":")
+            scheduler.add_job(
+                run_dart_daily_summary,
+                trigger="cron",
+                day_of_week="mon-fri",
+                hour=int(sum_h),
+                minute=int(sum_m),
+                id="dart_daily_summary",
+                misfire_grace_time=300,
+            )
 
     freq = settings.portfolio.rebalance_frequency
     freq_desc = "분기(3/6/9/12월)" if freq == "quarterly" else "월말"
@@ -738,7 +765,12 @@ def main() -> None:
         f"  08:50 {freq_desc} 리밸런싱 | 09:00-15:00 리스크 감시 | "
         f"15:15 방어 체크 | 15:35 일별 리포트"
     )
-    logger.info("  09:00-15:30 DART 공시 폴링 (5분) | 17:00 일일 공시 요약")
+    if dn.enabled:
+        logger.info(
+            "  %s-%s DART 공시 폴링 (%d분) | %s 일일 공시 요약",
+            dn.market_open, dn.market_close, dn.polling_interval_minutes,
+            dn.daily_summary.send_time,
+        )
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     TelegramNotifier().send(f"퀀트 스케줄러가 시작되었습니다.\n{now}")
 

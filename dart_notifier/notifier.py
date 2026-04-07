@@ -87,10 +87,12 @@ class DartDisclosureNotifier:
             self._daily_api_count_date = today
         self._daily_api_count += 1
 
-        if self._daily_api_count == 8000:
+        threshold = settings.dart_notifier.api_limit.daily_warning_threshold
+        if self._daily_api_count == threshold:
             logger.warning(
-                "DART API 일일 호출 8,000건 도달 (한도 10,000건). "
-                "폴링 간격 확대를 검토하세요."
+                "DART API 일일 호출 %d건 도달 (한도 10,000건). "
+                "폴링 간격 확대를 검토하세요.",
+                threshold,
             )
         if self._daily_api_count % 100 == 0:
             logger.info("DART API 일일 호출: %d건", self._daily_api_count)

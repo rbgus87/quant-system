@@ -120,30 +120,132 @@ class RiskGuardConfig:
 
 
 @dataclass
-class DartDisclosureConfig:
-    """DART 공시 알림 설정"""
-
-    enabled: bool = True
-    poll_interval_minutes: int = 5
-    instant_types: list[str] = field(default_factory=lambda: [
-        "B001", "B002", "B003", "E001", "E002",
-        "G001", "G002", "G003", "G004",
-        "H001", "H002", "H003",
-        "I001", "I002",
-    ])
-    daily_summary_types: list[str] = field(default_factory=lambda: [
-        "A001", "A002", "A003",
-    ])
-
-
-@dataclass
 class MonitoringConfig:
     """모니터링 설정"""
 
     snapshot_enabled: bool = True  # 일간 스냅샷 DB 저장
     benchmark_enabled: bool = True  # KOSPI 벤치마크 비교
     risk_guard: RiskGuardConfig = field(default_factory=RiskGuardConfig)
-    dart_disclosure: DartDisclosureConfig = field(default_factory=DartDisclosureConfig)
+
+
+# ──────────────────────────────────────────────
+# DART 공시 알림
+# ──────────────────────────────────────────────
+
+# 카테고리 별칭 → pblntf_detail_ty 코드 매핑
+DART_CATEGORY_ALIASES: dict[str, list[str]] = {
+    "major_report": ["B001", "B002"],
+    "unfaithful_disclosure": ["E001"],
+    "fair_disclosure": ["E002"],
+    "largest_shareholder": ["B003"],
+    "convertible_bond": ["G001", "G002"],
+    "capital_change": ["G003", "G004"],
+    "merger_split": ["H001", "H002", "H003"],
+    "stock_exchange": ["I001", "I002"],
+    "annual_report": ["A001"],
+    "semi_annual_report": ["A002"],
+    "quarterly_report": ["A003"],
+}
+
+
+def resolve_dart_categories(categories: list[str]) -> list[str]:
+    """카테고리 별칭 리스트를 pblntf_detail_ty 코드 리스트로 변환한다.
+
+    별칭이면 매핑된 코드들로 확장, 이미 코드(예: B001)면 그대로 유지.
+
+    Args:
+        categories: 별칭 또는 코드 리스트
+
+    Returns:
+        pblntf_detail_ty 코드 리스트 (중복 제거)
+
+    Raises:
+        ValueError: 인식할 수 없는 카테고리가 있을 때
+    """
+    codes: list[str] = []
+    unknown: list[str] = []
+    for cat in categories:
+        if cat in DART_CATEGORY_ALIASES:
+            codes.extend(DART_CATEGORY_ALIASES[cat])
+        elif len(cat) == 4 and cat[0].isalpha() and cat[1:].isdigit():
+            codes.append(cat)
+        else:
+            unknown.append(cat)
+
+    if unknown:
+        valid = sorted(DART_CATEGORY_ALIASES.keys())
+        raise ValueError(
+            f"알 수 없는 dart_notifier 카테고리: {unknown}\n"
+            f"유효한 별칭: {valid}\n"
+            f"또는 DART pblntf_detail_ty 코드(예: B001)를 직접 사용하세요."
+        )
+
+    # 중복 제거 (순서 유지)
+    seen: set[str] = set()
+    result: list[str] = []
+    for c in codes:
+        if c not in seen:
+            seen.add(c)
+            result.append(c)
+    return result
+
+
+@dataclass
+class InstantAlertConfig:
+    """즉시 알림 설정"""
+
+    enabled: bool = True
+    categories: list[str] = field(default_factory=lambda: [
+        "major_report", "unfaithful_disclosure", "fair_disclosure",
+        "largest_shareholder", "convertible_bond", "capital_change",
+        "merger_split",
+    ])
+
+
+@dataclass
+class DailySummaryConfig:
+    """일일 요약 설정"""
+
+    enabled: bool = True
+    send_time: str = "17:00"
+
+
+@dataclass
+class ApiLimitConfig:
+    """API 한도 설정"""
+
+    daily_warning_threshold: int = 8000
+
+
+@dataclass
+class DartNotifierConfig:
+    """DART 공시 알림 설정 (top-level 섹션)"""
+
+    enabled: bool = True
+    polling_interval_minutes: int = 5
+    market_hours_only: bool = True
+    market_open: str = "09:00"
+    market_close: str = "15:30"
+    instant_alert: InstantAlertConfig = field(default_factory=InstantAlertConfig)
+    daily_summary: DailySummaryConfig = field(default_factory=DailySummaryConfig)
+    api_limit: ApiLimitConfig = field(default_factory=ApiLimitConfig)
+
+    def get_instant_codes(self) -> list[str]:
+        """즉시 알림 카테고리를 pblntf_detail_ty 코드 리스트로 변환한다."""
+        return resolve_dart_categories(self.instant_alert.categories)
+
+
+# ──────────────────────────────────────────────
+# 로깅 설정
+# ──────────────────────────────────────────────
+
+
+@dataclass
+class LoggingConfig:
+    """로깅 설정"""
+
+    trading_log_retention_days: int = 90
+    system_log_retention_days: int = 30
 
 
 # --- YAML 로드 / 적용 / 검증 ---
@@ -177,6 +279,8 @@ _YAML_SECTIONS = {
     "portfolio": PortfolioConfig,
     "trading": TradingConfig,
     "monitoring": MonitoringConfig,
+    "dart_notifier": DartNotifierConfig,
+    "logging": LoggingConfig,
 }
 
 
@@ -329,6 +433,68 @@ def validate_settings(s: "Settings") -> None:
     if s.portfolio.holding_buffer_ratio < 1.0:
         errors.append(f"holding_buffer_ratio는 1.0 이상이어야 합니다: {s.portfolio.holding_buffer_ratio}")
 
+    # ── dart_notifier 검증 ──
+    dn = s.dart_notifier
+    if dn.enabled:
+        # market_open < market_close
+        try:
+            from datetime import datetime as _dt
+
+            t_open = _dt.strptime(dn.market_open, "%H:%M")
+            t_close = _dt.strptime(dn.market_close, "%H:%M")
+            if t_open >= t_close:
+                errors.append(
+                    f"dart_notifier.market_open({dn.market_open})이 "
+                    f"market_close({dn.market_close})보다 같거나 늦습니다."
+                )
+        except ValueError:
+            errors.append(
+                f"dart_notifier.market_open/market_close 형식 오류. "
+                f"HH:MM 형식이어야 합니다. (현재: {dn.market_open}, {dn.market_close})"
+            )
+
+        # 카테고리 별칭 검증
+        try:
+            resolve_dart_categories(dn.instant_alert.categories)
+        except ValueError as e:
+            errors.append(str(e))
+
+        # polling_interval_minutes 범위
+        if dn.polling_interval_minutes < 1:
+            errors.append(
+                f"dart_notifier.polling_interval_minutes는 1 이상이어야 합니다: "
+                f"{dn.polling_interval_minutes}"
+            )
+
+        # daily_summary.send_time 형식
+        try:
+            _dt.strptime(dn.daily_summary.send_time, "%H:%M")
+        except ValueError:
+            errors.append(
+                f"dart_notifier.daily_summary.send_time 형식 오류. "
+                f"HH:MM 형식이어야 합니다. (현재: {dn.daily_summary.send_time})"
+            )
+
+        # api_limit 범위
+        if dn.api_limit.daily_warning_threshold < 100:
+            errors.append(
+                f"dart_notifier.api_limit.daily_warning_threshold는 100 이상이어야 합니다: "
+                f"{dn.api_limit.daily_warning_threshold}"
+            )
+
+    # ── logging 검증 ──
+    lg = s.logging
+    if lg.trading_log_retention_days < 1:
+        errors.append(
+            f"logging.trading_log_retention_days는 1 이상이어야 합니다: "
+            f"{lg.trading_log_retention_days}"
+        )
+    if lg.system_log_retention_days < 1:
+        errors.append(
+            f"logging.system_log_retention_days는 1 이상이어야 합니다: "
+            f"{lg.system_log_retention_days}"
+        )
+
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -345,6 +511,8 @@ class Settings:
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    dart_notifier: DartNotifierConfig = field(default_factory=DartNotifierConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     # 키움 REST API
     kiwoom_app_key: str = field(default_factory=lambda: os.getenv("KIWOOM_APP_KEY", ""))
@@ -388,6 +556,17 @@ class Settings:
         data = _load_yaml(config_path)
         if data:
             _apply_yaml(self, data)
+            # 기본값 폴백 경고
+            if "dart_notifier" not in data:
+                logger.warning(
+                    "config.yaml에 dart_notifier 섹션 없음 — 기본값으로 동작합니다. "
+                    "docs/config_reference.md를 참조하세요."
+                )
+            if "logging" not in data:
+                logger.warning(
+                    "config.yaml에 logging 섹션 없음 — 기본값으로 동작합니다. "
+                    "docs/config_reference.md를 참조하세요."
+                )
         validate_settings(self)
 
 

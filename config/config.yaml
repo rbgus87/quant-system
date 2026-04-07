@@ -2,6 +2,8 @@
 # 퀀트 전략 설정 파일 (v2.0 최종 확정)
 # 코드 변경 없이 전략 파라미터를 조정합니다.
 # API 키 등 비밀정보는 .env 파일에서 관리합니다.
+#
+# ※ 핫리로드 미지원: 설정 변경 후 앱을 재시작해야 적용됩니다.
 # ============================================================
 #
 # 적용 순서: 전략 프리셋 → 금액 프리셋 → 개별 설정 덮어쓰기
@@ -204,27 +206,35 @@ monitoring:
     stop_loss_pct: -20
     max_drawdown_alert_pct: -15
     check_interval_minutes: 30
-  dart_disclosure:
+
+# === DART 공시 알림 설정 ===
+# ※ 설정 변경 시 앱 재시작 필요 (핫리로드 미지원)
+dart_notifier:
+  enabled: true
+  polling_interval_minutes: 5
+  market_hours_only: true           # 장중에만 폴링
+  market_open: "09:00"
+  market_close: "15:30"
+  instant_alert:
     enabled: true
-    poll_interval_minutes: 5
-    # 즉시 알림 공시 유형 코드 (pblntf_detail_ty)
-    instant_types:
-      - B001  # 주요사항보고서
-      - B002  # 주요경영사항신고
-      - B003  # 최대주주변경
-      - E001  # 불성실공시법인지정
-      - E002  # 공정공시
-      - G001  # 전환사채등발행
-      - G002  # 신주인수권부사채발행
-      - G003  # 유상증자
-      - G004  # 무상증자
-      - H001  # 합병
-      - H002  # 분할
-    # 일일 요약 공시 유형 코드
-    daily_summary_types:
-      - A001  # 사업보고서
-      - A002  # 반기보고서
-      - A003  # 분기보고서
+    categories:                     # 별칭 또는 pblntf_detail_ty 코드
+      - major_report                # 주요사항보고서 (B001, B002)
+      - unfaithful_disclosure       # 불성실공시법인지정 (E001)
+      - fair_disclosure             # 공정공시 (E002)
+      - largest_shareholder         # 최대주주변경 (B003)
+      - convertible_bond            # 전환사채/신주인수권부사채 (G001, G002)
+      - capital_change              # 유무상증자 (G003, G004)
+      - merger_split                # 합병/분할 (H001, H002, H003)
+  daily_summary:
+    enabled: true
+    send_time: "17:00"
+  api_limit:
+    daily_warning_threshold: 8000
+
+# === 로깅 설정 ===
+logging:
+  trading_log_retention_days: 90    # 거래 로그 보관 (일)
+  system_log_retention_days: 30     # 시스템 로그 보관 (일)
 
 # ============================================================
 # [ARCHIVED] v2.0 이전 프리셋 (롤백용)
