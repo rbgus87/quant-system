@@ -22,6 +22,7 @@ def main() -> None:
     import multiprocessing
     multiprocessing.freeze_support()
 
+    import logging
     setup_logging()
     setup_matplotlib_korean_font()
 
@@ -30,6 +31,15 @@ def main() -> None:
     app.setStyle("Fusion")
 
     window = MainWindow()
+
+    # GUI 프로세스 내부 로그를 탭별 로그 뷰어로 라우팅
+    from config.logging_config import _LOG_FORMAT, _LOG_DATEFMT
+    from gui.widgets.log_handler import QtLogHandler
+
+    qt_handler = QtLogHandler(window._log_viewer.bridge)
+    qt_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    logging.getLogger().addHandler(qt_handler)
+
     window.show()
 
     sys.exit(app.exec())

@@ -27,7 +27,7 @@ from gui.widgets.backtest_runner import BacktestRunner
 from gui.widgets.chart_view import ChartView
 from gui.widgets.emergency_panel import EmergencyPanel
 from gui.widgets.factor_scores import FactorScores
-from gui.widgets.log_viewer import LogViewer
+from gui.widgets.log_viewer import TabbedLogViewer
 from gui.widgets.portfolio_view import PortfolioView
 from gui.widgets.preset_panel import PresetPanel
 from gui.widgets.rebalance_history import RebalanceHistory
@@ -139,8 +139,8 @@ class MainWindow(QMainWindow):
         tabs_layout.addWidget(self._tabs)
         v_splitter.addWidget(tabs_widget)
 
-        # 하단: 로그 (항상 표시)
-        self._log_viewer = LogViewer()
+        # 하단: 로그 (3탭: 거래/시스템/에러)
+        self._log_viewer = TabbedLogViewer()
         v_splitter.addWidget(self._log_viewer)
 
         v_splitter.setSizes([500, 200])
@@ -187,15 +187,10 @@ class MainWindow(QMainWindow):
         if self._is_dark:
             self.setStyleSheet(dark_theme())
             self._theme_btn.setText("Light")
-            self._log_viewer._text.setStyleSheet(
-                "QTextEdit { background-color: #1E1E1E; color: #CCCCCC; }"
-            )
         else:
             self.setStyleSheet(light_theme())
             self._theme_btn.setText("Dark")
-            self._log_viewer._text.setStyleSheet(
-                "QTextEdit { background-color: #FAFAFA; color: #212529; }"
-            )
+        self._log_viewer.set_dark_mode(self._is_dark)
         # 차트 테마 동기화
         self._chart_view.set_dark_mode(self._is_dark)
 
