@@ -24,22 +24,70 @@ def build() -> None:
         # config.yaml 등 데이터 파일 포함
         f"--add-data={os.path.join(PROJECT_ROOT, 'config', 'config.yaml')};config",
         # 히든 임포트 (동적 import 되는 모듈)
+        # config
         "--hidden-import=config.settings",
         "--hidden-import=config.calendar",
+        "--hidden-import=config.font",
+        "--hidden-import=config.logging_config",
+        # data
         "--hidden-import=data.collector",
         "--hidden-import=data.storage",
-        "--hidden-import=trading.kiwoom_api",
-        "--hidden-import=trading.order",
-        "--hidden-import=notify.telegram",
-        "--hidden-import=strategy.screener",
-        "--hidden-import=strategy.market_regime",
-        "--hidden-import=strategy.rebalancer",
+        "--hidden-import=data.dart_client",
+        "--hidden-import=data.processor",
+        # factors
         "--hidden-import=factors.composite",
         "--hidden-import=factors.value",
         "--hidden-import=factors.momentum",
         "--hidden-import=factors.quality",
+        "--hidden-import=factors.utils",
+        # strategy
+        "--hidden-import=strategy.screener",
+        "--hidden-import=strategy.market_regime",
+        "--hidden-import=strategy.rebalancer",
+        # backtest (리포트/분석용)
+        "--hidden-import=backtest.engine",
+        "--hidden-import=backtest.metrics",
+        "--hidden-import=backtest.report",
+        # trading
+        "--hidden-import=trading.kiwoom_api",
+        "--hidden-import=trading.order",
+        # notify
+        "--hidden-import=notify.telegram",
+        # scheduler
         "--hidden-import=scheduler.main",
+        # monitor (장중 리스크 감시 — 누락 시 스케줄러 Job 실패)
+        "--hidden-import=monitor.alert",
+        "--hidden-import=monitor.benchmark",
+        "--hidden-import=monitor.drift",
+        "--hidden-import=monitor.risk_guard",
+        "--hidden-import=monitor.snapshot",
+        "--hidden-import=monitor.storage",
+        # dart_notifier (공시 알림)
+        "--hidden-import=dart_notifier.filter",
+        "--hidden-import=dart_notifier.notifier",
+        "--hidden-import=dart_notifier.storage",
+        # gui
+        "--hidden-import=gui.app",
+        "--hidden-import=gui.main_window",
+        "--hidden-import=gui.themes",
+        "--hidden-import=gui.tray_icon",
+        "--hidden-import=gui.widgets.backtest_runner",
+        "--hidden-import=gui.widgets.chart_view",
+        "--hidden-import=gui.widgets.emergency_panel",
+        "--hidden-import=gui.widgets.factor_scores",
+        "--hidden-import=gui.widgets.log_handler",
+        "--hidden-import=gui.widgets.log_viewer",
+        "--hidden-import=gui.widgets.portfolio_view",
+        "--hidden-import=gui.widgets.preset_panel",
+        "--hidden-import=gui.widgets.rebalance_history",
+        "--hidden-import=gui.widgets.scheduler_panel",
+        "--hidden-import=gui.widgets.status_bar",
+        # 외부 런타임 동적 import (PyInstaller 자동 감지 불가)
         "--hidden-import=yaml",
+        "--hidden-import=quantstats",
+        "--hidden-import=apscheduler",
+        "--hidden-import=finance_datareader",
+        "--hidden-import=pykrx_openapi",
         # 빌드 디렉토리
         f"--distpath={os.path.join(PROJECT_ROOT, 'dist')}",
         f"--workpath={os.path.join(PROJECT_ROOT, 'build')}",
