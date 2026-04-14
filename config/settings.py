@@ -249,6 +249,30 @@ class LoggingConfig:
     system_log_retention_days: int = 30
 
 
+# ──────────────────────────────────────────────
+# 스케줄러 설정
+# ──────────────────────────────────────────────
+
+
+@dataclass
+class DailyDataCollectionConfig:
+    """일별 데이터 수집 Job 설정 (16:00 장 마감 후)"""
+
+    enabled: bool = True
+    hour: int = 16
+    minute: int = 0
+    markets: list[str] = field(default_factory=lambda: ["KOSPI"])
+
+
+@dataclass
+class ScheduleConfig:
+    """스케줄러 Job 설정"""
+
+    daily_data_collection: DailyDataCollectionConfig = field(
+        default_factory=DailyDataCollectionConfig
+    )
+
+
 # --- YAML 로드 / 적용 / 검증 ---
 
 
@@ -282,6 +306,7 @@ _YAML_SECTIONS = {
     "monitoring": MonitoringConfig,
     "dart_notifier": DartNotifierConfig,
     "logging": LoggingConfig,
+    "schedule": ScheduleConfig,
 }
 
 
@@ -491,6 +516,24 @@ def validate_settings(s: "Settings") -> None:
                 f"{dn.api_limit.daily_warning_threshold}"
             )
 
+    # ── schedule 검증 ──
+    dc = s.schedule.daily_data_collection
+    if not (0 <= dc.hour <= 23):
+        errors.append(
+            f"schedule.daily_data_collection.hour는 0~23이어야 합니다: {dc.hour}"
+        )
+    if not (0 <= dc.minute <= 59):
+        errors.append(
+            f"schedule.daily_data_collection.minute는 0~59이어야 합니다: {dc.minute}"
+        )
+    if not dc.markets:
+        errors.append("schedule.daily_data_collection.markets가 비어 있습니다")
+    for m in dc.markets:
+        if m not in ("KOSPI", "KOSDAQ"):
+            errors.append(
+                f"schedule.daily_data_collection.markets에 지원하지 않는 값: {m}"
+            )
+
     # ── logging 검증 ──
     lg = s.logging
     if lg.trading_log_retention_days < 1:
@@ -522,6 +565,7 @@ class Settings:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     dart_notifier: DartNotifierConfig = field(default_factory=DartNotifierConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
 
     # 키움 REST API
     kiwoom_app_key: str = field(default_factory=lambda: os.getenv("KIWOOM_APP_KEY", ""))

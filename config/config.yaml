@@ -240,6 +240,15 @@ logging:
   trading_log_retention_days: 90    # 거래 로그 보관 (일)
   system_log_retention_days: 30     # 시스템 로그 보관 (일)
 
+# === 스케줄러 설정 ===
+# ※ 설정 변경 시 앱 재시작 필요 (핫리로드 미지원)
+schedule:
+  daily_data_collection:
+    enabled: true
+    hour: 16                        # 장 마감(15:30) 후 가격 데이터 확정 시점
+    minute: 0
+    markets: ["KOSPI"]              # 현재 프리셋 A와 일치. 향후 ["KOSPI","KOSDAQ"] 확장 가능
+
 # ============================================================
 # [ARCHIVED] v2.0 이전 프리셋 (롤백용)
 # ============================================================

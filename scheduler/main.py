@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta
+from typing import Optional
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -500,6 +501,116 @@ def run_risk_guard_delisting() -> None:
 
 
 # ────────────────────────────────────────────
+# 일별 데이터 수집
+# ────────────────────────────────────────────
+
+
+def _collect_daily_data_once(date_str: str, markets: list[str]) -> tuple[int, int]:
+    """해당 날짜에 대해 prefetch + fundamentals 1회 수집.
+
+    Args:
+        date_str: 기준 날짜 (YYYYMMDD)
+        markets: 수집할 시장 리스트 (예: ["KOSPI"])
+
+    Returns:
+        (prefetched_rows, fundamentals_rows) 수집 결과 합계
+    """
+    from data.collector import KRXDataCollector
+
+    collector = KRXDataCollector()
+    prefetch_total = 0
+    fund_total = 0
+
+    for market in markets:
+        # 1) OHLCV + 시가총액 (KRX Open API 1회 호출)
+        pf_df = collector.prefetch_daily_trade(date_str, market=market)
+        pf_count = len(pf_df) if pf_df is not None else 0
+        prefetch_total += pf_count
+        logger.info(
+            "[%s/%s] prefetch 완료: %d 종목 (daily_price + market_cap)",
+            date_str, market, pf_count,
+        )
+
+        # 2) 기본 지표 (PER/PBR/EPS/DIV/PCR — KRX API → DART 폴백)
+        fund_df = collector.get_fundamentals_all(date_str, market=market)
+        fund_count = len(fund_df) if fund_df is not None else 0
+        fund_total += fund_count
+        logger.info(
+            "[%s/%s] fundamentals 완료: %d 종목",
+            date_str, market, fund_count,
+        )
+
+    return prefetch_total, fund_total
+
+
+def run_daily_data_collection() -> None:
+    """매 영업일 장 마감 후 일별 데이터 수집 (기본 16:00).
+
+    - 휴장일이면 즉시 종료
+    - prefetch_daily_trade: daily_price + market_cap 갱신
+    - get_fundamentals_all: fundamental 갱신
+    - 실패 시 30분 후 1회 재시도 (DART API 일시 장애 대응)
+    - 최종 실패 시 텔레그램 에러 알림
+    """
+    if not is_business_day():
+        logger.info("일별 데이터 수집: 휴장일이므로 스킵")
+        return
+
+    cfg = settings.schedule.daily_data_collection
+    if not cfg.enabled:
+        logger.info("일별 데이터 수집: config에서 비활성화됨")
+        return
+
+    today_str = datetime.now().strftime("%Y%m%d")
+    markets = cfg.markets
+    logger.info(
+        "일별 데이터 수집 시작 — 기준일 %s, 시장 %s",
+        today_str, "+".join(markets),
+    )
+
+    import time as _time
+
+    notifier = TelegramNotifier()
+    retry_delay_sec = 1800  # 30분
+    last_error: Optional[Exception] = None
+
+    for attempt in range(2):  # 최초 1회 + 재시도 1회
+        try:
+            pf_total, fund_total = _collect_daily_data_once(today_str, markets)
+            if pf_total == 0 and fund_total == 0:
+                # API가 응답은 했지만 데이터가 비어 있는 경우 (비정상)
+                raise RuntimeError(
+                    f"[{today_str}] 수집 결과가 비어 있음 "
+                    f"(prefetch=0, fundamentals=0)"
+                )
+            logger.info(
+                "일별 데이터 수집 완료 — prefetch %d건, fundamentals %d건",
+                pf_total, fund_total,
+            )
+            return
+        except Exception as e:
+            last_error = e
+            if attempt == 0:
+                logger.warning(
+                    "일별 데이터 수집 실패 (시도 1/2): %s — %d분 후 재시도",
+                    e, retry_delay_sec // 60,
+                )
+                _time.sleep(retry_delay_sec)
+            else:
+                logger.error(
+                    "일별 데이터 수집 최종 실패 (2회 시도 모두 실패): %s",
+                    e, exc_info=True,
+                )
+
+    # 최종 실패 알림
+    notifier.send_error(
+        f"일별 데이터 수집 최종 실패 (2회 재시도 후 실패)\n"
+        f"기준일: {today_str}\n"
+        f"오류: {last_error}"
+    )
+
+
+# ────────────────────────────────────────────
 # DART 공시 알림
 # ────────────────────────────────────────────
 
@@ -633,6 +744,11 @@ def main() -> None:
         action="store_true",
         help="스크리닝만 실행 (매매 없이 종목 목록만 확인)",
     )
+    parser.add_argument(
+        "--collect-now",
+        action="store_true",
+        help="일별 데이터 수집 Job을 즉시 1회 실행 후 종료",
+    )
     args = parser.parse_args()
 
     setup_logging()
@@ -670,6 +786,10 @@ def main() -> None:
 
     if args.now:
         _force_rebalancing()
+        return
+
+    if args.collect_now:
+        run_daily_data_collection()
         return
 
     from apscheduler.schedulers.blocking import BlockingScheduler
@@ -729,6 +849,19 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
+    # 일별 데이터 수집 (기본 16:00, 장 마감 후)
+    dc = settings.schedule.daily_data_collection
+    if dc.enabled:
+        scheduler.add_job(
+            run_daily_data_collection,
+            trigger="cron",
+            day_of_week="mon-fri",
+            hour=dc.hour,
+            minute=dc.minute,
+            id="daily_data_collection",
+            misfire_grace_time=600,
+        )
+
     # DART 공시 폴링 + 일일 요약 (config 기반)
     dn = settings.dart_notifier
     if dn.enabled:
@@ -766,6 +899,11 @@ def main() -> None:
         f"  {settings.portfolio.rebalance_time} {freq_desc} 리밸런싱 | "
         f"09:00-15:00 리스크 감시 | 15:15 방어 체크 | 15:35 일별 리포트"
     )
+    if dc.enabled:
+        logger.info(
+            "  %02d:%02d 일별 데이터 수집 (%s)",
+            dc.hour, dc.minute, "+".join(dc.markets),
+        )
     if dn.enabled:
         logger.info(
             "  %s-%s DART 공시 폴링 (%d분) | %s 일일 공시 요약",
