@@ -201,44 +201,91 @@ class TestTakeDailySnapshot:
 
 
 class TestBenchmark:
-    """KOSPI 벤치마크 조회 폴백"""
+    """KOSPI 벤치마크 조회 폴백 (Naver → KRX OpenAPI → pykrx → FDR)"""
 
-    @patch("pykrx.stock.get_index_ohlcv_by_date")
-    def test_pykrx_success(self, mock_pykrx) -> None:
-        """pykrx 정상 조회"""
-        import pandas as pd
-
-        mock_pykrx.return_value = pd.DataFrame(
-            {"종가": [2700.0, 2710.0]},
-            index=pd.to_datetime(["2026-03-28", "2026-03-31"]),
-        )
+    @patch("monitor.benchmark._fetch_naver_kospi_closes")
+    def test_naver_success(self, mock_naver) -> None:
+        """Naver 1차 정상 조회"""
+        mock_naver.return_value = [
+            ("2026-03-31", 2710.0),
+            ("2026-03-28", 2700.0),
+        ]
         result = get_kospi_daily_return("2026-03-31")
         expected = 2710.0 / 2700.0 - 1
         assert result == pytest.approx(expected)
 
-    @patch("pykrx.stock.get_index_ohlcv_by_date", side_effect=Exception("error"))
-    def test_pykrx_fail_fdr_fallback(self, mock_pykrx) -> None:
-        """pykrx 실패 시 FDR 폴백"""
+    @patch("monitor.benchmark._fetch_naver_kospi_closes", return_value=[])
+    def test_krx_openapi_fallback(self, mock_naver) -> None:
+        """Naver 실패 시 KRX Open API 폴백 (FLUC_RT 사용)"""
+        mock_api = MagicMock()
+        mock_api.get_kospi_daily_trade.return_value = {
+            "OutBlock_1": [
+                {"IDX_NM": "코스피 (외국주포함)", "CLSPRC_IDX": None, "FLUC_RT": None},
+                {"IDX_NM": "코스피", "CLSPRC_IDX": 2710.0, "FLUC_RT": 0.37},
+                {"IDX_NM": "코스피 200", "CLSPRC_IDX": 360.0, "FLUC_RT": 0.5},
+            ]
+        }
+        mock_module = MagicMock()
+        mock_module.KRXOpenAPI.return_value = mock_api
+        with patch.dict("sys.modules", {"pykrx_openapi": mock_module}):
+            result = get_kospi_daily_return("2026-03-31")
+        assert result == pytest.approx(0.0037)
+
+    @patch("monitor.benchmark._fetch_naver_kospi_closes", return_value=[])
+    def test_pykrx_fallback(self, mock_naver) -> None:
+        """Naver, KRX OpenAPI 실패 시 pykrx 폴백"""
         import pandas as pd
+
+        mock_openapi_module = MagicMock()
+        mock_openapi_module.KRXOpenAPI.side_effect = Exception("openapi error")
+
+        with patch.dict("sys.modules", {"pykrx_openapi": mock_openapi_module}):
+            with patch("pykrx.stock.get_index_ohlcv_by_date") as mock_pykrx:
+                mock_pykrx.return_value = pd.DataFrame(
+                    {"종가": [2700.0, 2712.0]},
+                    index=pd.to_datetime(["2026-03-28", "2026-03-31"]),
+                )
+                result = get_kospi_daily_return("2026-03-31")
+        expected = 2712.0 / 2700.0 - 1
+        assert result == pytest.approx(expected)
+
+    @patch("monitor.benchmark._fetch_naver_kospi_closes", return_value=[])
+    @patch("pykrx.stock.get_index_ohlcv_by_date", side_effect=Exception("error"))
+    def test_fdr_fallback(self, mock_pykrx, mock_naver) -> None:
+        """상위 3소스 실패 시 FDR 폴백"""
+        import pandas as pd
+
+        mock_openapi_module = MagicMock()
+        mock_openapi_module.KRXOpenAPI.side_effect = Exception("openapi error")
 
         mock_fdr = MagicMock()
         mock_fdr.DataReader.return_value = pd.DataFrame(
             {"Close": [2700.0, 2715.0]},
             index=pd.to_datetime(["2026-03-28", "2026-03-31"]),
         )
-        with patch.dict("sys.modules", {"FinanceDataReader": mock_fdr}):
+        with patch.dict(
+            "sys.modules",
+            {"pykrx_openapi": mock_openapi_module, "FinanceDataReader": mock_fdr},
+        ):
             result = get_kospi_daily_return("2026-03-31")
-            expected = 2715.0 / 2700.0 - 1
-            assert result == pytest.approx(expected)
+        expected = 2715.0 / 2700.0 - 1
+        assert result == pytest.approx(expected)
 
+    @patch("monitor.benchmark._fetch_naver_kospi_closes", return_value=[])
     @patch("pykrx.stock.get_index_ohlcv_by_date", side_effect=Exception("err"))
-    def test_all_fail_returns_zero(self, mock_pykrx) -> None:
+    def test_all_fail_returns_zero(self, mock_pykrx, mock_naver) -> None:
         """모든 소스 실패 시 0.0 반환"""
+        mock_openapi_module = MagicMock()
+        mock_openapi_module.KRXOpenAPI.side_effect = Exception("openapi error")
+
         mock_fdr = MagicMock()
         mock_fdr.DataReader.side_effect = Exception("fdr error")
-        with patch.dict("sys.modules", {"FinanceDataReader": mock_fdr}):
+        with patch.dict(
+            "sys.modules",
+            {"pykrx_openapi": mock_openapi_module, "FinanceDataReader": mock_fdr},
+        ):
             result = get_kospi_daily_return("2026-03-31")
-            assert result == 0.0
+        assert result == 0.0
 
 
 # ── telegram 벤치마크 섹션 테스트 ──
