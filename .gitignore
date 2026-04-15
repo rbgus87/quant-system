@@ -26,6 +26,7 @@ data/quant.db-shm
 data/quant.db-wal
 data/monitor.db-shm
 data/monitor.db-wal
+data/bias_detail_*.csv
 marcap_repo/
 report_snapshot.md
 KoreanQuant.exe

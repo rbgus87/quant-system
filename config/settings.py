@@ -265,11 +265,29 @@ class DailyDataCollectionConfig:
 
 
 @dataclass
+class DelistedRefreshConfig:
+    """상장폐지 데이터 월간 갱신 Job 설정.
+
+    day_of_month=-1 → 마지막 영업일 (APScheduler 'last' 트리거)
+    auto_download=False → KIND 자동 다운로드 실패 시 텔레그램 수동 안내만 발송
+    """
+
+    enabled: bool = True
+    day_of_month: int = -1  # -1 = last business day
+    hour: int = 16
+    minute: int = 0
+    auto_download: bool = False
+
+
+@dataclass
 class ScheduleConfig:
     """스케줄러 Job 설정"""
 
     daily_data_collection: DailyDataCollectionConfig = field(
         default_factory=DailyDataCollectionConfig
+    )
+    delisted_refresh: DelistedRefreshConfig = field(
+        default_factory=DelistedRefreshConfig
     )
 
 
@@ -533,6 +551,19 @@ def validate_settings(s: "Settings") -> None:
             errors.append(
                 f"schedule.daily_data_collection.markets에 지원하지 않는 값: {m}"
             )
+
+    dr = s.schedule.delisted_refresh
+    if not (0 <= dr.hour <= 23):
+        errors.append(f"schedule.delisted_refresh.hour는 0~23이어야 합니다: {dr.hour}")
+    if not (0 <= dr.minute <= 59):
+        errors.append(
+            f"schedule.delisted_refresh.minute는 0~59이어야 합니다: {dr.minute}"
+        )
+    if not (dr.day_of_month == -1 or 1 <= dr.day_of_month <= 28):
+        errors.append(
+            f"schedule.delisted_refresh.day_of_month는 -1(마지막 영업일) 또는 "
+            f"1~28이어야 합니다: {dr.day_of_month}"
+        )
 
     # ── logging 검증 ──
     lg = s.logging

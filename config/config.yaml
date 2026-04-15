@@ -249,6 +249,13 @@ schedule:
     minute: 0
     markets: ["KOSPI"]              # 현재 프리셋 A와 일치. 향후 ["KOSPI","KOSDAQ"] 확장 가능
 
+  delisted_refresh:
+    enabled: true
+    day_of_month: -1                # -1=마지막 영업일, 또는 1~28 지정
+    hour: 16
+    minute: 0
+    auto_download: false            # true=KIND 자동 다운로드 시도(실험적), false=수동 갱신 안내만
+
 # ============================================================
 # [ARCHIVED] v2.0 이전 프리셋 (롤백용)
 # ============================================================

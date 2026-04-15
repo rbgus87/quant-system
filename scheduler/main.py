@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 # 프로젝트 루트를 sys.path에 추가
@@ -563,6 +564,85 @@ def run_risk_guard_delisting() -> None:
         logger.error(f"관리종목 캐시 갱신 오류: {e}")
 
 
+def refresh_delisted_data() -> None:
+    """상장폐지 데이터 월간 갱신 (매월 설정된 날짜/시각 실행).
+
+    동작:
+    1. config의 auto_download=True면 KIND에서 최신 .xls 다운로드 시도
+       (2026-04 현재 KIND는 CAPTCHA 등 자동화 제약 있음 → 실패 시 수동 안내)
+    2. 파일이 존재하면 `import_delisted.py`와 동일한 로직으로 DB upsert
+    3. 신규 추가·업데이트 건수를 텔레그램으로 알림
+
+    auto_download=False (기본): 텔레그램으로 수동 갱신 안내만 발송
+    """
+    if not is_business_day():
+        return
+
+    cfg = settings.schedule.delisted_refresh
+    if not cfg.enabled:
+        return
+
+    notifier = TelegramNotifier()
+    seed_path = Path("data/seed/delisted_stocks.xls")
+
+    if not cfg.auto_download:
+        # 수동 갱신 안내
+        msg = (
+            "📅 월간 상장폐지 데이터 갱신 필요\n\n"
+            "1. KIND 접속: https://kind.krx.co.kr\n"
+            "2. 상장/폐지 > 상장폐지현황 → Excel 다운로드\n"
+            "3. 파일을 `data/seed/delisted_stocks.xls`로 덮어쓰기\n"
+            "4. `python scripts/import_delisted.py` 실행\n\n"
+            "자세한 절차: `data/seed/README.md`"
+        )
+        try:
+            notifier.send(msg)
+            logger.info("상장폐지 데이터 수동 갱신 안내 발송")
+        except Exception as e:
+            logger.error(f"텔레그램 발송 실패: {e}")
+        return
+
+    # auto_download=True — KIND 다운로드 시도 (현재 미구현 — KIND URL/인증 이슈)
+    logger.warning(
+        "auto_download=True지만 KIND 자동 다운로드는 미구현. 수동 갱신 안내로 폴백."
+    )
+    try:
+        notifier.send(
+            "⚠️ auto_download 활성화됨 — KIND 자동 다운로드는 아직 미구현입니다. "
+            "data/seed/delisted_stocks.xls를 수동 갱신 후 import_delisted.py를 "
+            "실행하세요."
+        )
+    except Exception as e:
+        logger.error(f"텔레그램 발송 실패: {e}")
+
+    # 파일이 이미 존재하면 import만 실행
+    if seed_path.exists():
+        try:
+            from scripts.import_delisted import parse_file  # type: ignore
+
+            rows, skipped = parse_file(seed_path)
+            inserted, updated = storage_for_delisted().upsert_delisted_stocks(rows)
+            summary_msg = (
+                f"📊 상장폐지 DB 갱신 결과\n"
+                f"- 신규 추가: {inserted}건\n"
+                f"- 업데이트: {updated}건\n"
+                f"- 스킵: {skipped}건"
+            )
+            notifier.send(summary_msg)
+            logger.info(f"상장폐지 import: +{inserted} / 업데이트 {updated}")
+        except Exception as e:
+            logger.error(f"상장폐지 import 실패: {e}", exc_info=True)
+            try:
+                notifier.send_error(f"상장폐지 데이터 import 실패: {e}")
+            except Exception:
+                pass
+
+
+def storage_for_delisted():
+    """circular import 회피용 lazy 생성기."""
+    return DataStorage()
+
+
 def run_delisting_imminent_check(days_ahead: int = 30) -> None:
     """보유 종목 상장폐지 임박 감지 (하루 1회, 16:30).
 
@@ -957,6 +1037,37 @@ def main() -> None:
         id="delisting_imminent_check",
         misfire_grace_time=600,
     )
+
+    # 상장폐지 데이터 월간 갱신 (기본: 매월 마지막 영업일 16:00)
+    dr = settings.schedule.delisted_refresh
+    if dr.enabled:
+        if dr.day_of_month == -1:
+            # 마지막 영업일: 매일 cron 실행 + 함수 내부에서 is_last_business_day 체크
+            # 단순화: 28~31일 매일 cron + is_last_business_day_of_month 가드
+            def _refresh_if_last_bday() -> None:
+                if is_last_business_day_of_month():
+                    refresh_delisted_data()
+            scheduler.add_job(
+                _refresh_if_last_bday,
+                trigger="cron",
+                day_of_week="mon-fri",
+                day="28-31",
+                hour=dr.hour,
+                minute=dr.minute,
+                id="delisted_refresh",
+                misfire_grace_time=600,
+            )
+        else:
+            scheduler.add_job(
+                refresh_delisted_data,
+                trigger="cron",
+                day_of_week="mon-fri",
+                day=dr.day_of_month,
+                hour=dr.hour,
+                minute=dr.minute,
+                id="delisted_refresh",
+                misfire_grace_time=600,
+            )
 
     # 일별 데이터 수집 (기본 16:00, 장 마감 후)
     dc = settings.schedule.daily_data_collection
