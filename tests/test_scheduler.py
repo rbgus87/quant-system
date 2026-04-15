@@ -83,6 +83,75 @@ class TestRunScheduledRebalancing:
             run_scheduled_rebalancing()
             mock_notifier.assert_not_called()
 
+    def test_filter_already_traded_today_no_trades(self) -> None:
+        """오늘 체결된 주문 없음 → 원본 그대로 반환"""
+        from scheduler.main import _filter_already_traded_today
+
+        mock_storage = MagicMock()
+        mock_storage.load_trades.return_value = pd.DataFrame()
+
+        current, target, is_retry = _filter_already_traded_today(
+            current_holdings=["005930", "000660"],
+            target_portfolio=["035720", "051910"],
+            storage=mock_storage,
+        )
+        assert current == ["005930", "000660"]
+        assert target == ["035720", "051910"]
+        assert is_retry is False
+
+    def test_filter_already_traded_today_excludes_sold(self) -> None:
+        """오늘 매도된 종목 → current_holdings에서 제외"""
+        from scheduler.main import _filter_already_traded_today
+
+        mock_storage = MagicMock()
+        mock_storage.load_trades.return_value = pd.DataFrame([
+            {"ticker": "005930", "side": "SELL", "quantity": 100, "amount": 5_000_000},
+        ])
+
+        current, target, is_retry = _filter_already_traded_today(
+            current_holdings=["005930", "000660"],
+            target_portfolio=["035720"],
+            storage=mock_storage,
+        )
+        assert "005930" not in current
+        assert "000660" in current
+        assert is_retry is True
+
+    def test_filter_already_traded_today_excludes_bought(self) -> None:
+        """오늘 매수 완전체결된 종목 → target_portfolio에서 제외"""
+        from scheduler.main import _filter_already_traded_today
+
+        mock_storage = MagicMock()
+        mock_storage.load_trades.return_value = pd.DataFrame([
+            {"ticker": "035720", "side": "BUY", "quantity": 50, "amount": 3_000_000},
+        ])
+
+        current, target, is_retry = _filter_already_traded_today(
+            current_holdings=["005930"],
+            target_portfolio=["035720", "051910"],
+            storage=mock_storage,
+        )
+        assert "035720" not in target
+        assert "051910" in target
+        assert is_retry is True
+
+    def test_filter_skips_failed_buys(self) -> None:
+        """qty=0 또는 amount=0인 매수 실패 기록은 target에서 제외하지 않음"""
+        from scheduler.main import _filter_already_traded_today
+
+        mock_storage = MagicMock()
+        mock_storage.load_trades.return_value = pd.DataFrame([
+            {"ticker": "035720", "side": "BUY", "quantity": 0, "amount": 0},  # 실패 기록
+        ])
+
+        current, target, is_retry = _filter_already_traded_today(
+            current_holdings=["005930"],
+            target_portfolio=["035720"],
+            storage=mock_storage,
+        )
+        # 미체결 기록 → 재시도 시 다시 매수해야 함
+        assert "035720" in target
+
     @patch("scheduler.main.is_last_business_day_of_month", return_value=True)
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_rebalancing_error_sends_telegram(self, mock_bday, mock_last) -> None:

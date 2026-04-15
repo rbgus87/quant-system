@@ -840,3 +840,157 @@ class TestInvestRatio:
         # max_position_pct=10% → 10M*10%=1M / 50,000 ≈ 19주
         assert qty > 0
         assert qty <= 20
+
+
+class TestWaitForBuysToSettle:
+    """매수 체결 확인 테스트 (이슈 1)"""
+
+    @patch("time.sleep")
+    def test_buys_settled_by_order_number(self, mock_sleep, executor, mock_api) -> None:
+        """모든 매수 주문 체결 완료 → 빈 리스트 반환"""
+        mock_api.get_unfilled_orders.side_effect = [
+            [{"ord_no": "B001", "stk_cd": "005930"}],  # 1차: 미체결
+            [],  # 2차: 체결 완료
+        ]
+
+        unfilled = executor._wait_for_buys_to_settle(
+            bought_tickers=["005930"],
+            order_nos=["B001"],
+        )
+
+        assert unfilled == []
+        assert mock_api.get_unfilled_orders.call_count == 2
+
+    @patch("time.sleep")
+    def test_buys_timeout_returns_unfilled_tickers(
+        self, mock_sleep, executor, mock_api
+    ) -> None:
+        """타임아웃 → 미체결 종목 리스트 반환 (예외 아님)"""
+        # 계속 미체결로 응답
+        mock_api.get_unfilled_orders.return_value = [
+            {"ord_no": "B001", "stk_cd": "005930"},
+        ]
+
+        unfilled = executor._wait_for_buys_to_settle(
+            bought_tickers=["005930", "000660"],
+            order_nos=["B001", "B002"],
+            max_wait_sec=6,
+            poll_interval=3,
+        )
+
+        # B001은 미체결 리스트에 여전히 있음 → 005930이 미체결
+        assert "005930" in unfilled
+
+    @patch("time.sleep")
+    def test_buy_max_wait_sec_default_120(
+        self, mock_sleep, executor, mock_api
+    ) -> None:
+        """매수 대기 기본값은 120초 (매도보다 김)"""
+        import inspect
+        sig = inspect.signature(executor._wait_for_buys_to_settle)
+        assert sig.parameters["max_wait_sec"].default == 120
+
+    @patch("time.sleep")
+    def test_rebalancing_removes_unfilled_from_buy_done(
+        self, mock_sleep, executor, mock_api
+    ) -> None:
+        """리밸런싱 중 매수 미체결 종목은 buy_done에서 제외"""
+        mock_api.get_balance.side_effect = [
+            _no_stop_balance(),  # 트레일링 스톱 체크
+            {"holdings": [], "cash": 0, "total_eval_amount": 0, "total_profit": 0},
+            {
+                "holdings": [],
+                "cash": 10_000_000,
+                "total_eval_amount": 10_000_000,
+                "total_profit": 0,
+            },
+        ]
+        mock_api.get_current_price.return_value = {"current_price": 50000}
+        # 매수 주문 접수: 둘 다 성공
+        mock_api.buy_stock.side_effect = [
+            {"return_code": 0, "ord_no": "B001"},
+            {"return_code": 0, "ord_no": "B002"},
+        ]
+        # 체결 대기 중 B002만 계속 미체결
+        mock_api.get_unfilled_orders.return_value = [
+            {"ord_no": "B002", "stk_cd": "000660"},
+        ]
+
+        with patch("notify.telegram.TelegramNotifier"):
+            _, buy_done = executor.execute_rebalancing(
+                current_holdings=[],
+                target_portfolio=["005930", "000660"],
+            )
+
+        # 005930은 체결, 000660은 미체결 → buy_done에서 제외
+        assert "005930" in buy_done
+        assert "000660" not in buy_done
+
+
+class TestTrailingStopNullSafety:
+    """trailing_stop_pct null 안전장치 테스트 (이슈 3)"""
+
+    def test_check_trailing_stops_returns_empty_when_null(
+        self, mock_api, tmp_path
+    ) -> None:
+        """trailing_stop_pct=None → 빈 리스트 early return"""
+        with patch("trading.order.settings") as mock_settings:
+            mock_settings.is_paper_trading = True
+            mock_settings.trading.commission_rate = 0.00015
+            mock_settings.trading.slippage = 0.001
+            mock_settings.trading.max_position_pct = 0.10
+            mock_settings.trading.max_turnover_pct = 0.50
+            mock_settings.trading.max_drawdown_pct = 0.30
+            mock_settings.trading.trailing_stop_pct = None  # 핵심
+            with patch("trading.order.KiwoomRestClient", return_value=mock_api):
+                with patch("trading.order.DataStorage"):
+                    with patch.object(
+                        OrderExecutor, "_load_peak_value", return_value=0
+                    ):
+                        ex = OrderExecutor()
+
+        balance = {
+            "holdings": [
+                {
+                    "ticker": "005930",
+                    "qty": 100,
+                    "avg_price": 100000,
+                    "current_price": 50000,  # -50% 손실이어도 스톱 미발동
+                }
+            ]
+        }
+        assert ex._check_trailing_stops(balance) == []
+
+    def test_execute_rebalancing_skips_trailing_when_null(
+        self, mock_api, tmp_path
+    ) -> None:
+        """trailing_stop_pct=None → execute_rebalancing에서 호출 자체 스킵"""
+        with patch("trading.order.settings") as mock_settings:
+            mock_settings.is_paper_trading = True
+            mock_settings.trading.commission_rate = 0.00015
+            mock_settings.trading.slippage = 0.001
+            mock_settings.trading.max_position_pct = 0.10
+            mock_settings.trading.max_turnover_pct = 0.50
+            mock_settings.trading.max_drawdown_pct = 0.30
+            mock_settings.trading.trailing_stop_pct = None
+            mock_settings.portfolio.max_investment_amount = 0
+            with patch("trading.order.KiwoomRestClient", return_value=mock_api):
+                with patch("trading.order.DataStorage"):
+                    with patch.object(
+                        OrderExecutor, "_load_peak_value", return_value=0
+                    ):
+                        ex = OrderExecutor()
+
+        mock_api.get_balance.return_value = {
+            "holdings": [],
+            "cash": 1_000_000,
+            "total_eval_amount": 1_000_000,
+            "total_profit": 0,
+        }
+
+        with patch.object(
+            ex, "_check_trailing_stops", wraps=ex._check_trailing_stops
+        ) as spy:
+            ex.execute_rebalancing(current_holdings=[], target_portfolio=[])
+            # trailing_stop_pct=None → 호출 자체 스킵
+            spy.assert_not_called()

@@ -101,6 +101,59 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
         return 1.0
 
 
+def _filter_already_traded_today(
+    current_holdings: list[str],
+    target_portfolio: list[str],
+    storage: DataStorage,
+) -> tuple[list[str], list[str], bool]:
+    """당일 이미 체결된 주문을 current/target 리스트에서 제외 (재시도 중복 방지)
+
+    - 오늘 매도 체결(quantity>0) 된 종목 → current_holdings에서 제외 (이미 팔았음)
+    - 오늘 매수 체결(quantity>0, amount>0) 된 종목 → target_portfolio에서 제외
+    - qty=0 또는 amount=0 매수 기록은 "체결 실패 마커"이므로 필터링 대상 아님
+
+    Args:
+        current_holdings: 현재 보유 종목
+        target_portfolio: 목표 포트폴리오
+        storage: DataStorage 인스턴스
+
+    Returns:
+        (filtered_current, filtered_target, is_retry)
+    """
+    from datetime import date as _date
+
+    today = _date.today()
+    try:
+        trades_today = storage.load_trades(start_date=today, end_date=today)
+    except Exception as e:
+        logger.warning(f"당일 거래 이력 조회 실패: {e} — 필터링 건너뜀")
+        return current_holdings, target_portfolio, False
+
+    if trades_today.empty:
+        return current_holdings, target_portfolio, False
+
+    sold_mask = (trades_today["side"] == "SELL") & (trades_today["quantity"] > 0)
+    sold_today = set(trades_today.loc[sold_mask, "ticker"].tolist())
+
+    bought_mask = (
+        (trades_today["side"] == "BUY")
+        & (trades_today["quantity"] > 0)
+        & (trades_today["amount"] > 0)
+    )
+    bought_today = set(trades_today.loc[bought_mask, "ticker"].tolist())
+
+    filtered_current = [t for t in current_holdings if t not in sold_today]
+    filtered_target = [t for t in target_portfolio if t not in bought_today]
+
+    is_retry = bool(sold_today or bought_today)
+    if is_retry:
+        logger.warning(
+            f"[재시도] 당일 처리된 주문 건너뜀: "
+            f"매도 {len(sold_today)}종목, 매수 {len(bought_today)}종목"
+        )
+    return filtered_current, filtered_target, is_retry
+
+
 def _execute_rebalancing_core(
     notifier: TelegramNotifier,
     skip_turnover_check: bool = False,
@@ -121,8 +174,8 @@ def _execute_rebalancing_core(
     start_ts = _time.monotonic()
 
     # DB 백업 (리밸런싱 전 안전장치)
+    storage = DataStorage()
     try:
-        storage = DataStorage()
         storage.backup()
     except Exception as e:
         logger.warning(f"DB 백업 실패 (계속 진행): {e}")
@@ -176,6 +229,16 @@ def _execute_rebalancing_core(
 
     # 팩터 스코어 & 포트폴리오 DB 저장
     _save_screening_results(today_str, portfolio_df)
+
+    # ── 재시도 중복 방지: 당일 이미 체결된 주문은 제외 ──
+    current_holdings, new_portfolio, is_retry = _filter_already_traded_today(
+        current_holdings, new_portfolio, storage
+    )
+    if is_retry:
+        logger.info(
+            f"[재시도] 필터링 후 보유 {len(current_holdings)}종목, "
+            f"목표 {len(new_portfolio)}종목"
+        )
 
     # ── 시장 레짐 필터 ──
     invest_ratio = 1.0

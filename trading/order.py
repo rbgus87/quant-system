@@ -313,8 +313,12 @@ class OrderExecutor:
         Returns:
             트레일링 스톱 발동 종목 코드 리스트
         """
+        if self.cfg.trailing_stop_pct is None:
+            logger.debug("트레일링 스톱 비활성화 (null)")
+            return []
+
         trailing_stop_pct = self.cfg.trailing_stop_pct
-        if not trailing_stop_pct or trailing_stop_pct <= 0:
+        if trailing_stop_pct <= 0:
             return []
 
         stop_tickers: list[str] = []
@@ -368,7 +372,10 @@ class OrderExecutor:
         # ── 트레일링 스톱: 매수가 대비 -N% 하락 종목 강제 매도 ──
         pre_balance = self.api.get_balance()
         self._validate_balance(pre_balance, "트레일링 스톱 체크")
-        stop_tickers = self._check_trailing_stops(pre_balance)
+        if self.cfg.trailing_stop_pct is not None:
+            stop_tickers = self._check_trailing_stops(pre_balance)
+        else:
+            stop_tickers = []
 
         if stop_tickers:
             # 스톱 발동 종목을 target에서 제거 (재매수 방지)
@@ -398,6 +405,7 @@ class OrderExecutor:
         sell_done: list[str] = []
         buy_done: list[str] = []
         sell_order_nos: list[str] = []
+        buy_order_nos: list[str] = []
 
         # ① 매도 먼저 (예수금 확보)
         balance = self.api.get_balance()
@@ -556,6 +564,9 @@ class OrderExecutor:
             )
             if result.get("return_code") == 0:
                 buy_done.append(ticker)
+                ord_no = result.get("ord_no", "")
+                if ord_no:
+                    buy_order_nos.append(ord_no)
                 # 거래 이력 DB 저장
                 buy_amount = price * qty
                 self.storage.save_trade(
@@ -611,6 +622,9 @@ class OrderExecutor:
                 )
                 if result.get("return_code") == 0:
                     buy_done.append(ticker)
+                    ord_no = result.get("ord_no", "")
+                    if ord_no:
+                        buy_order_nos.append(ord_no)
                     buy_amount = price * qty
                     self.storage.save_trade(
                         trade_date=date.today(),
@@ -626,6 +640,38 @@ class OrderExecutor:
                     logger.info(f"재시도 매수 성공: {ticker} {qty}주")
                 else:
                     logger.warning(f"재시도 매수 실패: {ticker}")
+
+        # ⑤ 매수 체결 확인 — 미체결 종목은 buy_done에서 제외 + 경고 + DB 실패 기록
+        if buy_done and buy_order_nos:
+            unfilled_buys = self._wait_for_buys_to_settle(buy_done, buy_order_nos)
+            if unfilled_buys:
+                try:
+                    from notify.telegram import TelegramNotifier
+                    notifier = TelegramNotifier()
+                    notifier.send_error(
+                        f"매수 미체결 {len(unfilled_buys)}종목: {unfilled_buys} — "
+                        f"수동 확인 필요"
+                    )
+                except Exception as e:
+                    logger.warning(f"텔레그램 발송 실패: {e}")
+
+                for ticker in unfilled_buys:
+                    try:
+                        self.storage.save_trade(
+                            trade_date=date.today(),
+                            ticker=ticker,
+                            side="BUY",
+                            quantity=0,  # 0 = 체결 실패 마커
+                            price=0,
+                            amount=0,
+                            commission=0,
+                            tax=0,
+                            is_paper=settings.is_paper_trading,
+                        )
+                    except Exception as e:
+                        logger.warning(f"체결 실패 기록 저장 실패: {e}")
+
+                buy_done = [t for t in buy_done if t not in unfilled_buys]
 
         logger.info(
             f"리밸런싱 완료 — 매도: {len(sell_done)}/{len(sell_list)}, "
@@ -685,3 +731,80 @@ class OrderExecutor:
         )
         logger.warning(msg)
         raise TimeoutError(msg)
+
+    def _wait_for_buys_to_settle(
+        self,
+        bought_tickers: list[str],
+        order_nos: list[str],
+        max_wait_sec: int = 120,
+        poll_interval: int = 3,
+    ) -> list[str]:
+        """매수 주문 체결 대기 (주문번호 기반 + 잔고 폴백)
+
+        매도와 달리 타임아웃 시 예외를 발생시키지 않고,
+        미체결 종목 리스트를 반환하여 호출자가 buy_done에서 제외하도록 함.
+
+        Args:
+            bought_tickers: 매수 주문 완료된 종목 리스트
+            order_nos: 매수 주문번호 리스트
+            max_wait_sec: 최대 대기 시간 (초, 기본 120 - 매수는 매도보다 오래 걸림)
+            poll_interval: 확인 간격 (초)
+
+        Returns:
+            완전 미체결 종목 코드 리스트 (빈 리스트 = 전부 체결)
+        """
+        elapsed = 0
+        while elapsed < max_wait_sec:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+
+            if order_nos:
+                unfilled = self.api.get_unfilled_orders()
+                unfilled_nos = {o.get("ord_no", "") for o in unfilled}
+                remaining_orders = [no for no in order_nos if no in unfilled_nos]
+                if not remaining_orders:
+                    logger.info(f"매수 체결 완료 — 주문번호 확인 ({elapsed}초 소요)")
+                    return []
+                logger.info(
+                    f"매수 체결 대기 중... 미체결 {len(remaining_orders)}건 "
+                    f"({elapsed}s/{max_wait_sec}s)"
+                )
+            else:
+                balance = self.api.get_balance()
+                held_tickers = {h["ticker"] for h in balance.get("holdings", [])}
+                remaining = set(bought_tickers) - held_tickers
+                if not remaining:
+                    logger.info(f"매수 체결 완료 — 잔고 확인 ({elapsed}초 소요)")
+                    return []
+                logger.info(
+                    f"매수 체결 대기 중... 미체결 {len(remaining)}건 "
+                    f"({elapsed}s/{max_wait_sec}s)"
+                )
+
+        # 타임아웃 — 미체결 종목 식별
+        unfilled_tickers: list[str] = []
+        try:
+            unfilled = self.api.get_unfilled_orders()
+            unfilled_map = {
+                o.get("ord_no", ""): o.get("stk_cd", o.get("ticker", ""))
+                for o in unfilled
+            }
+            for no in order_nos:
+                t = unfilled_map.get(no)
+                if t:
+                    unfilled_tickers.append(t)
+        except Exception as e:
+            logger.warning(f"미체결 조회 실패: {e} — 잔고 기반 추정")
+            try:
+                balance = self.api.get_balance()
+                held = {h["ticker"] for h in balance.get("holdings", [])}
+                unfilled_tickers = [t for t in bought_tickers if t not in held]
+            except Exception:
+                unfilled_tickers = []
+
+        if unfilled_tickers:
+            logger.warning(
+                f"매수 체결 대기 타임아웃 ({max_wait_sec}초) — "
+                f"미체결 {len(unfilled_tickers)}종목: {unfilled_tickers}"
+            )
+        return unfilled_tickers
