@@ -256,11 +256,11 @@ class LoggingConfig:
 
 @dataclass
 class DailyDataCollectionConfig:
-    """일별 데이터 수집 Job 설정 (16:00 장 마감 후)"""
+    """일별 데이터 수집 Job 설정 (기본 16:30 — KRX 당일 업데이트 지연 대응)"""
 
     enabled: bool = True
     hour: int = 16
-    minute: int = 0
+    minute: int = 30
     markets: list[str] = field(default_factory=lambda: ["KOSPI"])
 
 

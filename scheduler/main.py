@@ -564,6 +564,35 @@ def run_risk_guard_delisting() -> None:
         logger.error(f"관리종목 캐시 갱신 오류: {e}")
 
 
+def run_auto_backfill() -> None:
+    """매일 장 시작 전(09:00) 자동 백필 — 최근 5영업일 수집 누락 복구.
+
+    전일 `run_daily_data_collection`이 KRX 업데이트 지연으로 실패한 경우를
+    포착하여 아침에 자동 복구한다. 성공·실패 모두 텔레그램 알림.
+    """
+    if not is_business_day():
+        return
+
+    try:
+        from scripts.auto_backfill_missing import detect_and_backfill, notify_result
+
+        markets = list(settings.schedule.daily_data_collection.markets)
+        missing, recovered, still_missing = detect_and_backfill(
+            lookback=5, markets=markets
+        )
+        notify_result(missing, recovered, still_missing)
+        logger.info(
+            f"자동 백필 완료 — 누락 {len(missing)}일 / "
+            f"복구 {len(recovered)}일 / 실패 {len(still_missing)}일"
+        )
+    except Exception as e:
+        logger.error(f"자동 백필 오류: {e}", exc_info=True)
+        try:
+            TelegramNotifier().send_error(f"자동 백필 오류: {e}")
+        except Exception:
+            pass
+
+
 def refresh_delisted_data() -> None:
     """상장폐지 데이터 월간 갱신 (매월 설정된 날짜/시각 실행).
 
@@ -722,13 +751,13 @@ def _collect_daily_data_once(date_str: str, markets: list[str]) -> tuple[int, in
 
 
 def run_daily_data_collection() -> None:
-    """매 영업일 장 마감 후 일별 데이터 수집 (기본 16:00).
+    """매 영업일 장 마감 후 일별 데이터 수집 (기본 16:30).
 
     - 휴장일이면 즉시 종료
     - prefetch_daily_trade: daily_price + market_cap 갱신
     - get_fundamentals_all: fundamental 갱신
-    - 실패 시 30분 후 1회 재시도 (DART API 일시 장애 대응)
-    - 최종 실패 시 텔레그램 에러 알림
+    - 실패 시 30분 / 60분 / 120분 후 재시도 (KRX 업데이트 지연 대응, 총 3회)
+    - 최종 실패 시 텔레그램 에러 알림 + 다음날 09:00 auto_backfill에서 복구 시도
     """
     if not is_business_day():
         logger.info("일별 데이터 수집: 휴장일이므로 스킵")
@@ -749,17 +778,18 @@ def run_daily_data_collection() -> None:
     import time as _time
 
     notifier = TelegramNotifier()
-    retry_delay_sec = 1800  # 30분
+    # 재시도 간격: 30분 / 60분 / 120분 (KRX 업데이트 지연 완화)
+    retry_delays_sec = [1800, 3600, 7200]
     last_error: Optional[Exception] = None
+    max_attempts = 1 + len(retry_delays_sec)
 
-    for attempt in range(2):  # 최초 1회 + 재시도 1회
+    for attempt in range(max_attempts):
         try:
             pf_total, fund_total = _collect_daily_data_once(today_str, markets)
             if pf_total == 0 and fund_total == 0:
-                # API가 응답은 했지만 데이터가 비어 있는 경우 (비정상)
                 raise RuntimeError(
                     f"[{today_str}] 수집 결과가 비어 있음 "
-                    f"(prefetch=0, fundamentals=0)"
+                    f"(prefetch=0, fundamentals=0) — KRX 업데이트 지연 가능성"
                 )
             logger.info(
                 "일별 데이터 수집 완료 — prefetch %d건, fundamentals %d건",
@@ -768,23 +798,24 @@ def run_daily_data_collection() -> None:
             return
         except Exception as e:
             last_error = e
-            if attempt == 0:
+            if attempt < max_attempts - 1:
+                delay = retry_delays_sec[attempt]
                 logger.warning(
-                    "일별 데이터 수집 실패 (시도 1/2): %s — %d분 후 재시도",
-                    e, retry_delay_sec // 60,
+                    "일별 데이터 수집 실패 (시도 %d/%d): %s — %d분 후 재시도",
+                    attempt + 1, max_attempts, e, delay // 60,
                 )
-                _time.sleep(retry_delay_sec)
+                _time.sleep(delay)
             else:
                 logger.error(
-                    "일별 데이터 수집 최종 실패 (2회 시도 모두 실패): %s",
-                    e, exc_info=True,
+                    "일별 데이터 수집 최종 실패 (%d회 시도 모두 실패): %s",
+                    max_attempts, e, exc_info=True,
                 )
 
-    # 최종 실패 알림
     notifier.send_error(
-        f"일별 데이터 수집 최종 실패 (2회 재시도 후 실패)\n"
+        f"일별 데이터 수집 최종 실패 ({max_attempts}회 재시도)\n"
         f"기준일: {today_str}\n"
-        f"오류: {last_error}"
+        f"오류: {last_error}\n"
+        f"→ 다음 영업일 09:00 auto_backfill에서 복구 시도합니다."
     )
 
 
@@ -1014,6 +1045,17 @@ def main() -> None:
         minute="0,30",
         id="risk_guard_check",
         misfire_grace_time=300,
+    )
+
+    # 자동 백필: 매일 장 시작 전 (09:00) — 전일 수집 누락 복구
+    scheduler.add_job(
+        run_auto_backfill,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour=9,
+        minute=0,
+        id="auto_backfill",
+        misfire_grace_time=600,
     )
 
     # 관리종목 캐시 갱신: 하루 1회 (09:30)
