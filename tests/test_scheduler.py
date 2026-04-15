@@ -157,21 +157,23 @@ class TestRunScheduledRebalancing:
     def test_rebalancing_error_sends_telegram(self, mock_bday, mock_last) -> None:
         """리밸런싱 실패 시 텔레그램 에러 알림"""
         from scheduler.main import run_scheduled_rebalancing
+        from config.settings import settings
 
         mock_notifier_instance = MagicMock()
 
-        with patch(
-            "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
-        ):
+        with patch.object(settings.portfolio, "rebalance_frequency", "monthly"):
             with patch(
-                "scheduler.main.KiwoomRestClient",
-                side_effect=RuntimeError("API 연결 실패"),
+                "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
             ):
-                with patch("time.sleep"):
-                    run_scheduled_rebalancing()
-                    mock_notifier_instance.send_error.assert_called_once()
-                    error_arg = mock_notifier_instance.send_error.call_args[0][0]
-                    assert "API 연결 실패" in error_arg
+                with patch(
+                    "scheduler.main.KiwoomRestClient",
+                    side_effect=RuntimeError("API 연결 실패"),
+                ):
+                    with patch("time.sleep"):
+                        run_scheduled_rebalancing()
+                        mock_notifier_instance.send_error.assert_called_once()
+                        error_arg = mock_notifier_instance.send_error.call_args[0][0]
+                        assert "API 연결 실패" in error_arg
 
 
 class TestRunDailyDefenseCheck:
