@@ -15,6 +15,7 @@ logs/
 *.html
 *.png
 reports/
+!docs/reports/
 notebooks/.ipynb_checkpoints/
 
 # 런타임 데이터/캐시
@@ -23,6 +24,13 @@ data/dart_dps_cache.json
 data/peak_value_*.json
 data/quant.db-shm
 data/quant.db-wal
+data/monitor.db-shm
+data/monitor.db-wal
 marcap_repo/
 report_snapshot.md
 KoreanQuant.exe
+
+# 시드 데이터 (외부 시스템 다운로드 — 라이선스/크기)
+data/seed/*.xls
+data/seed/*.xlsx
+!data/seed/README.md

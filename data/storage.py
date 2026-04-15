@@ -15,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     BigInteger,
     Index,
+    Text,
     UniqueConstraint,
     event,
     text,
@@ -152,6 +153,20 @@ class Trade(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class DelistedStock(Base):
+    """상장폐지 종목 (KIND 시스템 기반 — 생존자 편향 보정용)"""
+
+    __tablename__ = "delisted_stock"
+
+    ticker = Column(String(10), primary_key=True)
+    name = Column(String(100))
+    delist_date = Column(Date, nullable=False, index=True)
+    reason = Column(Text)
+    category = Column(String(20), index=True)  # failure/merger/voluntary/expired/other
+    memo = Column(Text, nullable=True)
+    imported_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 # ───────────────────────────────────────────────
 # DataStorage
 # ───────────────────────────────────────────────
@@ -183,6 +198,7 @@ class DataStorage:
         self._migrate_daily_price_market_column()
         self._migrate_market_cap_market_column()
         self._migrate_trade_rebalance_column()
+        self._migrate_delisted_stock_table()
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info(f"DB 연결: {path}")
 
@@ -287,6 +303,24 @@ class DataStorage:
                     logger.info("DB 마이그레이션: trade.rebalance_date 컬럼 추가 완료")
         except Exception as e:
             logger.debug(f"trade 마이그레이션 스킵: {e}")
+
+    def _migrate_delisted_stock_table(self) -> None:
+        """delisted_stock 테이블 초기 생성 (Base.metadata.create_all이 처리하지만,
+        기존 DB에서 명시적으로 존재 여부 확인 — 로그 목적)"""
+        try:
+            with self.engine.connect() as conn:
+                result = conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name='delisted_stock'"
+                    )
+                )
+                if result.fetchone() is None:
+                    logger.info("DB 마이그레이션: delisted_stock 테이블 생성 대기 중")
+                else:
+                    logger.debug("delisted_stock 테이블 확인 완료")
+        except Exception as e:
+            logger.debug(f"delisted_stock 마이그레이션 스킵: {e}")
 
     def backup(self) -> str:
         """DB 파일을 backups/ 디렉토리에 타임스탬프로 복사. 최근 5개만 유지.
@@ -870,4 +904,88 @@ class DataStorage:
         if not rows:
             return pd.DataFrame()
 
+        return pd.DataFrame(rows)
+
+    # ───────────────────────────────────────────────
+    # 상장폐지 종목 (생존자 편향 보정용)
+    # ───────────────────────────────────────────────
+
+    def upsert_delisted_stocks(self, rows: list[dict]) -> tuple[int, int]:
+        """상장폐지 종목 upsert
+
+        Args:
+            rows: [{"ticker", "name", "delist_date", "reason", "category", "memo"}]
+
+        Returns:
+            (신규 추가 건수, 업데이트 건수)
+        """
+        if not rows:
+            return 0, 0
+
+        inserted = 0
+        updated = 0
+        with self.SessionLocal() as session:
+            existing = {
+                r.ticker: r for r in session.query(DelistedStock).all()
+            }
+            for row in rows:
+                ticker = row["ticker"]
+                if ticker in existing:
+                    obj = existing[ticker]
+                    changed = False
+                    for k in ("name", "delist_date", "reason", "category", "memo"):
+                        if k in row and getattr(obj, k) != row[k]:
+                            setattr(obj, k, row[k])
+                            changed = True
+                    if changed:
+                        obj.imported_at = datetime.now(timezone.utc)
+                        updated += 1
+                else:
+                    session.add(DelistedStock(**row))
+                    inserted += 1
+            session.commit()
+        return inserted, updated
+
+    def load_delisted_stocks(
+        self,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        category: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """상장폐지 종목 조회
+
+        Args:
+            start_date: 폐지일 시작
+            end_date: 폐지일 종료
+            category: 카테고리 필터 (failure/merger/voluntary/expired/other)
+
+        Returns:
+            DataFrame(columns=[ticker, name, delist_date, reason, category, memo])
+        """
+        with self.SessionLocal() as session:
+            query = session.query(DelistedStock)
+            if start_date:
+                query = query.filter(DelistedStock.delist_date >= start_date)
+            if end_date:
+                query = query.filter(DelistedStock.delist_date <= end_date)
+            if category:
+                query = query.filter(DelistedStock.category == category)
+            query = query.order_by(DelistedStock.delist_date)
+
+            rows = [
+                {
+                    "ticker": r.ticker,
+                    "name": r.name,
+                    "delist_date": r.delist_date,
+                    "reason": r.reason,
+                    "category": r.category,
+                    "memo": r.memo,
+                }
+                for r in query.all()
+            ]
+
+        if not rows:
+            return pd.DataFrame(
+                columns=["ticker", "name", "delist_date", "reason", "category", "memo"]
+            )
         return pd.DataFrame(rows)

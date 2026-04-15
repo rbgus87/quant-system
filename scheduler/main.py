@@ -563,6 +563,41 @@ def run_risk_guard_delisting() -> None:
         logger.error(f"관리종목 캐시 갱신 오류: {e}")
 
 
+def run_delisting_imminent_check(days_ahead: int = 30) -> None:
+    """보유 종목 상장폐지 임박 감지 (하루 1회, 16:30).
+
+    `delisted_stock` 테이블을 참조하여 보유 종목 중 향후 N일 내 폐지 예정
+    종목을 찾아 텔레그램 긴급 알림을 발송한다. (자동 매도 없음 — 운용자 판단)
+    """
+    if not is_business_day():
+        return
+
+    try:
+        api = KiwoomRestClient()
+        balance = api.get_balance()
+        if not balance.get("holdings"):
+            return
+
+        guard = _get_risk_guard()
+        imminent = guard.check_delisting_imminent(balance, days_ahead=days_ahead)
+        if not imminent:
+            logger.debug("폐지 임박 보유 종목 없음")
+            return
+
+        notifier = TelegramNotifier()
+        lines = [f"🚨 상장폐지 임박 감지 ({len(imminent)}종목) — 수동 매도 권고"]
+        for a in imminent:
+            lines.append(
+                f"• {a['ticker']} {a['name']} — "
+                f"{a['delist_date']} (D-{a['days_until']}일) "
+                f"[{a['category']}] {a['reason'][:40]}"
+            )
+        notifier.send_error("\n".join(lines))
+        logger.warning(f"폐지 임박 {len(imminent)}종목 — 텔레그램 발송")
+    except Exception as e:
+        logger.error(f"폐지 임박 감지 오류: {e}", exc_info=True)
+
+
 # ────────────────────────────────────────────
 # 일별 데이터 수집
 # ────────────────────────────────────────────
@@ -910,6 +945,17 @@ def main() -> None:
         minute=30,
         id="risk_guard_delisting",
         misfire_grace_time=300,
+    )
+
+    # 상장폐지 임박 감지: 하루 1회 (16:30, 일별 데이터 수집 30분 후)
+    scheduler.add_job(
+        run_delisting_imminent_check,
+        trigger="cron",
+        day_of_week="mon-fri",
+        hour=16,
+        minute=30,
+        id="delisting_imminent_check",
+        misfire_grace_time=600,
     )
 
     # 일별 데이터 수집 (기본 16:00, 장 마감 후)

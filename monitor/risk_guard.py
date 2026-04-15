@@ -270,3 +270,66 @@ class RiskGuard:
             if code:
                 codes.add(code)
         return codes if codes else None
+
+    def check_delisting_imminent(
+        self,
+        balance: dict,
+        days_ahead: int = 30,
+    ) -> list[dict]:
+        """현재 보유 종목 중 향후 N일 내 상장폐지 예정 종목을 반환한다.
+
+        `delisted_stock` 테이블에서 failure/other 카테고리로 폐지 예정된 종목을
+        조회하여 보유 종목과 교차. (merger/voluntary는 재투자 권고 대상 아님)
+
+        Args:
+            balance: KiwoomRestClient.get_balance() 결과
+            days_ahead: 조회 범위 (오늘 ~ 오늘+N일)
+
+        Returns:
+            [{"ticker", "name", "delist_date", "reason", "days_until"}]
+        """
+        from datetime import date, timedelta
+
+        from data.storage import DataStorage
+
+        holdings = balance.get("holdings", [])
+        if not holdings:
+            return []
+
+        today = date.today()
+        end = today + timedelta(days=days_ahead)
+
+        try:
+            storage = DataStorage()
+            df = storage.load_delisted_stocks(start_date=today, end_date=end)
+        except Exception as e:
+            logger.warning(f"폐지 예정 조회 실패: {e}")
+            return []
+
+        if df.empty:
+            return []
+
+        # 재투자 부적합 카테고리만 경고 (합병·자진은 제외)
+        df = df[df["category"].isin(["failure", "expired", "other"])]
+        if df.empty:
+            return []
+
+        held_map = {h.get("ticker", ""): h for h in holdings}
+        alerts: list[dict] = []
+        for _, row in df.iterrows():
+            ticker = row["ticker"]
+            if ticker not in held_map:
+                continue
+            h = held_map[ticker]
+            days_until = (row["delist_date"] - today).days
+            alerts.append({
+                "ticker": ticker,
+                "name": h.get("name", row["name"]),
+                "delist_date": row["delist_date"],
+                "reason": row["reason"],
+                "category": row["category"],
+                "days_until": days_until,
+                "qty": h.get("qty", 0),
+                "current_price": h.get("current_price", 0),
+            })
+        return alerts
