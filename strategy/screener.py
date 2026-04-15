@@ -118,6 +118,9 @@ class MultiFactorScreener:
                 fw.momentum,
                 fw.quality,
                 bool(settings.quality.strict_reporting_lag),
+                bool(settings.quality.eps_flip_filter_enabled),
+                bool(settings.quality.halt_history_filter_enabled),
+                int(settings.quality.min_fscore),
             )
             if cache_key in MultiFactorScreener._factor_cache:
                 composite_df = MultiFactorScreener._factor_cache[cache_key]
@@ -212,8 +215,28 @@ class MultiFactorScreener:
                 logger.error(f"[{date}] 유니버스 구성 데이터 없음")
                 return pd.DataFrame()
 
-            # 거래정지 종목 감지
+            # 거래정지 종목 감지 (당일)
             suspended = self.collector.get_suspended_tickers(universe_tickers, data_date)
+
+            # 거래정지 이력 필터 (최근 N일 누적 volume=0 일수)
+            if settings.quality.halt_history_filter_enabled:
+                halted_history = self.collector.get_recently_halted(
+                    universe_tickers,
+                    data_date,
+                    lookback_days=settings.quality.halt_history_lookback_days,
+                    max_halt_days=settings.quality.halt_history_max_halt_days,
+                )
+                suspended = suspended | halted_history
+
+            # EPS 부호 반전 필터 (005620 유형 방어)
+            if settings.quality.eps_flip_filter_enabled:
+                flipped = self.quality_factor.detect_eps_flip(
+                    self.collector.storage,
+                    universe_tickers,
+                    data_date,
+                )
+                if flipped:
+                    suspended = suspended | flipped
 
             # 유동성 데이터 (평균 거래대금)
             avg_tv = None

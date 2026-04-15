@@ -274,3 +274,94 @@ class QualityFactor:
             )
 
         return filtered
+
+    @staticmethod
+    def detect_eps_flip(
+        storage,
+        tickers: list[str],
+        as_of_date: str,
+        lookback_months: Optional[int] = None,
+        min_change_pct: Optional[float] = None,
+    ) -> set[str]:
+        """최근 N개월 EPS 부호 반전 + |변동률| 임계 초과 종목 탐지.
+
+        005620 유형 사례 (분기보고서 공시 직후 적자→흑자 급변) 사전 배제용.
+        동일 회사의 월별 fundamental 시계열을 훑어 부호가 바뀌고 변동폭이 큰 경우를 반환.
+
+        Args:
+            storage: DataStorage 인스턴스
+            tickers: 검사 대상 종목 리스트
+            as_of_date: 기준일 (YYYYMMDD)
+            lookback_months: 시계열 조회 기간 (기본: settings)
+            min_change_pct: 변동률 임계값 (기본: settings, 1.5 = 150%)
+
+        Returns:
+            부호 반전 감지된 ticker 집합
+        """
+        from datetime import datetime, timedelta
+
+        if lookback_months is None:
+            lookback_months = settings.quality.eps_flip_lookback_months
+        if min_change_pct is None:
+            min_change_pct = settings.quality.eps_flip_min_change_pct
+
+        if not tickers:
+            return set()
+
+        as_of = datetime.strptime(as_of_date, "%Y%m%d").date()
+        start_date = as_of - timedelta(days=lookback_months * 31)
+
+        try:
+            import sqlalchemy as sa
+
+            with storage.engine.connect() as conn:
+                rows = conn.execute(
+                    sa.text(
+                        "SELECT ticker, date, eps FROM fundamental "
+                        "WHERE date BETWEEN :s AND :e "
+                        "AND ticker IN :tickers "
+                        "ORDER BY ticker, date"
+                    ).bindparams(sa.bindparam("tickers", expanding=True)),
+                    {
+                        "s": start_date,
+                        "e": as_of,
+                        "tickers": tickers,
+                    },
+                ).fetchall()
+        except Exception as e:
+            logger.warning(f"EPS 부호 반전 조회 실패: {e}")
+            return set()
+
+        if not rows:
+            return set()
+
+        df = pd.DataFrame(rows, columns=["ticker", "date", "eps"])
+        df = df.dropna(subset=["eps"])
+
+        flipped: set[str] = set()
+        for t, g in df.groupby("ticker"):
+            eps_series = g["eps"].values
+            if len(eps_series) < 2:
+                continue
+            # 부호 변화 탐지
+            signs = np.sign(eps_series)
+            sign_changes = np.where(np.diff(signs) != 0)[0]
+            if len(sign_changes) == 0:
+                continue
+            # 각 부호 변화 시점의 변동률 검사
+            for idx in sign_changes:
+                prev_eps = eps_series[idx]
+                curr_eps = eps_series[idx + 1]
+                if prev_eps == 0:
+                    continue
+                change = abs((curr_eps - prev_eps) / prev_eps)
+                if change >= min_change_pct:
+                    flipped.add(t)
+                    break
+
+        if flipped:
+            logger.info(
+                f"EPS 부호 반전 필터: {len(flipped)}종목 감지 "
+                f"(lookback={lookback_months}개월, 변동률>={min_change_pct*100:.0f}%)"
+            )
+        return flipped

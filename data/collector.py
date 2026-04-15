@@ -598,6 +598,53 @@ class KRXDataCollector:
             logger.info(f"[{date}] 거래정지 종목: {len(suspended)}개")
         return suspended
 
+    def get_recently_halted(
+        self,
+        tickers: list[str],
+        date: str,
+        lookback_days: int = 60,
+        max_halt_days: int = 5,
+    ) -> set[str]:
+        """최근 lookback_days 내 거래정지(volume=0) 일수가 max_halt_days 이상인 종목.
+
+        005620 유형 — 거래정지 반복되는 문제 기업 사전 배제용.
+
+        Args:
+            tickers: 검사 대상 종목
+            date: 기준일 (YYYYMMDD)
+            lookback_days: 조회 기간 (달력일)
+            max_halt_days: 이 일수 이상 거래정지 발생 시 배제
+
+        Returns:
+            필터링 대상 종목 집합
+        """
+        from datetime import timedelta
+
+        if not tickers:
+            return set()
+
+        end_dt = _parse_date(date)
+        start_dt = end_dt - timedelta(days=lookback_days)
+
+        bulk_df = self.storage.load_daily_prices_bulk(tickers, start_dt, end_dt)
+        if bulk_df.empty:
+            return set()
+
+        # 각 ticker별 volume=0 일수 카운트
+        halt_counts = (
+            bulk_df[bulk_df["volume"] == 0]
+            .groupby("ticker")
+            .size()
+        )
+        halted = set(halt_counts[halt_counts >= max_halt_days].index)
+
+        if halted:
+            logger.info(
+                f"[{date}] 거래정지 이력 필터: {len(halted)}종목 감지 "
+                f"(최근 {lookback_days}일 내 {max_halt_days}일 이상 정지)"
+            )
+        return halted
+
     # ───────────────────────────────────────────────
     # 내부 헬퍼
     # ───────────────────────────────────────────────

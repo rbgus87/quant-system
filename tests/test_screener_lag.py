@@ -91,12 +91,16 @@ class TestStrictReportingLagActivation:
 
         assert hasattr(settings.quality, "strict_reporting_lag")
 
-    def test_strict_mode_default_true(self) -> None:
-        """기본값이 True (005620 재발 방지)"""
+    def test_strict_mode_default_false(self) -> None:
+        """기본값 False — 2026-04-15 영향 평가 결과 CAGR -12%p 부작용으로 원복.
+
+        005620 유형 재발 방지는 별도 방어 장치(eps_flip_filter, halt_history_filter)로 대응.
+        strict_reporting_lag는 분석·실험용으로만 코드 유지.
+        """
         from config.settings import QualityConfig
 
         cfg = QualityConfig()
-        assert cfg.strict_reporting_lag is True
+        assert cfg.strict_reporting_lag is False
 
 
 class TestCacheKeyIsolation:

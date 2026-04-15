@@ -65,9 +65,19 @@ class QualityConfig:
 
     fscore_enabled: bool = True  # F-Score 필터 활성화
     min_fscore: int = 2  # 최소 F-Score (5점 만점, 2점 이상만 통과 — 최악만 제거)
-    # 리포팅 래그 엄격 적용: True면 재무 팩터(Value/Quality) 계산 시 전년도 연간 보고서만 사용.
-    # Look-Ahead Bias 및 005620 유형(분기보고서 공시 직후 급변) 사전 배제.
-    strict_reporting_lag: bool = True
+    # 리포팅 래그 엄격 적용: True면 재무 팩터 계산 시 전년도 연간 보고서만 사용.
+    # 2026-04-15 영향 평가 결과 CAGR -12.18%p로 부작용이 커 False로 원복.
+    # 005620 유형 재발 방지는 별도 방어 장치(EPS 부호 반전 감지, 거래정지 필터)로 대응.
+    strict_reporting_lag: bool = False
+    # EPS 부호 반전 감지: 최근 4개월 EPS 시계열에서 부호가 바뀌고 |변동률| > 150%인
+    # 종목을 스크리닝에서 제외 (분기보고서 반영 직후 회계적 급변 차단).
+    eps_flip_filter_enabled: bool = False
+    eps_flip_lookback_months: int = 4
+    eps_flip_min_change_pct: float = 1.5  # 150%
+    # 거래정지 이력 필터: 최근 N일 내 거래정지(volume=0) 일수가 임계값 이상이면 배제.
+    halt_history_filter_enabled: bool = False
+    halt_history_lookback_days: int = 60
+    halt_history_max_halt_days: int = 5
 
 
 @dataclass

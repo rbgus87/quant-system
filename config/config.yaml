@@ -84,6 +84,7 @@ presets:
     quality:
       fscore_enabled: true
       min_fscore: 4
+      strict_reporting_lag: false          # 2026-04-15 영향 평가 결과 CAGR -12%p — false 유지
     volatility:
       max_percentile: 70.0
     market_regime:
@@ -118,6 +119,7 @@ presets:
     quality:
       fscore_enabled: true
       min_fscore: 4
+      strict_reporting_lag: false          # 2026-04-15 영향 평가 결과 CAGR -12%p — false 유지
     volatility:
       max_percentile: 50.0
     market_regime:
@@ -152,6 +154,7 @@ presets:
     quality:
       fscore_enabled: true
       min_fscore: 4
+      strict_reporting_lag: false          # 2026-04-15 영향 평가 결과 CAGR -12%p — false 유지
     volatility:
       max_percentile: 70.0
     market_regime:
