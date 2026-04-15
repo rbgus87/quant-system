@@ -111,7 +111,14 @@ class MultiFactorScreener:
             # 0. 팩터 스코어 캐시 확인 (인메모리)
             # 캐시 키에 팩터 가중치를 포함하여 프리셋 간 오염 방지
             fw = settings.factor_weights
-            cache_key = (date, market, fw.value, fw.momentum, fw.quality)
+            cache_key = (
+                date,
+                market,
+                fw.value,
+                fw.momentum,
+                fw.quality,
+                bool(settings.quality.strict_reporting_lag),
+            )
             if cache_key in MultiFactorScreener._factor_cache:
                 composite_df = MultiFactorScreener._factor_cache[cache_key]
                 portfolio = self.composite.select_top(composite_df, n=n_stocks)
@@ -119,15 +126,27 @@ class MultiFactorScreener:
                 return portfolio
 
             # 1. 데이터 수집 (ALL = KOSPI+KOSDAQ 통합)
-            # Reporting Lag는 DART 내부(_determine_report_period)에서 자동 처리됨
-            # screener에서는 당일(date) 기준으로 조회 (종가/주식수 = 당일, 재무 = DART 래그 적용)
+            # Reporting Lag 정책:
+            #   - strict_reporting_lag=True (기본): 재무 팩터는 _get_effective_fundamental_date
+            #     기준 연간 보고서 데이터 사용 (005620 유형 급변 사전 배제)
+            #   - strict_reporting_lag=False: 당일(date) 기준 (DART 내부 lag에만 의존)
+            #   - market_cap은 어느 모드든 당일 사용 (유니버스 필터용, Look-Ahead 아님)
             markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
             logger.info(f"[{date}] 스크리닝 시작 — {'+'.join(markets)}")
+
+            if settings.quality.strict_reporting_lag:
+                fund_query_date = self._get_effective_fundamental_date(date)
+                logger.info(
+                    f"[{date}] Reporting Lag 엄격 모드: "
+                    f"재무 데이터 기준일 → {fund_query_date}"
+                )
+            else:
+                fund_query_date = date
 
             fundamentals_list = []
             market_cap_list = []
             for m in markets:
-                f = self.collector.get_fundamentals_all(date, m)
+                f = self.collector.get_fundamentals_all(fund_query_date, m)
                 if not f.empty:
                     fundamentals_list.append(f)
                 mc = self.collector.get_market_cap(date, m)
@@ -135,20 +154,25 @@ class MultiFactorScreener:
                     market_cap_list.append(mc)
 
             # 데이터 없으면 직전 영업일로 자동 폴백 (최대 5일)
-            data_date = date  # 실제 데이터 조회에 사용된 날짜 (폴백 시 변경됨)
+            # strict_reporting_lag 모드에서도 fundamentals는 fund_query_date 기준으로만 폴백
+            data_date = date  # 시장 데이터 기준일 (폴백 시 변경됨)
             if not fundamentals_list and not market_cap_list:
                 from datetime import datetime as _dt
 
                 base_dt = _dt.strptime(date, "%Y%m%d").date()
+                fund_base_dt = _dt.strptime(fund_query_date, "%Y%m%d").date()
                 for attempt in range(5):
                     prev_ts = previous_krx_business_day(base_dt)
                     fallback_date = prev_ts.strftime("%Y%m%d")
+                    fund_prev_ts = previous_krx_business_day(fund_base_dt)
+                    fund_fallback = fund_prev_ts.strftime("%Y%m%d")
                     logger.info(
                         f"[{date}] 데이터 없음 → "
-                        f"직전 영업일 {fallback_date} 폴백 (시도 {attempt + 1}/5)"
+                        f"직전 영업일 폴백 (market={fallback_date}, "
+                        f"fund={fund_fallback}, 시도 {attempt + 1}/5)"
                     )
                     for m in markets:
-                        f = self.collector.get_fundamentals_all(fallback_date, m)
+                        f = self.collector.get_fundamentals_all(fund_fallback, m)
                         if not f.empty:
                             fundamentals_list.append(f)
                         mc = self.collector.get_market_cap(fallback_date, m)
@@ -159,6 +183,11 @@ class MultiFactorScreener:
                         logger.info(f"[{date}→{data_date}] 폴백 성공")
                         break
                     base_dt = prev_ts.date() if hasattr(prev_ts, 'date') else prev_ts
+                    fund_base_dt = (
+                        fund_prev_ts.date()
+                        if hasattr(fund_prev_ts, "date")
+                        else fund_prev_ts
+                    )
 
             fundamentals = pd.concat(fundamentals_list) if fundamentals_list else pd.DataFrame()
             market_cap = pd.concat(market_cap_list) if market_cap_list else pd.DataFrame()

@@ -65,6 +65,9 @@ class QualityConfig:
 
     fscore_enabled: bool = True  # F-Score 필터 활성화
     min_fscore: int = 2  # 최소 F-Score (5점 만점, 2점 이상만 통과 — 최악만 제거)
+    # 리포팅 래그 엄격 적용: True면 재무 팩터(Value/Quality) 계산 시 전년도 연간 보고서만 사용.
+    # Look-Ahead Bias 및 005620 유형(분기보고서 공시 직후 급변) 사전 배제.
+    strict_reporting_lag: bool = True
 
 
 @dataclass
