@@ -58,6 +58,12 @@ portfolio:
 #   - Vol70(상위 30% 고변동성 제거)이 Vol60/50보다 CAGR+Sharpe 최적
 #   - CB/트레일링 스톱 비활성화: 분기 리밸런싱에서는 효과 미미
 #     시스템 리스크(코로나/전쟁/금융위기)는 운용자가 수동 관리
+#
+# 폐지 종목 방어 정책 (2026-04-15 005620 사례 분석 결론):
+#   - 다층 방어: F-Score 4점 → risk_guard 일일 알림 → 분기 리밸런싱 교체
+#   - 노출률 3.1% (32회 중 1회), 연간화 -0.64%p — 수용 가능
+#   - 추가 방어 장치(strict_reporting_lag/eps_flip/min_fscore=5)는 모두 미채택
+#     (CAGR -7~-13%p 부작용). 상세: docs/POLICY.md, docs/case_studies/005620_lesson.md
 # ============================================================
 presets:
 
@@ -82,9 +88,12 @@ presets:
     momentum:
       absolute_momentum_enabled: false
     quality:
-      fscore_enabled: true
-      min_fscore: 4
-      strict_reporting_lag: false          # 2026-04-15 영향 평가 결과 CAGR -12%p — false 유지
+      fscore_enabled: true                  # F-Score 필터 활성화 (확정)
+      min_fscore: 4                         # 권고: 4. 5점은 CAGR -12.7%p 부작용 (docs/POLICY.md 참조)
+      # ── 실험용 옵션 (모두 false 유지 — 005620 분석 시리즈 결론) ──
+      strict_reporting_lag: false           # true 시 CAGR -12.18%p (lag_impact_analysis.md)
+      eps_flip_filter_enabled: false        # true 시 CAGR -7.08%p (alternative_defense_comparison.md)
+      halt_history_filter_enabled: false    # true 시 005620 회피 실패 (효과 없음)
     volatility:
       max_percentile: 70.0
     market_regime:
@@ -117,9 +126,12 @@ presets:
     momentum:
       absolute_momentum_enabled: false
     quality:
-      fscore_enabled: true
-      min_fscore: 4
-      strict_reporting_lag: false          # 2026-04-15 영향 평가 결과 CAGR -12%p — false 유지
+      fscore_enabled: true                  # F-Score 필터 활성화 (확정)
+      min_fscore: 4                         # 권고: 4. 5점은 CAGR -12.7%p 부작용 (docs/POLICY.md 참조)
+      # ── 실험용 옵션 (모두 false 유지 — 005620 분석 시리즈 결론) ──
+      strict_reporting_lag: false           # true 시 CAGR -12.18%p (lag_impact_analysis.md)
+      eps_flip_filter_enabled: false        # true 시 CAGR -7.08%p (alternative_defense_comparison.md)
+      halt_history_filter_enabled: false    # true 시 005620 회피 실패 (효과 없음)
     volatility:
       max_percentile: 50.0
     market_regime:
@@ -152,9 +164,12 @@ presets:
     momentum:
       absolute_momentum_enabled: false
     quality:
-      fscore_enabled: true
-      min_fscore: 4
-      strict_reporting_lag: false          # 2026-04-15 영향 평가 결과 CAGR -12%p — false 유지
+      fscore_enabled: true                  # F-Score 필터 활성화 (확정)
+      min_fscore: 4                         # 권고: 4. 5점은 CAGR -12.7%p 부작용 (docs/POLICY.md 참조)
+      # ── 실험용 옵션 (모두 false 유지 — 005620 분석 시리즈 결론) ──
+      strict_reporting_lag: false           # true 시 CAGR -12.18%p (lag_impact_analysis.md)
+      eps_flip_filter_enabled: false        # true 시 CAGR -7.08%p (alternative_defense_comparison.md)
+      halt_history_filter_enabled: false    # true 시 005620 회피 실패 (효과 없음)
     volatility:
       max_percentile: 70.0
     market_regime:

@@ -63,18 +63,19 @@ class MomentumConfig:
 class QualityConfig:
     """퀄리티 팩터 설정"""
 
-    fscore_enabled: bool = True  # F-Score 필터 활성화
-    min_fscore: int = 2  # 최소 F-Score (5점 만점, 2점 이상만 통과 — 최악만 제거)
-    # 리포팅 래그 엄격 적용: True면 재무 팩터 계산 시 전년도 연간 보고서만 사용.
-    # 2026-04-15 영향 평가 결과 CAGR -12.18%p로 부작용이 커 False로 원복.
-    # 005620 유형 재발 방지는 별도 방어 장치(EPS 부호 반전 감지, 거래정지 필터)로 대응.
+    fscore_enabled: bool = True  # F-Score 필터 활성화 (확정)
+    min_fscore: int = 2  # 권고: 4 (config.yaml 프리셋에서 설정). 5는 CAGR -12.7%p 부작용
+    # ── 실험용 옵션 (모두 기본 False — docs/POLICY.md "검토했으나 미채택" 참조) ──
+    # strict_reporting_lag: True 시 재무 팩터를 전년도 연간 보고서로만 계산.
+    # 2026-04-15 평가: CAGR -12.18%p (lag_impact_analysis.md). 코드는 학습용으로 유지.
     strict_reporting_lag: bool = False
-    # EPS 부호 반전 감지: 최근 4개월 EPS 시계열에서 부호가 바뀌고 |변동률| > 150%인
-    # 종목을 스크리닝에서 제외 (분기보고서 반영 직후 회계적 급변 차단).
+    # eps_flip_filter: 최근 N개월 EPS 부호 반전 + 변동률 임계 초과 종목 배제.
+    # 005620 회피 가능하나 정상 턴어라운드 종목까지 99개 배제 → CAGR -7.08%p.
     eps_flip_filter_enabled: bool = False
     eps_flip_lookback_months: int = 4
     eps_flip_min_change_pct: float = 1.5  # 150%
-    # 거래정지 이력 필터: 최근 N일 내 거래정지(volume=0) 일수가 임계값 이상이면 배제.
+    # halt_history_filter: 최근 N일 내 거래정지(volume=0) 일수 임계 초과 종목 배제.
+    # 005620은 기준일에 정지 이력 부족 → 회피 실패. CAGR 영향 -0.06%p (효과 없음).
     halt_history_filter_enabled: bool = False
     halt_history_lookback_days: int = 60
     halt_history_max_halt_days: int = 5
