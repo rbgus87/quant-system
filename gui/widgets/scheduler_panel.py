@@ -1,9 +1,10 @@
 # gui/widgets/scheduler_panel.py
-"""스케줄러 제어 패널 — 시작/중지/즉시 실행"""
+"""스케줄러 제어 패널 — 시작/중지/즉시 실행 + 자동 재시작 watchdog"""
 
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -19,6 +20,11 @@ from PyQt6.QtWidgets import (
 
 logger = logging.getLogger(__name__)
 
+# 자동 재시작 기본값
+_AUTO_RESTART_MAX = 3
+_AUTO_RESTART_DELAY_SEC = 30
+_AUTO_RESTART_RESET_WINDOW_SEC = 3600  # 60분
+
 
 class SchedulerPanel(QWidget):
     """스케줄러 프로세스 관리 위젯"""
@@ -29,6 +35,9 @@ class SchedulerPanel(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._process: Optional[QProcess] = None
+        self._stopping_intentionally: bool = False
+        self._restart_count: int = 0
+        self._last_restart_time: float = 0.0
         self._setup_ui()
         self._update_buttons()
 
@@ -150,7 +159,76 @@ class SchedulerPanel(QWidget):
             self._process = None
             self._update_buttons()
             self.status_changed.emit(False)
-            logger.info(f"스케줄러 종료 (code={exit_code})")
+
+            # ── 종료 알림 (모든 경로) ──
+            if self._stopping_intentionally:
+                msg = "✅ 스케줄러 정상 종료 (수동 중지)"
+                logger.info(msg)
+            elif exit_code == 0:
+                msg = "✅ 스케줄러 정상 종료"
+                logger.info(msg)
+            else:
+                msg = (
+                    f"🚨 스케줄러 비정상 종료 (code={exit_code})\n"
+                    f"시각: {datetime.now():%Y-%m-%d %H:%M:%S}"
+                )
+                logger.error(msg)
+
+            self._send_telegram_async(msg)
+
+            # ── 자동 재시작 (비정상 종료 + 수동 중지가 아닌 경우) ──
+            if exit_code != 0 and not self._stopping_intentionally:
+                self._try_auto_restart()
+
+            self._stopping_intentionally = False
+
+    def _try_auto_restart(self) -> None:
+        """비정상 종료 시 자동 재시작 시도"""
+        now = time.monotonic()
+
+        # 재시작 윈도우 초과 시 카운터 리셋
+        if now - self._last_restart_time > _AUTO_RESTART_RESET_WINDOW_SEC:
+            self._restart_count = 0
+
+        if self._restart_count >= _AUTO_RESTART_MAX:
+            msg = (
+                f"⚠️ 자동 재시작 {_AUTO_RESTART_MAX}회 한도 초과\n"
+                f"수동 개입 필요"
+            )
+            logger.error(msg)
+            self._send_telegram_async(msg)
+            self.log_output.emit(f"[GUI] {msg}")
+            return
+
+        self._restart_count += 1
+        self._last_restart_time = now
+        msg = (
+            f"⏳ {_AUTO_RESTART_DELAY_SEC}초 후 자동 재시작 "
+            f"({self._restart_count}/{_AUTO_RESTART_MAX})"
+        )
+        logger.warning(msg)
+        self._send_telegram_async(msg)
+        self.log_output.emit(f"[GUI] {msg}")
+
+        QTimer.singleShot(
+            _AUTO_RESTART_DELAY_SEC * 1000, self._auto_restart
+        )
+
+    def _auto_restart(self) -> None:
+        """지연 후 스케줄러 재시작"""
+        if self.is_running():
+            return
+        logger.info("자동 재시작 실행")
+        self.log_output.emit("[GUI] 자동 재시작 실행")
+        self.start_scheduler()
+
+    def _send_telegram_async(self, message: str) -> None:
+        """텔레그램 알림 발송 (실패 시 로그만)"""
+        try:
+            from notify.telegram import TelegramNotifier
+            TelegramNotifier().send(message)
+        except Exception as e:
+            logger.debug(f"텔레그램 알림 발송 실패: {e}")
 
     def is_running(self) -> bool:
         return self._process is not None and self._process.state() == QProcess.ProcessState.Running
@@ -169,26 +247,17 @@ class SchedulerPanel(QWidget):
         logger.info("스케줄러 프로세스 시작")
 
     def stop_scheduler(self) -> None:
-        """스케줄러 중지"""
+        """스케줄러 중지 (수동)"""
         if not self.is_running():
             return
 
+        self._stopping_intentionally = True
         self._process.terminate()
         if not self._process.waitForFinished(5000):
             self._process.kill()
-        self._process = None
-        self._update_buttons()
-        self.status_changed.emit(False)
+        # _on_process_finished에서 알림 + 상태 정리 처리
         self.log_output.emit("[GUI] 스케줄러 중지")
         logger.info("스케줄러 프로세스 중지")
-
-        # Windows에서 terminate()는 cleanup 없이 즉시 종료되므로
-        # GUI에서 직접 텔레그램 종료 알림 발송
-        try:
-            from notify.telegram import TelegramNotifier
-            TelegramNotifier().send("퀀트 스케줄러가 종료되었습니다.")
-        except Exception as e:
-            logger.debug(f"종료 알림 발송 실패: {e}")
 
     def _run_now(self) -> None:
         """즉시 리밸런싱 (1회 실행)"""
@@ -289,5 +358,10 @@ class SchedulerPanel(QWidget):
     def cleanup(self) -> None:
         """앱 종료 시 프로세스 정리"""
         if self.is_running():
+            self._stopping_intentionally = True
+            self._send_telegram_async(
+                "📢 GUI 종료로 스케줄러 자동 중지\n"
+                f"시각: {datetime.now():%Y-%m-%d %H:%M:%S}"
+            )
             self._process.terminate()
             self._process.waitForFinished(3000)
