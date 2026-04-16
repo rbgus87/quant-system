@@ -15,6 +15,7 @@ import argparse
 import logging
 import os
 import sys
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,47 @@ from trading.order import OrderExecutor
 from notify.telegram import TelegramNotifier
 
 logger = logging.getLogger(__name__)
+
+# 모듈 레벨 스케줄러 참조 (재시도 예약용)
+_scheduler_instance = None
+
+
+def _install_crash_handler() -> None:
+    """미처리 예외를 파일 + 텔레그램으로 기록하는 excepthook 설치"""
+
+    def _excepthook(
+        exc_type: type,
+        exc_value: BaseException,
+        exc_traceback: Optional[object],
+    ) -> None:
+        tb_str = "".join(
+            traceback.format_exception(exc_type, exc_value, exc_traceback)
+        )
+
+        # 크래시 덤프 파일
+        crash_dir = Path("logs")
+        crash_dir.mkdir(exist_ok=True)
+        crash_file = crash_dir / f"crash_{datetime.now():%Y%m%d_%H%M%S}.log"
+        try:
+            crash_file.write_text(tb_str, encoding="utf-8")
+        except Exception:
+            pass
+
+        logger.critical(f"미처리 예외 발생:\n{tb_str}")
+
+        # 텔레그램 즉시 알림
+        try:
+            TelegramNotifier().send(
+                f"🚨 스케줄러 크래시\n"
+                f"{exc_type.__name__}: {exc_value}\n"
+                f"시각: {datetime.now():%Y-%m-%d %H:%M:%S}"
+            )
+        except Exception:
+            pass
+
+        sys.exit(1)
+
+    sys.excepthook = _excepthook
 
 
 # ────────────────────────────────────────────
@@ -750,14 +792,19 @@ def _collect_daily_data_once(date_str: str, markets: list[str]) -> tuple[int, in
     return prefetch_total, fund_total
 
 
-def run_daily_data_collection() -> None:
-    """매 영업일 장 마감 후 일별 데이터 수집 (기본 16:30).
+def run_daily_data_collection(
+    _retry_attempt: int = 0,
+    _target_date_str: Optional[str] = None,
+) -> None:
+    """매 영업일 데이터 수집 (기본: 전일 데이터를 09:00에 수집).
 
-    - 휴장일이면 즉시 종료
-    - prefetch_daily_trade: daily_price + market_cap 갱신
-    - get_fundamentals_all: fundamental 갱신
-    - 실패 시 30분 / 60분 / 120분 후 재시도 (KRX 업데이트 지연 대응, 총 3회)
-    - 최종 실패 시 텔레그램 에러 알림 + 다음날 09:00 auto_backfill에서 복구 시도
+    전략:
+      - target="previous_business_day": 전일 확정 데이터 (09:00 권장)
+      - target="today": 당일 데이터 (16:30+ 권장, KRX 지연 위험)
+    재시도:
+      - 실패 시 APScheduler date trigger로 재시도 예약 (time.sleep 미사용)
+      - 최대 2회 재시도 (10분, 60분 후)
+      - 최종 실패 시 텔레그램 에러 알림
     """
     if not is_business_day():
         logger.info("일별 데이터 수집: 휴장일이므로 스킵")
@@ -768,55 +815,107 @@ def run_daily_data_collection() -> None:
         logger.info("일별 데이터 수집: config에서 비활성화됨")
         return
 
-    today_str = datetime.now().strftime("%Y%m%d")
+    # ── 수집 대상 날짜 결정 ──
+    if _target_date_str:
+        target_str = _target_date_str
+    elif cfg.target == "previous_business_day":
+        from config.calendar import previous_krx_business_day
+        target_date = previous_krx_business_day(datetime.now().date())
+        target_str = target_date.strftime("%Y%m%d")
+    else:
+        target_str = datetime.now().strftime("%Y%m%d")
+
     markets = cfg.markets
-    logger.info(
-        "일별 데이터 수집 시작 — 기준일 %s, 시장 %s",
-        today_str, "+".join(markets),
-    )
 
-    import time as _time
-
-    notifier = TelegramNotifier()
-    # 재시도 간격: 30분 / 60분 / 120분 (KRX 업데이트 지연 완화)
-    retry_delays_sec = [1800, 3600, 7200]
-    last_error: Optional[Exception] = None
-    max_attempts = 1 + len(retry_delays_sec)
-
-    for attempt in range(max_attempts):
-        try:
-            pf_total, fund_total = _collect_daily_data_once(today_str, markets)
-            if pf_total == 0 and fund_total == 0:
-                raise RuntimeError(
-                    f"[{today_str}] 수집 결과가 비어 있음 "
-                    f"(prefetch=0, fundamentals=0) — KRX 업데이트 지연 가능성"
-                )
+    # ── 멱등성 체크: 이미 충분한 데이터가 있으면 스킵 ──
+    try:
+        storage = DataStorage()
+        from datetime import date as _date
+        dt = datetime.strptime(target_str, "%Y%m%d").date()
+        existing = storage.load_daily_prices_for_date(dt, market=markets[0])
+        if existing >= 900:
             logger.info(
-                "일별 데이터 수집 완료 — prefetch %d건, fundamentals %d건",
-                pf_total, fund_total,
+                "[%s] 이미 수집됨 (%d종목), 스킵", target_str, existing
             )
             return
-        except Exception as e:
-            last_error = e
-            if attempt < max_attempts - 1:
-                delay = retry_delays_sec[attempt]
-                logger.warning(
-                    "일별 데이터 수집 실패 (시도 %d/%d): %s — %d분 후 재시도",
-                    attempt + 1, max_attempts, e, delay // 60,
-                )
-                _time.sleep(delay)
-            else:
-                logger.error(
-                    "일별 데이터 수집 최종 실패 (%d회 시도 모두 실패): %s",
-                    max_attempts, e, exc_info=True,
-                )
+    except Exception:
+        pass  # 체크 실패 시 수집 진행
 
-    notifier.send_error(
-        f"일별 데이터 수집 최종 실패 ({max_attempts}회 재시도)\n"
-        f"기준일: {today_str}\n"
-        f"오류: {last_error}\n"
-        f"→ 다음 영업일 09:00 auto_backfill에서 복구 시도합니다."
+    logger.info(
+        "일별 데이터 수집 시작 — 기준일 %s, 시장 %s (시도 %d/3)",
+        target_str, "+".join(markets), _retry_attempt + 1,
     )
+
+    # ── 수집 시도 ──
+    retry_delays_sec = [600, 3600]  # 10분, 60분
+    max_attempts = 1 + len(retry_delays_sec)
+
+    try:
+        pf_total, fund_total = _collect_daily_data_once(target_str, markets)
+        if pf_total == 0 and fund_total == 0:
+            raise RuntimeError(
+                f"[{target_str}] 수집 결과가 비어 있음 "
+                f"(prefetch=0, fundamentals=0)"
+            )
+        logger.info(
+            "일별 데이터 수집 완료 — prefetch %d건, fundamentals %d건",
+            pf_total, fund_total,
+        )
+    except Exception as e:
+        if _retry_attempt < len(retry_delays_sec):
+            delay = retry_delays_sec[_retry_attempt]
+            logger.warning(
+                "일별 데이터 수집 실패 (시도 %d/%d): %s — %d분 후 재시도",
+                _retry_attempt + 1, max_attempts, e, delay // 60,
+            )
+            # APScheduler date trigger로 재시도 예약 (스레드 즉시 반환)
+            _schedule_collection_retry(
+                _retry_attempt + 1, target_str, delay
+            )
+        else:
+            logger.error(
+                "일별 데이터 수집 최종 실패 (%d회 시도 모두 실패): %s",
+                max_attempts, e, exc_info=True,
+            )
+            TelegramNotifier().send_error(
+                f"일별 데이터 수집 최종 실패 ({max_attempts}회 재시도)\n"
+                f"기준일: {target_str}\n"
+                f"오류: {e}"
+            )
+
+
+def _schedule_collection_retry(
+    attempt: int, target_date_str: str, delay_sec: int
+) -> None:
+    """APScheduler date trigger로 재시도 예약 (time.sleep 대신)"""
+    from apscheduler.schedulers import SchedulerNotRunningError
+
+    try:
+        run_at = datetime.now() + timedelta(seconds=delay_sec)
+        # APScheduler 인스턴스 접근 — 모듈 레벨 변수 사용
+        if _scheduler_instance is not None:
+            _scheduler_instance.add_job(
+                run_daily_data_collection,
+                trigger="date",
+                run_date=run_at,
+                kwargs={
+                    "_retry_attempt": attempt,
+                    "_target_date_str": target_date_str,
+                },
+                id=f"daily_collection_retry_{attempt}",
+                replace_existing=True,
+                misfire_grace_time=600,
+            )
+            logger.info(
+                "데이터 수집 재시도 예약: %s (시도 %d)",
+                run_at.strftime("%H:%M:%S"), attempt + 1,
+            )
+        else:
+            logger.error("스케줄러 인스턴스 없음 — 재시도 예약 불가")
+    except SchedulerNotRunningError:
+        logger.error("스케줄러가 실행 중이 아님 — 재시도 예약 불가")
+    except Exception as e:
+        logger.error(f"재시도 예약 실패: {e}")
 
 
 # ────────────────────────────────────────────
@@ -961,6 +1060,7 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging()
+    _install_crash_handler()
 
     if not settings.is_paper_trading:
         logger.warning("실전투자 모드입니다! 신중하게 진행하세요")
@@ -1004,6 +1104,8 @@ def main() -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
 
     scheduler = BlockingScheduler(timezone="Asia/Seoul")
+    global _scheduler_instance
+    _scheduler_instance = scheduler
 
     reb_h, reb_m = settings.portfolio.rebalance_time.split(":")
     scheduler.add_job(
@@ -1033,7 +1135,7 @@ def main() -> None:
         hour=15,
         minute=35,
         id="daily_report",
-        misfire_grace_time=300,
+        misfire_grace_time=7200,  # 2h
     )
 
     # 리스크 감시: 장중 30분 간격 (09:00~15:00)
@@ -1047,15 +1149,16 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
-    # 자동 백필: 매일 장 시작 전 (09:00) — 전일 수집 누락 복구
+    # 자동 백필: 매주 월요일 09:30 — 주간 안전망 (일일 복구는 시작 시 수행)
     scheduler.add_job(
         run_auto_backfill,
         trigger="cron",
-        day_of_week="mon-fri",
+        day_of_week="mon",
         hour=9,
-        minute=0,
+        minute=30,
         id="auto_backfill",
-        misfire_grace_time=600,
+        misfire_grace_time=43200,  # 12h — 스케줄러 늦게 시작해도 실행
+        coalesce=True,
     )
 
     # 관리종목 캐시 갱신: 하루 1회 (09:30)
@@ -1066,7 +1169,7 @@ def main() -> None:
         hour=9,
         minute=30,
         id="risk_guard_delisting",
-        misfire_grace_time=300,
+        misfire_grace_time=3600,  # 1h
     )
 
     # 상장폐지 임박 감지: 하루 1회 (16:30, 일별 데이터 수집 30분 후)
@@ -1111,7 +1214,7 @@ def main() -> None:
                 misfire_grace_time=600,
             )
 
-    # 일별 데이터 수집 (기본 16:00, 장 마감 후)
+    # 일별 데이터 수집 (기본 09:00, 전일 확정 데이터)
     dc = settings.schedule.daily_data_collection
     if dc.enabled:
         scheduler.add_job(
@@ -1121,7 +1224,8 @@ def main() -> None:
             hour=dc.hour,
             minute=dc.minute,
             id="daily_data_collection",
-            misfire_grace_time=600,
+            misfire_grace_time=10800,  # 3h
+            coalesce=True,
         )
 
     # DART 공시 폴링 + 일일 요약 (config 기반)
@@ -1172,18 +1276,55 @@ def main() -> None:
             dn.market_open, dn.market_close, dn.polling_interval_minutes,
             dn.daily_summary.send_time,
         )
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    TelegramNotifier().send(f"퀀트 스케줄러가 시작되었습니다.\n{now}")
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    TelegramNotifier().send(f"퀀트 스케줄러가 시작되었습니다.\n{now_str}")
+
+    # ── 시작 시 누락 데이터 즉시 복구 ──
+    _startup_recovery()
 
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("스케줄러 종료")
         try:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            TelegramNotifier().send(f"퀀트 스케줄러가 종료되었습니다.\n{now}")
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            TelegramNotifier().send(f"퀀트 스케줄러가 종료되었습니다.\n{now_str}")
         except Exception:
             pass
+
+
+def _startup_recovery() -> None:
+    """스케줄러 시작 시 누락 데이터 즉시 복구
+
+    스케줄러가 늦게 시작해서 auto_backfill을 놓친 경우에도
+    누락 데이터를 즉시 복구한다.
+    """
+    logger.info("시작 시 누락 데이터 체크")
+    try:
+        from scripts.auto_backfill_missing import detect_and_backfill
+
+        markets = list(settings.schedule.daily_data_collection.markets)
+        missing, recovered, still_missing = detect_and_backfill(
+            lookback=5, markets=markets,
+        )
+        if not missing:
+            logger.info("시작 시 복구: 누락 없음")
+            return
+
+        notifier = TelegramNotifier()
+        if recovered:
+            notifier.send(
+                f"📢 시작 시 자동 복구 완료\n"
+                f"누락 {len(missing)}일 / 복구 {len(recovered)}일 / "
+                f"실패 {len(still_missing)}일"
+            )
+        if still_missing:
+            notifier.send_error(
+                f"⚠️ 시작 시 복구 실패 {len(still_missing)}일\n"
+                f"날짜: {', '.join(str(d) for d in still_missing)}"
+            )
+    except Exception as e:
+        logger.error(f"시작 시 복구 실패: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

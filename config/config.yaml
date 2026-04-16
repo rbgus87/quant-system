@@ -263,9 +263,10 @@ logging:
 schedule:
   daily_data_collection:
     enabled: true
-    hour: 16                        # 장 마감(15:30) 후. KRX Open API 업데이트 완료 시점 여유 확보
-    minute: 30                      # 16:30으로 조정 — 2026-04-15 T+0 당일 데이터 0종목 사례 반영
+    hour: 9                         # 장 시작 전 09:00 — 전일 확정 데이터 수집
+    minute: 0
     markets: ["KOSPI"]              # 현재 프리셋 A와 일치. 향후 ["KOSPI","KOSDAQ"] 확장 가능
+    target: "previous_business_day" # 전일 데이터 수집 (당일 KRX 지연 문제 근본 해결)
 
   delisted_refresh:
     enabled: true
