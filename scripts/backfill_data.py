@@ -120,12 +120,21 @@ def read_failed_log(path: str) -> list[date]:
 
 
 def backfill_one_date(
-    collector: KRXDataCollector, date_str: str, markets: list[str]
+    collector: KRXDataCollector,
+    date_str: str,
+    markets: list[str],
+    price_only: bool = False,
 ) -> tuple[int, int]:
     """단일 날짜 수집.
 
+    Args:
+        collector: KRXDataCollector 인스턴스
+        date_str: YYYYMMDD
+        markets: 대상 시장 리스트
+        price_only: True면 prefetch_daily_trade만 호출 (DART 펀더멘털 스킵)
+
     Returns:
-        (prefetch_total_rows, fundamental_total_rows)
+        (prefetch_total_rows, fundamental_total_rows) — price_only면 fund=0
     """
     pf_total = 0
     fund_total = 0
@@ -133,8 +142,9 @@ def backfill_one_date(
         pf_df = collector.prefetch_daily_trade(date_str, market=market)
         pf_total += len(pf_df) if pf_df is not None else 0
 
-        fund_df = collector.get_fundamentals_all(date_str, market=market)
-        fund_total += len(fund_df) if fund_df is not None else 0
+        if not price_only:
+            fund_df = collector.get_fundamentals_all(date_str, market=market)
+            fund_total += len(fund_df) if fund_df is not None else 0
     return pf_total, fund_total
 
 
@@ -158,6 +168,15 @@ def main() -> int:
         "--retry-failed",
         type=str,
         help="backfill_failed_*.txt 파일 경로 — 기록된 날짜만 재시도",
+    )
+    parser.add_argument(
+        "--price-only",
+        action="store_true",
+        help=(
+            "prefetch_daily_trade만 호출하고 DART 펀더멘털 수집 스킵. "
+            "KOSDAQ 12년치처럼 DART 호출이 병목인 경우 사용 "
+            "(약 64초/일 → 2초/일로 단축)"
+        ),
     )
     args = parser.parse_args()
 
@@ -222,8 +241,14 @@ def main() -> int:
             logger.info("[%s] 휴장일 스킵", date_str)
             continue
         try:
-            pf, fund = backfill_one_date(collector, date_str, markets)
-            if pf == 0 and fund == 0:
+            pf, fund = backfill_one_date(
+                collector, date_str, markets, price_only=args.price_only,
+            )
+            # price_only 모드에서는 prefetch만 성공 여부 판정
+            if args.price_only:
+                if pf == 0:
+                    raise RuntimeError("prefetch 결과가 비어 있음")
+            elif pf == 0 and fund == 0:
                 raise RuntimeError("수집 결과가 비어 있음")
             succeeded.append(d)
             total_pf += pf
