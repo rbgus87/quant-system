@@ -1,0 +1,127 @@
+{
+  "start": "2017-01-01",
+  "end": "2024-12-31",
+  "with_selection": false,
+  "db_stats": {
+    "KOSPI": {
+      "total": 94199,
+      "pcr_pos": 0,
+      "pcr_pct": 0.0,
+      "psr_pos": 65938,
+      "psr_pct": 69.99861994288686,
+      "pbr_pos": 93814,
+      "pbr_pct": 99.59129077803374,
+      "div_pos": 46873,
+      "div_pct": 49.75955158759648
+    },
+    "KOSDAQ": {
+      "total": 69551,
+      "pcr_pos": 0,
+      "pcr_pct": 0.0,
+      "psr_pos": 67531,
+      "psr_pct": 97.09565642478182,
+      "pbr_pos": 69272,
+      "pbr_pct": 99.59885551609611,
+      "div_pos": 28977,
+      "div_pct": 41.66295236588978
+    }
+  },
+  "scenarios": {
+    "A": {
+      "name": "A",
+      "label": "현재 (Baseline)",
+      "desc": "pcr=0.30 설정이지만 PCR=NaN → PSR 폴백 자동 작동",
+      "weights": {
+        "pbr": 0.5,
+        "pcr": 0.3,
+        "div": 0.2
+      },
+      "start": "2017-01-01",
+      "end": "2024-12-31",
+      "cagr": 0.05954574068675256,
+      "mdd": -0.5569839810593139,
+      "sharpe": 0.2237252389978449,
+      "sortino": 0.3228597141305978,
+      "volatility": 0.26249427952784715,
+      "total_return": 0.5649228151142691,
+      "calmar": 0.10690745642900537,
+      "n_days": 1902,
+      "n_rebalances": 32,
+      "avg_selection_size": 0.0,
+      "selections_by_date": {},
+      "error": null
+    },
+    "B": {
+      "name": "B",
+      "label": "2팩터 명시",
+      "desc": "PCR/PSR 폴백 차단 (가중치 0) → PBR+DIV만",
+      "weights": {
+        "pbr": 0.71,
+        "pcr": 0.0,
+        "div": 0.29
+      },
+      "start": "2017-01-01",
+      "end": "2024-12-31",
+      "cagr": 0.050104886795465875,
+      "mdd": -0.5478321469114915,
+      "sharpe": 0.1922295961979259,
+      "sortino": 0.28238220616620285,
+      "volatility": 0.2774331153739881,
+      "total_return": 0.46014853429727953,
+      "calmar": 0.0914602895758158,
+      "n_days": 1902,
+      "n_rebalances": 32,
+      "avg_selection_size": 0.0,
+      "selections_by_date": {},
+      "error": null
+    },
+    "C": {
+      "name": "C",
+      "label": "PSR 폴백 활성 (검증용)",
+      "desc": "A와 동일 — value.py 코드 흐름상 PSR 자동 폴백",
+      "weights": {
+        "pbr": 0.5,
+        "pcr": 0.3,
+        "div": 0.2
+      },
+      "start": "2017-01-01",
+      "end": "2024-12-31",
+      "cagr": 0.05954574068675256,
+      "mdd": -0.5569839810593139,
+      "sharpe": 0.2237252389978449,
+      "sortino": 0.3228597141305978,
+      "volatility": 0.26249427952784715,
+      "total_return": 0.5649228151142691,
+      "calmar": 0.10690745642900537,
+      "n_days": 1902,
+      "n_rebalances": 32,
+      "avg_selection_size": 0.0,
+      "selections_by_date": {},
+      "error": null
+    },
+    "D": {
+      "name": "D",
+      "label": "PBR 강화",
+      "desc": "PBR 80% + DIV 20%, PCR/PSR 미사용",
+      "weights": {
+        "pbr": 0.8,
+        "pcr": 0.0,
+        "div": 0.2
+      },
+      "start": "2017-01-01",
+      "end": "2024-12-31",
+      "cagr": 0.03272838529872901,
+      "mdd": -0.6024121370419153,
+      "sharpe": 0.12374479947819712,
+      "sortino": 0.17707793230124746,
+      "volatility": 0.2627296692133231,
+      "total_return": 0.28318559241984165,
+      "calmar": 0.054328894267367325,
+      "n_days": 1902,
+      "n_rebalances": 32,
+      "avg_selection_size": 0.0,
+      "selections_by_date": {},
+      "error": null
+    }
+  }
+}
