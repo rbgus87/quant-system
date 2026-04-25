@@ -143,6 +143,25 @@ def step_ruff_format() -> tuple[str, str]:
     return Status.WARN, f"미포맷 존재 / {last[:80]}"
 
 
+def step_encoding_check() -> tuple[str, str]:
+    """PLW1514 — open/read_text/write_text 에서 encoding 미지정 검출.
+
+    Windows cp949 회귀 방지. preview 룰이라 별도 명령으로 실행.
+    """
+    code, out = _run_cmd(
+        [
+            sys.executable, "-m", "ruff", "check", ".",
+            "--preview", "--select", "PLW1514",
+        ],
+        timeout=60,
+    )
+    if code == 0:
+        return Status.OK, "encoding 명시 OK"
+    # 위반 건수 집계
+    n = sum(1 for ln in out.splitlines() if "PLW1514" in ln)
+    return Status.FAIL, f"{n}건 encoding 미지정"
+
+
 def step_scan_imports() -> tuple[str, str]:
     script = PROJECT_ROOT / "scripts" / "scan_imports.py"
     code, out = _run_cmd([sys.executable, str(script)], timeout=30)
@@ -175,8 +194,9 @@ def run_phase_1() -> int:
     _print_phase(1, "정적 분석")
     _safe(1, 1, "ruff check", step_ruff_check)
     _safe(1, 2, "ruff format --check", step_ruff_format)
-    _safe(1, 3, "hidden-import 대조", step_scan_imports)
-    _safe(1, 4, ".env 필수 키", step_env_keys)
+    _safe(1, 3, "encoding (PLW1514)", step_encoding_check)
+    _safe(1, 4, "hidden-import 대조", step_scan_imports)
+    _safe(1, 5, ".env 필수 키", step_env_keys)
     return sum(1 for r in _results if r[0] == 1 and r[3] == Status.FAIL)
 
 

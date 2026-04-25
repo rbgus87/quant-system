@@ -1,8 +1,6 @@
 # CLAUDE.md — Korean Multi-Factor Quant System v2.0
 
-> ⚠️ 이 프로젝트는 v2.0 전략 재설계("수술") 진행 중입니다.
-> 전체 변경 사항은 `docs/PRD_v2.md`를 참조하세요.
-> 수술 작업 순서는 `docs/SURGERY_GUIDE.md`를 참조하세요.
+> v2.0 전략 명세는 `docs/PRD_v2.md`를 참조하세요.
 
 ## 프로젝트 개요
 
@@ -31,8 +29,9 @@ quant-system/
 ├── CLAUDE.md              ← 이 파일 (프로젝트 루트에 위치해야 함)
 ├── docs/
 │   ├── PRD_v2.md          ← v2.0 전략 명세 (핵심 참조 문서)
-│   ├── SURGERY_GUIDE.md   ← 수술 작업 가이드
-│   └── 01~13_*.md         ← 기존 상세 가이드 (인프라 계층 참조용)
+│   ├── 01~13_*.md         ← 기술 참고 가이드 (인프라 계층 참조용)
+│   ├── case_studies/      ← 학습 사례
+│   └── reports/           ← 분석 결과 보고서
 ├── config/
 │   ├── settings.py        ← 전역 설정 (YAML 오버라이드 + 프리셋 충돌 감지)
 │   ├── config.yaml        ← 전략 파라미터 (4+4 프리셋)

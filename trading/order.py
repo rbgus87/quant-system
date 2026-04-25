@@ -54,7 +54,7 @@ class OrderExecutor:
         """영속화된 상태 파일 로드"""
         try:
             if self._state_path.exists():
-                with open(self._state_path, "r") as f:
+                with open(self._state_path, "r", encoding="utf-8") as f:
                     return json.load(f)
         except Exception as e:
             logger.warning(f"상태 파일 로드 실패: {e}")
@@ -66,7 +66,7 @@ class OrderExecutor:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             existing = self._load_state()
             existing.update(updates)
-            with open(self._state_path, "w") as f:
+            with open(self._state_path, "w", encoding="utf-8") as f:
                 json.dump(existing, f)
         except Exception as e:
             logger.error(f"상태 파일 저장 실패: {e}")

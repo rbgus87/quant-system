@@ -16,7 +16,6 @@ logs/
 *.png
 reports/
 !docs/reports/
-notebooks/.ipynb_checkpoints/
 
 # 런타임 데이터/캐시
 data/dart_corp_codes.json
@@ -26,9 +25,6 @@ data/quant.db-shm
 data/quant.db-wal
 data/monitor.db-shm
 data/monitor.db-wal
-data/bias_detail_*.csv
-data/lag_impact_selections.json
-data/alt_filter_selections.json
 marcap_repo/
 report_snapshot.md
 KoreanQuant.exe

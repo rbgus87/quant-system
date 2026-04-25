@@ -9,7 +9,7 @@
 
 | 파일 | 내용 |
 |------|------|
-| **`PRD.md`** | 전략 명세, 시스템 요구사항, KPI 목표 |
+| **`PRD_v2.md`** | v2.0 전략 명세, 시스템 요구사항, KPI 목표 |
 | **`CLAUDE.md`** | Claude Code CLI 핵심 컨텍스트 (프로젝트 루트에 복사) |
 | `docs/01_environment.md` | 개발 환경 설정, requirements.txt, .env |
 | `docs/02_architecture.md` | 전체 데이터 흐름, 프로젝트 구조, config/settings.py |
@@ -17,13 +17,14 @@
 | `docs/04_factors.md` | ValueFactor, MomentumFactor, QualityFactor, MultiFactorComposite |
 | `docs/05_backtest.md` | 백테스트 엔진, 성과 분석, 목표 기준 |
 | `docs/06_kiwoom_api.md` | 키움 REST API 공식 확인 사항, 연동 코드, 테스트 순서 |
-| `docs/07_automation.md` | 텔레그램, APScheduler, Streamlit 대시보드 |
+| `docs/07_automation.md` | 텔레그램, APScheduler, GUI |
 | `docs/08_checklist.md` | Phase별 개발 체크리스트, 버그 목록 |
 | `docs/09_investment_sizing.md` | 투자금별 최적 설정, 파라미터 가이드 |
 | `docs/10_factor_analysis.md` | 멀티팩터 구성 분석, 팩터 가중치 상세 |
 | `docs/11_mock_trading_test_plan.md` | 모의투자 검증 계획 |
-| `docs/12_preset_compatibility.md` | 전략 프리셋 궁합 분석 (v1.1 기준, v2.0은 프리셋 A/B/C 3개) |
 | `docs/13_oracle_cloud_deployment.md` | Oracle Cloud Always Free 배포 가이드 |
+| `docs/case_studies/` | 학습 사례 (005620 등) |
+| `docs/reports/` | 분석 결과 보고서 (KOSDAQ 확장, PCR 팩터, 부분 익절 등) |
 
 ---
 
@@ -45,8 +46,8 @@ python run_backtest.py
 # 4. 스케줄러 실행
 python scheduler/main.py
 
-# 5. 대시보드 실행
-streamlit run dashboard/app.py
+# 5. GUI 실행
+python -m gui
 ```
 
 ---

@@ -490,7 +490,7 @@ class TelegramNotifier:
     def _load_peak_value(self) -> float:
         """고점 값 로드"""
         try:
-            data = json.loads(Path(self._peak_value_path).read_text())
+            data = json.loads(Path(self._peak_value_path).read_text(encoding="utf-8"))
             return float(data.get("peak_value") or data.get("peak") or 0)
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             return 0.0
@@ -498,7 +498,7 @@ class TelegramNotifier:
     def _load_prev_value(self) -> float:
         """전일 평가금액 로드"""
         try:
-            data = json.loads(Path(self._peak_value_path).read_text())
+            data = json.loads(Path(self._peak_value_path).read_text(encoding="utf-8"))
             return float(data.get("prev_value", 0))
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             return 0.0
@@ -509,10 +509,10 @@ class TelegramNotifier:
             path = Path(self._peak_value_path)
             existing: dict = {}
             if path.exists():
-                existing = json.loads(path.read_text())
+                existing = json.loads(path.read_text(encoding="utf-8"))
             existing["peak_value"] = peak
             existing["prev_value"] = current
-            path.write_text(json.dumps(existing))
+            path.write_text(json.dumps(existing), encoding="utf-8")
         except Exception as e:
             logger.error(f"peak_value 저장 실패: {e}")
 

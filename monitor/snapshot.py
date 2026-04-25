@@ -33,7 +33,7 @@ def _load_peak_prev() -> tuple[float, float]:
         (peak_value, prev_value) 튜플. 파일 없으면 (0.0, 0.0)
     """
     try:
-        data = json.loads(Path(_peak_value_path()).read_text())
+        data = json.loads(Path(_peak_value_path()).read_text(encoding="utf-8"))
         peak = float(data.get("peak_value") or data.get("peak") or 0)
         prev = float(data.get("prev_value", 0))
         return peak, prev

@@ -68,6 +68,8 @@ class TestEntrypointExecution:
             [sys.executable, "scheduler/main.py", "--dry-run"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         assert result.returncode == 0, (
@@ -81,6 +83,8 @@ class TestEntrypointExecution:
             [sys.executable, "run_backtest.py", "--help"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
         )
         assert result.returncode == 0, (
@@ -88,32 +92,3 @@ class TestEntrypointExecution:
         )
         assert "백테스트" in result.stdout or "backtest" in result.stdout.lower()
 
-    def test_dashboard_import_only(self) -> None:
-        """dashboard/app.py 의 프로젝트 내부 import가 정상인지 확인
-
-        Streamlit 자체는 venv에만 설치되어 있을 수 있으므로,
-        streamlit import를 mock하고 나머지 프로젝트 모듈 import를 검증한다.
-        """
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import sys; "
-                    "from unittest.mock import MagicMock; "
-                    "sys.modules['streamlit'] = MagicMock(); "
-                    "import dashboard.app"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            # streamlit mock 이후에도 프로젝트 모듈 import 실패는 안 됨
-            assert "ModuleNotFoundError" not in result.stderr, (
-                f"dashboard import 실패:\n{result.stderr}"
-            )
-            assert "ImportError" not in result.stderr, (
-                f"dashboard import 실패:\n{result.stderr}"
-            )
