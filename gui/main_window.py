@@ -2,6 +2,7 @@
 """메인 윈도우 — 전체 레이아웃 조합"""
 
 import logging
+from datetime import datetime, time
 from typing import Optional
 
 from PyQt6.QtCore import QSize, Qt, QTimer
@@ -22,6 +23,12 @@ from gui.themes import dark_theme, light_theme
 
 # 에러 팝업 대상 키워드 (매매/API 관련 심각한 에러만)
 _CRITICAL_ERROR_KEYWORDS = ["주문", "매수", "매도", "API", "토큰", "인증"]
+
+# KRX 시장 시간 — 자동 갱신 주기 결정용
+_KRX_OPEN = time(9, 0)
+_KRX_CLOSE = time(15, 30)
+_REFRESH_INTERVAL_MARKET_MS = 30_000     # 장중 30초
+_REFRESH_INTERVAL_OFF_HOURS_MS = 300_000  # 장외 5분 (키움 API 호출 90% 감축)
 from gui.tray_icon import TrayIcon
 from gui.widgets.backtest_runner import BacktestRunner
 from gui.widgets.chart_view import ChartView
@@ -109,7 +116,7 @@ class MainWindow(QMainWindow):
         portfolio_layout.addWidget(self._portfolio_view)
 
         auto_row = QHBoxLayout()
-        self._auto_refresh_cb = QCheckBox("30초마다 자동 갱신")
+        self._auto_refresh_cb = QCheckBox("자동 갱신 (장중 30초 / 장외 5분)")
         self._auto_refresh_cb.stateChanged.connect(self._toggle_auto_refresh)
         auto_row.addWidget(self._auto_refresh_cb)
         auto_row.addStretch()
@@ -169,15 +176,31 @@ class MainWindow(QMainWindow):
         self._tray.show()
 
     def _setup_auto_refresh(self) -> None:
+        # singleShot 모드: 매 tick 후 시장 시간을 확인해 다음 인터벌을 결정한다.
         self._auto_refresh_timer = QTimer(self)
-        self._auto_refresh_timer.timeout.connect(self._portfolio_view.refresh)
+        self._auto_refresh_timer.setSingleShot(True)
+        self._auto_refresh_timer.timeout.connect(self._on_auto_refresh_tick)
 
     def _toggle_auto_refresh(self, state: int) -> None:
         if state:
-            self._auto_refresh_timer.start(30000)
-            self._portfolio_view.refresh()
+            self._on_auto_refresh_tick()
         else:
             self._auto_refresh_timer.stop()
+
+    def _on_auto_refresh_tick(self) -> None:
+        """포트폴리오 갱신 + 다음 갱신 인터벌을 시장 시간에 맞춰 동적 결정.
+
+        장 마감 후에는 가격이 변하지 않으므로 30초 폴링은 키움 API 토큰을
+        불필요하게 소모한다. 장외에는 5분 간격으로 확대하여 API 호출량을
+        90% 감축한다 (시간당 120회 → 12회).
+        """
+        self._portfolio_view.refresh()
+        now = datetime.now().time()
+        in_market = _KRX_OPEN <= now <= _KRX_CLOSE
+        interval = (
+            _REFRESH_INTERVAL_MARKET_MS if in_market else _REFRESH_INTERVAL_OFF_HOURS_MS
+        )
+        self._auto_refresh_timer.start(interval)
 
     def _toggle_theme(self) -> None:
         self._is_dark = not self._is_dark
