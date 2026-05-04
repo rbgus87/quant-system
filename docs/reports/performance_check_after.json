@@ -1,0 +1,298 @@
+{
+  "label": "after",
+  "raw_metrics": {
+    "db_size_mb": 1220.3,
+    "table_rows": {
+      "daily_price": 5960416,
+      "fundamental": 174264,
+      "market_cap": 3890272,
+      "factor_score": 34572,
+      "portfolio": 55,
+      "trade": 20,
+      "delisted_stock": 1928
+    },
+    "indexes": [
+      [
+        "ix_daily_price_date",
+        "daily_price"
+      ],
+      [
+        "ix_daily_price_ticker",
+        "daily_price"
+      ],
+      [
+        "ix_delisted_stock_category",
+        "delisted_stock"
+      ],
+      [
+        "ix_delisted_stock_delist_date",
+        "delisted_stock"
+      ],
+      [
+        "ix_factor_score_date",
+        "factor_score"
+      ],
+      [
+        "ix_factor_score_ticker",
+        "factor_score"
+      ],
+      [
+        "ix_fundamental_date",
+        "fundamental"
+      ],
+      [
+        "ix_fundamental_date_market",
+        "fundamental"
+      ],
+      [
+        "ix_fundamental_ticker",
+        "fundamental"
+      ],
+      [
+        "ix_market_cap_date",
+        "market_cap"
+      ],
+      [
+        "ix_market_cap_date_market",
+        "market_cap"
+      ],
+      [
+        "ix_market_cap_ticker",
+        "market_cap"
+      ],
+      [
+        "ix_portfolio_rebalance",
+        "portfolio"
+      ],
+      [
+        "ix_portfolio_rebalance_date",
+        "portfolio"
+      ],
+      [
+        "ix_trade_date",
+        "trade"
+      ],
+      [
+        "ix_trade_trade_date",
+        "trade"
+      ]
+    ],
+    "query_times": {
+      "fundamental WHERE date+market": {
+        "avg_ms": 4.21,
+        "row_count": 835,
+        "plan": "SEARCH fundamental USING INDEX ix_fundamental_date_market (date=? AND market=?)",
+        "full_scan": false,
+        "uses_index": true
+      },
+      "market_cap WHERE date+market": {
+        "avg_ms": 2.33,
+        "row_count": 949,
+        "plan": "SEARCH market_cap USING INDEX ix_market_cap_date_market (date=? AND market=?)",
+        "full_scan": false,
+        "uses_index": true
+      },
+      "daily_price WHERE ticker+date>=": {
+        "avg_ms": 1.01,
+        "row_count": 205,
+        "plan": "SEARCH daily_price USING INDEX sqlite_autoindex_daily_price_1 (ticker=? AND date>?)",
+        "full_scan": false,
+        "uses_index": true
+      },
+      "daily_price WHERE date (전종목)": {
+        "avg_ms": 3.02,
+        "row_count": 949,
+        "plan": "SEARCH daily_price USING INDEX ix_daily_price_date (date=?)",
+        "full_scan": false,
+        "uses_index": true
+      }
+    },
+    "ref_date": "2026-04-30",
+    "object_creation_counts": {
+      "DataStorage()": 3,
+      "KiwoomRestClient()": 2,
+      "KRXDataCollector()": 1
+    },
+    "init_times_ms": {
+      "DataStorage": 5.89,
+      "KiwoomRestClient": 0.02,
+      "KRXDataCollector": 5.75
+    },
+    "distinct_tickers": 3325,
+    "distinct_days": 3035
+  },
+  "findings": {
+    "db": [
+      {
+        "item": "DB 디스크 크기",
+        "current": "1,220.3 MB",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "테이블 행수",
+        "current": "daily_price=5,960,416, fundamental=174,264, market_cap=3,890,272, factor_score=34,572, portfolio=55, trade=20, delisted_stock=1,928",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "복합 인덱스 누락",
+        "current": "없음",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "총 인덱스 수",
+        "current": "16개 (테이블 7개)",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "쿼리 [fundamental WHERE date+market]",
+        "current": "4.2ms (행 835, plan: SEARCH fundamental USING INDEX ix_fundamental_date_market (date=? AND market=?))",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "쿼리 [market_cap WHERE date+market]",
+        "current": "2.3ms (행 949, plan: SEARCH market_cap USING INDEX ix_market_cap_date_market (date=? AND market=?))",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "쿼리 [daily_price WHERE ticker+date>=]",
+        "current": "1.0ms (행 205, plan: SEARCH daily_price USING INDEX sqlite_autoindex_daily_price_1 (ticker=? AND date)",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "쿼리 [daily_price WHERE date (전종목)]",
+        "current": "3.0ms (행 949, plan: SEARCH daily_price USING INDEX ix_daily_price_date (date=?))",
+        "severity": "GREEN",
+        "suggestion": "-"
+      }
+    ],
+    "object": [
+      {
+        "item": "DataStorage 생성 호출 수 (scheduler+order)",
+        "current": "3회",
+        "severity": "RED",
+        "suggestion": "모듈 레벨 싱글턴화 권장 (get_storage 함수)"
+      },
+      {
+        "item": "KiwoomRestClient 생성 호출 수",
+        "current": "2회",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "KRXDataCollector 생성 호출 수",
+        "current": "1회",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "단일 인스턴스 생성 시간",
+        "current": "DataStorage=5.9ms, KiwoomRestClient=0.0ms, KRXDataCollector=5.8ms",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "DataStorage.__init__ 부수효과",
+        "current": "create_engine + 7개 마이그레이션 + Base.metadata.create_all + WAL pragma",
+        "severity": "YELLOW",
+        "suggestion": "-"
+      },
+      {
+        "item": "KiwoomRestClient.__init__ 부수효과",
+        "current": "토큰 미리 발급 안 함 (lazy) — 가벼움",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "KRXDataCollector.__init__ 부수효과",
+        "current": "DataStorage() 생성 (체인) + 캐시 dict 초기화",
+        "severity": "GREEN",
+        "suggestion": "-"
+      }
+    ],
+    "memory": [
+      {
+        "item": "screener._factor_cache 최대 크기",
+        "current": "24개",
+        "severity": "GREEN",
+        "suggestion": "현재 적정"
+      },
+      {
+        "item": "캐시 키 settings 포함 (오염 방지)",
+        "current": "factor_weights=True, quality 옵션=True",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "DB 전종목·전기간 로드 시 추정 메모리",
+        "current": "전체 577MB / 1년치 48MB",
+        "severity": "YELLOW",
+        "suggestion": "벌크 조회 시 chunk_size + 청크 단위 처리 검토"
+      },
+      {
+        "item": "변동성 필터 pivot_table 사용",
+        "current": "사용 중 (벡터화)",
+        "severity": "GREEN",
+        "suggestion": "-"
+      }
+    ],
+    "code": [
+      {
+        "item": "pd.concat 루프 내 누적 (O(n²))",
+        "current": "0건 ",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "N+1 쿼리 (개별 종목 루프 폴백)",
+        "current": "0건 (벌크 실패 시 폴백 — 의도적)",
+        "severity": "GREEN",
+        "suggestion": "벌크 우선 + 미스만 개별 폴백 — 현 패턴 OK"
+      },
+      {
+        "item": "WHERE 절 사용 (전체 로드 회피)",
+        "current": "WHERE 사용 13회 / SELECT * 0회",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "GUI 자동 갱신 주기 (장 마감 후 동작)",
+        "current": "시간대 인지 갱신",
+        "severity": "GREEN",
+        "suggestion": "-"
+      }
+    ],
+    "scheduler": [
+      {
+        "item": "scheduler/main.py 규모",
+        "current": "1380줄 / 29함수 / 12 Job",
+        "severity": "GREEN",
+        "suggestion": "-"
+      },
+      {
+        "item": "time.sleep() 사용 (블로킹)",
+        "current": "1회",
+        "severity": "YELLOW",
+        "suggestion": "장기 대기는 APScheduler date trigger 권장"
+      },
+      {
+        "item": "스케줄러 타입",
+        "current": "BlockingScheduler (단일 스레드)",
+        "severity": "YELLOW",
+        "suggestion": "대부분 IO bound라서 OK; 동시성 필요 시 max_workers 조정"
+      },
+      {
+        "item": "DB engine.dispose() 종료 정리",
+        "current": "호출",
+        "severity": "GREEN",
+        "suggestion": "-"
+      }
+    ]
+  }
+}
