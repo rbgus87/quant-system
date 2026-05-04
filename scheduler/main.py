@@ -36,6 +36,60 @@ logger = logging.getLogger(__name__)
 # 모듈 레벨 스케줄러 참조 (재시도 예약용)
 _scheduler_instance = None
 
+# ────────────────────────────────────────────
+# 싱글턴 — 자주 호출되는 무거운 클라이언트 재사용
+#
+# 배경: 진단 결과 단일 리밸런싱 1회당
+#   DataStorage 5회 / KiwoomRestClient 6회 / KRXDataCollector 4회 생성됨.
+#   DataStorage.__init__는 7개 마이그레이션을 매번 실행해 ~5ms씩 소비.
+#   KRXDataCollector도 내부에서 DataStorage()를 생성하므로 체인으로 누적.
+#   getter 함수로 lazy + 단일 인스턴스 재사용하여 누적 오버헤드 제거.
+# ────────────────────────────────────────────
+
+_storage: Optional["DataStorage"] = None
+_api: Optional["KiwoomRestClient"] = None
+_collector: Optional["object"] = None  # KRXDataCollector — 순환 import 회피용
+
+
+def get_storage() -> "DataStorage":
+    """프로세스 단일 DataStorage 인스턴스 반환 (lazy init)."""
+    global _storage
+    if _storage is None:
+        _storage = DataStorage()
+    return _storage
+
+
+def get_api() -> "KiwoomRestClient":
+    """프로세스 단일 KiwoomRestClient 인스턴스 반환 (lazy init)."""
+    global _api
+    if _api is None:
+        _api = KiwoomRestClient()
+    return _api
+
+
+def get_collector():
+    """프로세스 단일 KRXDataCollector 인스턴스 반환 (lazy init)."""
+    global _collector
+    if _collector is None:
+        from data.collector import KRXDataCollector
+
+        _collector = KRXDataCollector()
+    return _collector
+
+
+def _cleanup_singletons() -> None:
+    """스케줄러 종료 시 싱글턴 자원 정리 (DB 연결 풀 해제 등)."""
+    global _storage, _api, _collector
+    try:
+        if _storage is not None:
+            _storage.engine.dispose()
+            logger.info("DataStorage engine.dispose() 완료")
+    except Exception as e:
+        logger.warning(f"DataStorage dispose 실패: {e}")
+    _storage = None
+    _api = None
+    _collector = None
+
 
 def _install_crash_handler() -> None:
     """미처리 예외를 파일 + 텔레그램으로 기록하는 excepthook 설치"""
@@ -123,9 +177,7 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
         return 1.0
 
     try:
-        from data.collector import KRXDataCollector
-
-        collector = KRXDataCollector()
+        collector = get_collector()
         end_dt = datetime.now()
         start_dt = end_dt - timedelta(days=int(lookback * 1.5))
         start_str = start_dt.strftime("%Y%m%d")
@@ -217,14 +269,14 @@ def _execute_rebalancing_core(
     start_ts = _time.monotonic()
 
     # DB 백업 (리밸런싱 전 안전장치)
-    storage = DataStorage()
+    storage = get_storage()
     try:
         storage.backup()
     except Exception as e:
         logger.warning(f"DB 백업 실패 (계속 진행): {e}")
 
     # 현재 잔고 조회 후 OrderExecutor에 총 평가금액 전달 (MDD 기준값)
-    api = KiwoomRestClient()
+    api = get_api()
     balance = api.get_balance()
 
     # 잔고 API 실패 감지: 총평가·현금 모두 0이면 비정상 → 리밸런싱 중단
@@ -286,10 +338,9 @@ def _execute_rebalancing_core(
     # ── 시장 레짐 필터 ──
     invest_ratio = 1.0
     try:
-        from data.collector import KRXDataCollector
         from strategy.market_regime import MarketRegimeFilter
 
-        collector = KRXDataCollector()
+        collector = get_collector()
         regime_filter = MarketRegimeFilter(collector)
         invest_ratio = regime_filter.get_invest_ratio(today_str)
     except Exception as e:
@@ -421,7 +472,7 @@ def run_daily_defense_check() -> None:
         return f"{name}({ticker})" if name else ticker
 
     try:
-        api = KiwoomRestClient()
+        api = get_api()
         balance = api.get_balance()
 
         # 잔고 API 실패 감지
@@ -524,7 +575,7 @@ def run_daily_report() -> None:
 
     notifier = TelegramNotifier()
     try:
-        api = KiwoomRestClient()
+        api = get_api()
         balance = api.get_balance()
 
         # 스냅샷 수집 + DB 저장
@@ -577,7 +628,7 @@ def run_risk_guard_check() -> None:
         return
 
     try:
-        api = KiwoomRestClient()
+        api = get_api()
         balance = api.get_balance()
 
         guard = _get_risk_guard()
@@ -710,8 +761,8 @@ def refresh_delisted_data() -> None:
 
 
 def storage_for_delisted():
-    """circular import 회피용 lazy 생성기."""
-    return DataStorage()
+    """circular import 회피용 lazy 생성기 (싱글턴 사용)."""
+    return get_storage()
 
 
 def run_delisting_imminent_check(days_ahead: int = 30) -> None:
@@ -724,7 +775,7 @@ def run_delisting_imminent_check(days_ahead: int = 30) -> None:
         return
 
     try:
-        api = KiwoomRestClient()
+        api = get_api()
         balance = api.get_balance()
         if not balance.get("holdings"):
             return
@@ -764,9 +815,7 @@ def _collect_daily_data_once(date_str: str, markets: list[str]) -> tuple[int, in
     Returns:
         (prefetched_rows, fundamentals_rows) 수집 결과 합계
     """
-    from data.collector import KRXDataCollector
-
-    collector = KRXDataCollector()
+    collector = get_collector()
     prefetch_total = 0
     fund_total = 0
 
@@ -829,7 +878,7 @@ def run_daily_data_collection(
 
     # ── 멱등성 체크: 이미 충분한 데이터가 있으면 스킵 ──
     try:
-        storage = DataStorage()
+        storage = get_storage()
         from datetime import date as _date
         dt = datetime.strptime(target_str, "%Y%m%d").date()
         existing = storage.load_daily_prices_for_date(dt, market=markets[0])
@@ -1006,7 +1055,7 @@ def _save_screening_results(date_str: str, portfolio_df: "pd.DataFrame") -> None
 
     try:
         dt = datetime.strptime(date_str, "%Y%m%d").date()
-        storage = DataStorage()
+        storage = get_storage()
 
         # 팩터 스코어 저장
         score_cols = [
@@ -1021,9 +1070,7 @@ def _save_screening_results(date_str: str, portfolio_df: "pd.DataFrame") -> None
         port_df = portfolio_df.reset_index()
         port_df = port_df.rename(columns={port_df.columns[0]: "ticker"})
         # 종목명 추가
-        from data.collector import KRXDataCollector
-
-        collector = KRXDataCollector()
+        collector = get_collector()
         port_df["name"] = port_df["ticker"].apply(
             lambda t: collector.get_ticker_name(t) or t
         )
@@ -1291,6 +1338,8 @@ def main() -> None:
             TelegramNotifier().send(f"퀀트 스케줄러가 종료되었습니다.\n{now_str}")
         except Exception:
             pass
+        finally:
+            _cleanup_singletons()
 
 
 def _startup_recovery() -> None:
