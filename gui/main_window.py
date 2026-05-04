@@ -266,17 +266,38 @@ class MainWindow(QMainWindow):
         self._tray.setToolTip(f"Korean Quant System - 스케줄러: {status}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        # 스케줄러 실행 중이면 트레이로 최소화 (force_quit이 아닌 경우)
-        if not self.force_quit and self._scheduler_panel.is_running():
-            event.ignore()
-            self.hide()
-            self._tray.showMessage(
-                "Korean Quant System",
-                "스케줄러 실행 중 — 트레이에서 실행 중입니다.",
-                TrayIcon.MessageIcon.Information,
-                2000,
+        # 트레이 메뉴 "종료"에서 호출된 경우: 확인 없이 즉시 종료 경로로
+        if not self.force_quit:
+            scheduler_running = (
+                hasattr(self, "_scheduler_panel")
+                and self._scheduler_panel.is_running()
             )
-            return
+
+            if scheduler_running:
+                # 스케줄러 실행 중: 다이얼로그 없이 트레이로 최소화
+                event.ignore()
+                self.hide()
+                self._tray.showMessage(
+                    "Korean Quant System",
+                    "스케줄러 실행 중 — 트레이에서 실행 중입니다.",
+                    TrayIcon.MessageIcon.Information,
+                    2000,
+                )
+                return
+
+            # 스케줄러 중지: 종료 확인 다이얼로그
+            from PyQt6.QtWidgets import QMessageBox
+
+            reply = QMessageBox.question(
+                self,
+                "프로그램 종료",
+                "프로그램을 종료하시겠습니까?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
 
         # 완전 종료
         self._auto_refresh_timer.stop()
