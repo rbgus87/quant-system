@@ -199,6 +199,7 @@ class DataStorage:
         self._migrate_market_cap_market_column()
         self._migrate_trade_rebalance_column()
         self._migrate_delisted_stock_table()
+        self._migrate_compound_indexes()
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info(f"DB 연결: {path}")
 
@@ -303,6 +304,46 @@ class DataStorage:
                     logger.info("DB 마이그레이션: trade.rebalance_date 컬럼 추가 완료")
         except Exception as e:
             logger.debug(f"trade 마이그레이션 스킵: {e}")
+
+    def _migrate_compound_indexes(self) -> None:
+        """v2.0 성능 진단에서 발견된 핵심 쿼리에 대한 복합 인덱스 추가.
+
+        대상 쿼리 (스크리너/스케줄러/리포트 핫패스):
+          - SELECT ... FROM fundamental WHERE date=? AND market=?
+          - SELECT ... FROM market_cap WHERE date=? AND market=?
+          - SELECT ... FROM factor_score WHERE date=?
+          - SELECT ... FROM trade WHERE trade_date BETWEEN ?
+          - SELECT ... FROM portfolio WHERE rebalance_date=?
+
+        IF NOT EXISTS로 멱등성 보장. 기존 인덱스는 유지된다.
+        """
+        compound_indexes = [
+            ("ix_fundamental_date_market", "fundamental", "date, market"),
+            ("ix_market_cap_date_market", "market_cap", "date, market"),
+            ("ix_factor_score_date", "factor_score", "date"),
+            ("ix_trade_date", "trade", "trade_date"),
+            ("ix_portfolio_rebalance", "portfolio", "rebalance_date"),
+        ]
+        try:
+            with self.engine.connect() as conn:
+                created: list[str] = []
+                for name, table, cols in compound_indexes:
+                    try:
+                        conn.execute(
+                            text(
+                                f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({cols})"
+                            )
+                        )
+                        created.append(name)
+                    except Exception as e:
+                        logger.debug(f"인덱스 {name} 생성 스킵: {e}")
+                conn.commit()
+                if created:
+                    logger.info(
+                        f"DB 마이그레이션: 복합 인덱스 확인 ({len(created)}개)"
+                    )
+        except Exception as e:
+            logger.debug(f"복합 인덱스 마이그레이션 스킵: {e}")
 
     def _migrate_delisted_stock_table(self) -> None:
         """delisted_stock 테이블 초기 생성 (Base.metadata.create_all이 처리하지만,
