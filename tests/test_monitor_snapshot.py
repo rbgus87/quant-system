@@ -132,6 +132,22 @@ class TestMonitorStorage:
         """빈 DB에서 빈 리스트 반환"""
         assert storage.get_snapshots_since(date(2026, 1, 1)) == []
 
+    def test_zero_value_snapshot_not_saved(self, storage) -> None:
+        """total_value=0인 비정상 스냅샷은 저장 거부 (2026-05-07 사고 방지)"""
+        # 정상 스냅샷 먼저 저장
+        normal = self._make_snapshot("2026-05-07")
+        storage.save_snapshot(normal)
+        assert storage.get_latest_snapshot()["portfolio"]["total_value"] == 2000000
+
+        # 0원 스냅샷이 들어와도 정상 데이터를 덮어쓰지 않아야 함
+        zero_snap = self._make_snapshot("2026-05-07")
+        zero_snap["portfolio"]["total_value"] = 0
+        storage.save_snapshot(zero_snap)
+
+        # 정상 데이터 그대로 유지
+        loaded = storage.get_latest_snapshot()
+        assert loaded["portfolio"]["total_value"] == 2000000
+
 
 # ── take_daily_snapshot 테스트 ──
 

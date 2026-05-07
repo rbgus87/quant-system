@@ -256,8 +256,15 @@ class TestSchedulerTelegramFlow:
 
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_daily_report_sends_balance(self, mock_bday) -> None:
-        """일별 리포트 → 상세 잔고 정보 텔레그램 발송"""
+        """일별 리포트 → 상세 잔고 정보 텔레그램 발송
+
+        monitor 모듈을 mock하여 실제 data/monitor.db 오염 방지
+        (2026-05-07 사고 이전 4/15부터 누적 오염되어 있었음).
+        """
+        import scheduler.main as scheduler_main
         from scheduler.main import run_daily_report
+
+        scheduler_main._api = None
 
         mock_notifier = MagicMock()
         mock_notifier.send_detailed_daily_report.return_value = True
@@ -270,8 +277,12 @@ class TestSchedulerTelegramFlow:
         }
 
         with patch("scheduler.main.TelegramNotifier", return_value=mock_notifier):
-            with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
-                run_daily_report()
+            with patch("scheduler.main.get_api", return_value=mock_api):
+                with patch(
+                    "monitor.snapshot.take_daily_snapshot", return_value=None
+                ):
+                    with patch("monitor.storage.MonitorStorage"):
+                        run_daily_report()
 
         mock_notifier.send_detailed_daily_report.assert_called_once()
         balance = mock_notifier.send_detailed_daily_report.call_args[0][0]

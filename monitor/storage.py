@@ -104,9 +104,20 @@ class MonitorStorage:
 
         Args:
             snapshot: take_daily_snapshot() 반환값
+
+        2026-05-07 사고 방지: total_value == 0인 비정상 스냅샷은 저장하지 않음.
+        이미 저장된 정상 스냅샷이 빈 응답으로 덮어써지는 것을 차단한다.
         """
+        portfolio = snapshot.get("portfolio", {})
+        if portfolio.get("total_value", 0) == 0:
+            logger.warning(
+                "스냅샷 저장 거부: total_value=0인 비정상 스냅샷 (date=%s) — "
+                "이미 저장된 정상 스냅샷 보호",
+                snapshot.get("date", "?"),
+            )
+            return
+
         dt = datetime.strptime(snapshot["date"], "%Y-%m-%d").date()
-        portfolio = snapshot["portfolio"]
         benchmark = snapshot.get("benchmark", {})
 
         # daily_snapshots upsert

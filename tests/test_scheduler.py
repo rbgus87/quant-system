@@ -329,8 +329,14 @@ class TestRunDailyReport:
 
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_daily_report_success(self, mock_bday) -> None:
-        """일별 리포트 정상 발송 (상세 리포트)"""
+        """일별 리포트 정상 발송 (상세 리포트)
+
+        monitor 모듈을 mock하여 실제 data/monitor.db 오염 방지.
+        """
+        import scheduler.main as scheduler_main
         from scheduler.main import run_daily_report
+
+        scheduler_main._api = None
 
         mock_notifier_instance = MagicMock()
         mock_notifier_instance.send_detailed_daily_report.return_value = True
@@ -344,11 +350,14 @@ class TestRunDailyReport:
         with patch(
             "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
         ):
-            with patch("scheduler.main.KiwoomRestClient", return_value=mock_api):
-                run_daily_report()
-                mock_notifier_instance.send_detailed_daily_report.assert_called_once()
-                balance = mock_notifier_instance.send_detailed_daily_report.call_args[0][0]
-                assert balance["total_eval_amount"] == 50000000
+            with patch("scheduler.main.get_api", return_value=mock_api):
+                with patch("monitor.snapshot.take_daily_snapshot", return_value=None):
+                    with patch("monitor.storage.MonitorStorage"):
+                        run_daily_report()
+
+        mock_notifier_instance.send_detailed_daily_report.assert_called_once()
+        balance = mock_notifier_instance.send_detailed_daily_report.call_args[0][0]
+        assert balance["total_eval_amount"] == 50000000
 
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_daily_report_error_sends_telegram(self, mock_bday) -> None:
@@ -431,7 +440,11 @@ class TestRunDailyReport:
         ):
             with patch("scheduler.main.get_api", return_value=mock_api):
                 with patch("time.sleep"):
-                    run_daily_report()
+                    with patch(
+                        "monitor.snapshot.take_daily_snapshot", return_value=None
+                    ):
+                        with patch("monitor.storage.MonitorStorage"):
+                            run_daily_report()
 
         # 재시도 후 정상 리포트 발송됨
         mock_notifier_instance.send_detailed_daily_report.assert_called_once()
