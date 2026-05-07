@@ -316,6 +316,12 @@ class MainWindow(QMainWindow):
         self._auto_refresh_timer.stop()
         self._scheduler_panel.cleanup()
         self._tray.hide()
+        # GUI 싱글턴 자원 정리 (DB 연결 풀 dispose 등)
+        try:
+            from gui.services import shutdown as _services_shutdown
+            _services_shutdown()
+        except Exception as e:
+            logger.debug(f"services.shutdown 실패: {e}")
         event.accept()
         from PyQt6.QtWidgets import QApplication
         QApplication.instance().quit()

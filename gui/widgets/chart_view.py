@@ -90,9 +90,10 @@ class ChartView(QWidget):
 
         try:
             import pandas as pd
-            from data.storage import DataStorage
 
-            ds = DataStorage()
+            from gui.services import get_storage
+
+            ds = get_storage()
             end_date = datetime.now().date()
             start_date = end_date - timedelta(days=days)
             trades = ds.load_trades(start_date=start_date, end_date=end_date)

@@ -69,6 +69,7 @@ def build() -> None:
         # gui
         "--hidden-import=gui.app",
         "--hidden-import=gui.main_window",
+        "--hidden-import=gui.services",
         "--hidden-import=gui.themes",
         "--hidden-import=gui.tray_icon",
         "--hidden-import=gui.widgets.chart_view",

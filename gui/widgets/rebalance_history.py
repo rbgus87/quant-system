@@ -33,10 +33,9 @@ class _TradeLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            from data.storage import DataStorage
+            from gui.services import get_storage
 
-            storage = DataStorage()
-            df = storage.load_trades()
+            df = get_storage().load_trades()
             self.finished.emit(df)
         except Exception as e:
             self.error.emit(str(e))

@@ -339,7 +339,10 @@ class DataStorage:
                         logger.debug(f"인덱스 {name} 생성 스킵: {e}")
                 conn.commit()
                 if created:
-                    logger.info(
+                    # CREATE INDEX IF NOT EXISTS는 멱등이라 매번 created에 5개가
+                    # 들어가 INFO로 찍히면 노이즈가 됨. DEBUG로 낮춤.
+                    # 실제 컬럼/테이블 추가 마이그레이션은 별도 INFO 로그 유지.
+                    logger.debug(
                         f"DB 마이그레이션: 복합 인덱스 확인 ({len(created)}개)"
                     )
         except Exception as e:

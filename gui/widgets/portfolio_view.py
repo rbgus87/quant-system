@@ -41,10 +41,9 @@ class _BalanceWorker(QThread):
 
     def run(self) -> None:
         try:
-            from trading.kiwoom_api import KiwoomRestClient
+            from gui.services import get_api
 
-            api = KiwoomRestClient()
-            balance = api.get_balance()
+            balance = get_api().get_balance()
             self.finished.emit(balance)
         except Exception as e:
             self.error.emit(str(e))
@@ -58,11 +57,11 @@ class _TelegramReportWorker(QThread):
 
     def run(self) -> None:
         try:
-            from trading.kiwoom_api import KiwoomRestClient
             from notify.telegram import TelegramNotifier
 
-            api = KiwoomRestClient()
-            balance = api.get_balance()
+            from gui.services import get_api
+
+            balance = get_api().get_balance()
             notifier = TelegramNotifier()
             ok = notifier.send_detailed_daily_report(balance)
             self.finished.emit(ok)

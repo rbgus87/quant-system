@@ -62,8 +62,7 @@ class _DetailLoadWorker(QThread):
         try:
             from sqlalchemy import text
 
-            from data.storage import DataStorage
-            from dart_notifier.storage import DartDisclosureStorage
+            from gui.services import get_disclosure_storage, get_storage
 
             result: dict = {
                 "ticker": self._ticker,
@@ -72,7 +71,7 @@ class _DetailLoadWorker(QThread):
                 "disclosures": [],
             }
 
-            storage = DataStorage()
+            storage = get_storage()
             with storage.engine.connect() as conn:
                 # 최신 portfolio (rebalance_date 기준)
                 row = conn.execute(
@@ -141,7 +140,7 @@ class _DetailLoadWorker(QThread):
                     }
 
             # 최근 공시 3건
-            disc_storage = DartDisclosureStorage()
+            disc_storage = get_disclosure_storage()
             with disc_storage.SessionLocal() as session:
                 rows = session.execute(
                     text(

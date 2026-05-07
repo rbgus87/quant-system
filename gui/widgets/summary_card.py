@@ -56,11 +56,11 @@ class _RegimeWorker(QThread):
 
     def run(self) -> None:
         try:
-            from data.collector import KRXDataCollector
             from strategy.market_regime import MarketRegimeFilter
 
-            collector = KRXDataCollector()
-            mrf = MarketRegimeFilter(collector)
+            from gui.services import get_collector
+
+            mrf = MarketRegimeFilter(get_collector())
             today = datetime.now().strftime("%Y%m%d")
             ratio = mrf.get_invest_ratio(today)
 

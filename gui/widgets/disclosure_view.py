@@ -110,13 +110,12 @@ class _DisclosureLoadWorker(QThread):
         try:
             from sqlalchemy import text
 
-            from data.storage import DataStorage
-            from dart_notifier.storage import DartDisclosureStorage
+            from gui.services import get_disclosure_storage, get_storage
 
             # 1) 보유 종목 (최신 rebalance_date)
             held: dict[str, str] = {}
             try:
-                storage = DataStorage()
+                storage = get_storage()
                 with storage.engine.connect() as conn:
                     latest = conn.execute(
                         text(
@@ -136,7 +135,7 @@ class _DisclosureLoadWorker(QThread):
                 logger.warning("보유 종목 조회 실패: %s", e)
 
             # 2) 공시 이력
-            disc_storage = DartDisclosureStorage()
+            disc_storage = get_disclosure_storage()
             cutoff = (datetime.now() - timedelta(days=self._days)).strftime("%Y%m%d")
 
             with disc_storage.SessionLocal() as session:

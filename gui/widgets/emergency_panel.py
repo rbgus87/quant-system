@@ -34,11 +34,11 @@ class _EmergencySellWorker(QThread):
             from datetime import date
 
             from config.settings import settings
-            from data.storage import DataStorage
-            from trading.kiwoom_api import KiwoomRestClient
 
-            api = KiwoomRestClient()
-            storage = DataStorage()
+            from gui.services import get_api, get_storage
+
+            api = get_api()
+            storage = get_storage()
             balance = api.get_balance()
             holdings = balance.get("holdings", [])
             exchange = "KRX" if api.is_paper else "SOR"

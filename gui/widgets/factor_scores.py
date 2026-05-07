@@ -58,10 +58,9 @@ class _ScreenWorker(QThread):
             # 현재 보유 종목 조회 (실패해도 무시)
             holdings: list[str] = []
             try:
-                from trading.kiwoom_api import KiwoomRestClient
+                from gui.services import get_api
 
-                api = KiwoomRestClient()
-                balance = api.get_balance()
+                balance = get_api().get_balance()
                 holdings = [
                     h["ticker"]
                     for h in balance.get("holdings", [])
@@ -170,8 +169,8 @@ class FactorScores(QWidget):
 
         # 종목명 로드
         try:
-            from data.collector import KRXDataCollector
-            self._collector = KRXDataCollector()
+            from gui.services import get_collector
+            self._collector = get_collector()
         except Exception:
             self._collector = None
 

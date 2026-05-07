@@ -4,8 +4,11 @@
 
 def _common_styles(bg: str, fg: str, bg2: str, border: str, accent: str,
                    header_bg: str, select_bg: str, input_bg: str,
-                   alt_bg: str = "") -> str:
+                   alt_bg: str = "", select_fg: str = "") -> str:
     """공통 스타일 템플릿"""
+    if not select_fg:
+        # 폴백: 본문 fg 사용 (저대비 위험)
+        select_fg = fg
     return f"""
 QMainWindow {{
     background-color: {bg};
@@ -93,10 +96,20 @@ QTableWidget {{
     background: {bg2};
     color: {fg};
     selection-background-color: {select_bg};
+    selection-color: {select_fg};
     alternate-background-color: {alt_bg};
 }}
 QTableWidget::item {{
     padding: 3px 6px;
+}}
+/* 선택 행: 셀에 setBackground()가 적용돼도 텍스트는 select_fg로 강제 */
+QTableWidget::item:selected {{
+    background-color: {select_bg};
+    color: {select_fg};
+}}
+QTableWidget::item:selected:!active {{
+    background-color: {select_bg};
+    color: {select_fg};
 }}
 QHeaderView::section {{
     background: {header_bg};
@@ -202,7 +215,8 @@ def light_theme() -> str:
         border="#DEE2E6",
         accent="#4DABF7",
         header_bg="#F1F3F5",
-        select_bg="#D0EBFF",
+        select_bg="#1971C2",   # 진한 파랑 (라이트 배경 + 셀 setBackground 위에서도 강조)
+        select_fg="#FFFFFF",   # 선택 행 텍스트 흰색 — 가독성 확보
         input_bg="#FFFFFF",
         alt_bg="#F1F3F5",
     )
@@ -217,6 +231,7 @@ def dark_theme() -> str:
         accent="#4DABF7",
         header_bg="#2C2E33",
         select_bg="#1C3A5C",
+        select_fg="#FFFFFF",   # 선택 행 텍스트 흰색
         input_bg="#2C2E33",
         alt_bg="#2C2E33",
     )
