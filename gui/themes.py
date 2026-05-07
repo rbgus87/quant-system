@@ -220,3 +220,42 @@ def dark_theme() -> str:
         input_bg="#2C2E33",
         alt_bg="#2C2E33",
     )
+
+
+# ────────────────────────────────────────────
+# 강조 색상 팔레트 (한국 시장 컨벤션 — 빨강=상승, 파랑=하락)
+# 다크/라이트 모드별 톤을 분리하여 양쪽에서 가독성 확보.
+# ────────────────────────────────────────────
+
+
+def accent_palette(is_dark: bool) -> dict[str, str]:
+    """위젯에서 사용할 강조 색상 팔레트.
+
+    Args:
+        is_dark: True=다크 모드, False=라이트 모드
+
+    Returns:
+        키: 'profit', 'loss', 'urgent', 'warn', 'normal', 'muted',
+            'urgent_bg' (긴급 행 옅은 배경, rgba 문자열 — Qt QColor 호환 안 함),
+            'urgent_bg_rgba' (QColor 4-tuple)
+    """
+    if is_dark:
+        return {
+            "profit": "#FA5252",
+            "loss": "#4DABF7",
+            "urgent": "#FA5252",
+            "warn": "#F59F00",
+            "normal": "#ADB5BD",
+            "muted": "#868E96",
+            "urgent_bg_rgba": (250, 82, 82, 35),
+        }
+    return {
+        # 라이트 모드: 흰 배경 위에서도 충분히 진한 톤
+        "profit": "#C92A2A",
+        "loss": "#1864AB",
+        "urgent": "#C92A2A",
+        "warn": "#E67700",
+        "normal": "#495057",
+        "muted": "#495057",
+        "urgent_bg_rgba": (250, 82, 82, 30),
+    }

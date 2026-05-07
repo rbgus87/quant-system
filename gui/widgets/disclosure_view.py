@@ -27,6 +27,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.themes import accent_palette
+
 logger = logging.getLogger(__name__)
 
 _REFRESH_INTERVAL_MS = 300_000  # 5분
@@ -77,13 +79,14 @@ def classify_priority(pblntf_detail_ty: Optional[str], report_nm: str) -> str:
     return "normal"
 
 
-def _priority_display(p: str) -> tuple[str, QColor]:
-    """중요도 → (라벨, 색상)"""
+def _priority_display(p: str, is_dark: bool = True) -> tuple[str, QColor]:
+    """중요도 → (라벨, 색상). 다크/라이트 모드별 톤 분기."""
+    palette = accent_palette(is_dark)
     if p == "urgent":
-        return ("🔴 긴급", QColor("#FA5252"))
+        return ("🔴 긴급", QColor(palette["urgent"]))
     if p == "warn":
-        return ("🟡 주의", QColor("#F59F00"))
-    return ("⚪ 일반", QColor("#868E96"))
+        return ("🟡 주의", QColor(palette["warn"]))
+    return ("⚪ 일반", QColor(palette["normal"]))
 
 
 def _disclosure_type_name(code: Optional[str]) -> str:
@@ -192,8 +195,24 @@ class DisclosureView(QWidget):
         # 명목값. setData(UserRole)로 정렬 시 사용
         self._all_disclosures: list[dict] = []
         self._held_names: dict[str, str] = {}
+        self._is_dark = True
         self._setup_ui()
         self._setup_auto_refresh()
+        self._apply_palette()
+
+    def set_dark_mode(self, is_dark: bool) -> None:
+        """테마 변경 시 색상 재적용 (MainWindow._apply_theme에서 호출)"""
+        self._is_dark = is_dark
+        self._apply_palette()
+        # 행 배경/전경 다시 계산하기 위해 테이블 재렌더
+        self._render_table()
+
+    def _apply_palette(self) -> None:
+        """색상 의존 위젯(라벨)에 다크/라이트 톤 반영"""
+        palette = accent_palette(self._is_dark)
+        # "마지막 갱신" 회색 라벨
+        if hasattr(self, "_last_label"):
+            self._last_label.setStyleSheet(f"color: {palette['muted']};")
 
     # ── UI ──
 
@@ -272,7 +291,7 @@ class DisclosureView(QWidget):
         bottom.addWidget(self._auto_cb)
         bottom.addStretch()
         self._last_label = QLabel("마지막 갱신: -")
-        self._last_label.setStyleSheet("color: gray;")
+        # 색상은 _apply_palette에서 모드별로 설정
         bottom.addWidget(self._last_label)
         gl.addLayout(bottom)
 
@@ -317,6 +336,7 @@ class DisclosureView(QWidget):
             f"마지막 갱신: {datetime.now().strftime('%H:%M:%S')} "
             f"({len(disclosures)}건)"
         )
+        self._apply_palette()
 
     def _on_error(self, msg: str) -> None:
         self._refresh_btn.setEnabled(True)
@@ -337,6 +357,9 @@ class DisclosureView(QWidget):
         self._table.setSortingEnabled(False)
         self._table.setRowCount(len(rows))
 
+        palette = accent_palette(self._is_dark)
+        urgent_bg = QColor(*palette["urgent_bg_rgba"])
+
         for row_idx, (d, prio) in enumerate(rows):
             rcept_dt = d.get("rcept_dt", "")
             if len(rcept_dt) == 8:
@@ -347,7 +370,7 @@ class DisclosureView(QWidget):
             stock_name = self._held_names.get(stock_code, "")
             type_name = _disclosure_type_name(d.get("pblntf_detail_ty"))
             title = d.get("report_nm", "")
-            prio_label, prio_color = _priority_display(prio)
+            prio_label, prio_color = _priority_display(prio, self._is_dark)
 
             cells = [
                 date_str,
@@ -364,9 +387,9 @@ class DisclosureView(QWidget):
                     f = item.font()
                     f.setBold(True)
                     item.setFont(f)
-                # 긴급 행 전체에 옅은 배경
+                # 긴급 행 전체에 옅은 배경 (다크/라이트 별 톤)
                 if prio == "urgent":
-                    item.setBackground(QColor(250, 82, 82, 25))
+                    item.setBackground(urgent_bg)
                 self._table.setItem(row_idx, col, item)
 
         self._table.setSortingEnabled(True)

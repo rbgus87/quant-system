@@ -221,6 +221,9 @@ class MainWindow(QMainWindow):
         self._log_viewer.set_dark_mode(self._is_dark)
         # 차트 테마 동기화
         self._chart_view.set_dark_mode(self._is_dark)
+        # 신규 위젯 테마 동기화 (다크/라이트 색상 톤 분기)
+        self._summary_card.set_dark_mode(self._is_dark)
+        self._disclosure_view.set_dark_mode(self._is_dark)
 
     def _connect_signals(self) -> None:
         self._scheduler_panel.log_output.connect(self._log_viewer.append_log)

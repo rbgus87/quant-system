@@ -24,6 +24,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.themes import accent_palette
+
 logger = logging.getLogger(__name__)
 
 _REGIME_REFRESH_MS = 60 * 60 * 1000  # 1시간
@@ -102,10 +104,19 @@ class SummaryCard(QGroupBox):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("📊 오늘의 요약", parent)
         self._regime_worker: Optional[_RegimeWorker] = None
+        self._is_dark = True
+        # 마지막 잔고 캐시 (set_dark_mode 후 색상 재계산용)
+        self._last_balance: Optional[dict] = None
         self._setup_ui()
         self._setup_timers()
         self._refresh_dday()
         self._refresh_regime()
+
+    def set_dark_mode(self, is_dark: bool) -> None:
+        """테마 변경 시 색상 재적용 (MainWindow._apply_theme에서 호출)"""
+        self._is_dark = is_dark
+        if self._last_balance is not None:
+            self.update_balance(self._last_balance)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -155,6 +166,8 @@ class SummaryCard(QGroupBox):
         """PortfolioView.balance_updated 시그널 수신 핸들러"""
         if not isinstance(balance, dict):
             return
+        self._last_balance = balance
+        palette = accent_palette(self._is_dark)
         total = balance.get("total_eval_amount", 0)
         cash = balance.get("cash", 0)
         total_profit = balance.get("total_profit", 0)
@@ -165,7 +178,7 @@ class SummaryCard(QGroupBox):
 
         if invested > 0:
             rate = total_profit / invested * 100
-            color = "#FA5252" if rate >= 0 else "#4DABF7"
+            color = palette["profit"] if rate >= 0 else palette["loss"]
             self._total_return_lbl.setTextFormat(Qt.TextFormat.RichText)
             self._total_return_lbl.setText(
                 f"<span style='color:{color};'>{rate:+.2f}% ({total_profit:+,.0f}원)</span>"
@@ -177,7 +190,7 @@ class SummaryCard(QGroupBox):
         prev = _load_prev_value()
         if prev > 0 and total > 0:
             daily = total - prev
-            color = "#FA5252" if daily >= 0 else "#4DABF7"
+            color = palette["profit"] if daily >= 0 else palette["loss"]
             self._daily_pl_lbl.setTextFormat(Qt.TextFormat.RichText)
             self._daily_pl_lbl.setText(
                 f"<span style='color:{color};'>{daily:+,.0f}원</span>"

@@ -282,5 +282,8 @@ class PortfolioView(QWidget):
             return
         from gui.widgets.stock_detail_dialog import StockDetailDialog
 
-        dialog = StockDetailDialog(ticker, holding, parent=self)
+        # MainWindow의 _is_dark를 self.window()로 조회하여 다이얼로그에 전달.
+        # QDialog는 부모 setStyleSheet을 자동 상속하지 않을 수 있어 명시 필요.
+        is_dark = bool(getattr(self.window(), "_is_dark", True))
+        dialog = StockDetailDialog(ticker, holding, parent=self, is_dark=is_dark)
         dialog.exec()

@@ -1,11 +1,12 @@
 """종목 상세 팝업 — 매수정보/현재상태/팩터점수/최근공시/외부링크
 
 PortfolioView 행 더블클릭 시 호출된다.
+QDialog는 부모 MainWindow의 setStyleSheet을 항상 상속받지는 않으므로
+themes.py의 light/dark 스타일을 직접 적용한다.
 """
 
 import logging
 import webbrowser
-from datetime import datetime
 from typing import Optional
 from urllib.parse import quote
 
@@ -21,6 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui.themes import accent_palette, dark_theme, light_theme
+
 logger = logging.getLogger(__name__)
 
 _DART_SEARCH_FMT = "https://dart.fss.or.kr/dsab007/main.do?option=corp&textCrpNm={name}"
@@ -34,6 +37,15 @@ def _fmt_currency(v: float) -> str:
 
 def _fmt_pct(v: float) -> str:
     return f"{v:+.2f}%"
+
+
+def _value_label(text: str) -> QLabel:
+    """긴 값에서도 잘리지 않도록 wordWrap 강제 + 좌측 정렬 라벨"""
+    lbl = QLabel(text)
+    lbl.setWordWrap(True)
+    lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    return lbl
 
 
 class _DetailLoadWorker(QThread):
@@ -163,6 +175,7 @@ class StockDetailDialog(QDialog):
         ticker: str,
         holding: dict,
         parent: Optional[QWidget] = None,
+        is_dark: bool = True,
     ) -> None:
         """
         Args:
@@ -170,30 +183,53 @@ class StockDetailDialog(QDialog):
             holding: PortfolioView가 가진 잔고 row dict.
                 {ticker, name, qty, avg_price, current_price, eval_amount,
                  eval_profit, profit_rate}
+            is_dark: 다크 모드 여부 (MainWindow._is_dark에서 전달)
         """
         super().__init__(parent)
         self._ticker = ticker
         self._holding = holding
         self._name = holding.get("name") or ticker
+        self._is_dark = is_dark
+        self._palette = accent_palette(is_dark)
+
         self.setWindowTitle(f"{self._name} ({ticker}) 상세")
-        self.setMinimumSize(520, 560)
+        # 너비 확대 — 긴 종목명/금액(콤마+퍼센트) 잘림 방지
+        self.setMinimumSize(640, 620)
+        self.resize(680, 680)
+
         self._worker: Optional[_DetailLoadWorker] = None
+        self._apply_dialog_stylesheet()
         self._setup_ui()
         self._start_load()
 
+    # ── 테마 ──
+
+    def _apply_dialog_stylesheet(self) -> None:
+        """QDialog는 부모 MainWindow의 QSS를 자동 상속하지 않을 수 있어
+        themes.py의 라이트/다크 스타일을 직접 적용한다.
+        """
+        self.setStyleSheet(dark_theme() if self._is_dark else light_theme())
+
+    # ── UI ──
+
     def _setup_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setSpacing(8)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(12)  # 섹션 간 간격 확대
 
-        # 헤더 — 종목명/코드
-        header = QLabel(f"<b style='font-size:14pt;'>{self._name}</b>"
-                        f" <span style='color:gray;'>({self._ticker})</span>")
+        # 헤더 — 종목명/코드. gray는 라이트/다크 모두 보이는 muted 사용
+        muted = self._palette["muted"]
+        header = QLabel(
+            f"<b style='font-size:14pt;'>{self._name}</b>"
+            f" <span style='color:{muted};'>({self._ticker})</span>"
+        )
         header.setTextFormat(Qt.TextFormat.RichText)
+        header.setWordWrap(True)
         root.addWidget(header)
 
         # 1) 매수 정보 + 현재 상태 (잔고 dict 기반 — 즉시 표시)
         cur_box = QGroupBox("매수/현재 상태")
-        cur_form = QFormLayout(cur_box)
+        cur_form = self._make_form()
         avg_price = self._holding.get("avg_price", 0)
         qty = self._holding.get("qty", 0)
         cur_price = self._holding.get("current_price", 0)
@@ -202,38 +238,50 @@ class StockDetailDialog(QDialog):
         profit_rate = self._holding.get("profit_rate", 0)
         buy_amount = avg_price * qty
 
-        cur_form.addRow("수량:", QLabel(f"{qty:,}주"))
-        cur_form.addRow("평균 매수가:", QLabel(_fmt_currency(avg_price)))
-        cur_form.addRow("매수 금액:", QLabel(_fmt_currency(buy_amount)))
-        cur_form.addRow("현재가:", QLabel(_fmt_currency(cur_price)))
-        cur_form.addRow("평가 금액:", QLabel(_fmt_currency(eval_amt)))
-        rate_lbl = QLabel(
-            f"<b style='color:{'#FA5252' if profit_rate >= 0 else '#4DABF7'};'>"
+        cur_form.addRow("수량:", _value_label(f"{qty:,}주"))
+        cur_form.addRow("평균 매수가:", _value_label(_fmt_currency(avg_price)))
+        cur_form.addRow("매수 금액:", _value_label(_fmt_currency(buy_amount)))
+        cur_form.addRow("현재가:", _value_label(_fmt_currency(cur_price)))
+        cur_form.addRow("평가 금액:", _value_label(_fmt_currency(eval_amt)))
+
+        rate_color = (
+            self._palette["profit"] if profit_rate >= 0 else self._palette["loss"]
+        )
+        rate_lbl = _value_label(
+            f"<b style='color:{rate_color};'>"
             f"{_fmt_pct(profit_rate)} ({_fmt_currency(eval_profit)})</b>"
         )
         rate_lbl.setTextFormat(Qt.TextFormat.RichText)
         cur_form.addRow("수익률:", rate_lbl)
+
+        cur_box.setLayout(cur_form)
         root.addWidget(cur_box)
 
-        # 2) 매수일 (DB 조회 후 채움) + 비중 + 팩터 점수
+        # 2) 매수 이력 + 포트폴리오 비중
         self._first_buy_box = QGroupBox("매수 이력 / 포트폴리오 비중")
-        self._first_buy_form = QFormLayout(self._first_buy_box)
-        self._first_buy_form.addRow(QLabel("로딩 중..."))
+        self._first_buy_form = self._make_form()
+        self._first_buy_form.addRow(_value_label("로딩 중..."))
+        self._first_buy_box.setLayout(self._first_buy_form)
         root.addWidget(self._first_buy_box)
 
+        # 3) 팩터 점수
         self._factor_box = QGroupBox("팩터 점수 (리밸런싱 시점)")
-        self._factor_form = QFormLayout(self._factor_box)
-        self._factor_form.addRow(QLabel("로딩 중..."))
+        self._factor_form = self._make_form()
+        self._factor_form.addRow(_value_label("로딩 중..."))
+        self._factor_box.setLayout(self._factor_form)
         root.addWidget(self._factor_box)
 
-        # 3) 최근 공시 3건
+        # 4) 최근 공시 3건
         self._disc_box = QGroupBox("최근 공시 (최근 3건)")
-        self._disc_layout = QVBoxLayout(self._disc_box)
-        self._disc_layout.addWidget(QLabel("로딩 중..."))
+        self._disc_layout = QVBoxLayout()
+        self._disc_layout.setSpacing(6)
+        self._disc_layout.addWidget(_value_label("로딩 중..."))
+        self._disc_box.setLayout(self._disc_layout)
         root.addWidget(self._disc_box)
 
-        # 4) 외부 링크 버튼
+        # 5) 외부 링크 버튼
         link_row = QHBoxLayout()
+        link_row.setSpacing(8)
         dart_btn = QPushButton("DART 페이지")
         dart_btn.clicked.connect(self._open_dart)
         link_row.addWidget(dart_btn)
@@ -245,6 +293,18 @@ class StockDetailDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         link_row.addWidget(close_btn)
         root.addLayout(link_row)
+
+    @staticmethod
+    def _make_form() -> QFormLayout:
+        """일관된 spacing + 라벨 정책의 QFormLayout 생성"""
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        # 값 라벨이 부모 너비에 맞게 늘어나도록 — 긴 텍스트 wordWrap 보장
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        return form
 
     # ── 로딩 ──
 
@@ -262,11 +322,11 @@ class StockDetailDialog(QDialog):
     def _on_error(self, msg: str) -> None:
         logger.warning("종목 상세 로딩 실패: %s", msg)
         self._clear_form(self._first_buy_form)
-        self._first_buy_form.addRow(QLabel(f"조회 실패: {msg}"))
+        self._first_buy_form.addRow(_value_label(f"조회 실패: {msg}"))
         self._clear_form(self._factor_form)
-        self._factor_form.addRow(QLabel("조회 실패"))
+        self._factor_form.addRow(_value_label("조회 실패"))
         self._clear_layout(self._disc_layout)
-        self._disc_layout.addWidget(QLabel("조회 실패"))
+        self._disc_layout.addWidget(_value_label("조회 실패"))
 
     @staticmethod
     def _clear_form(form: QFormLayout) -> None:
@@ -290,54 +350,60 @@ class StockDetailDialog(QDialog):
         first_buy = data.get("first_buy")
 
         if first_buy:
-            self._first_buy_form.addRow("최초 매수일:", QLabel(first_buy["date"]))
             self._first_buy_form.addRow(
-                "최초 매수가:", QLabel(_fmt_currency(first_buy["price"]))
+                "최초 매수일:", _value_label(first_buy["date"])
             )
             self._first_buy_form.addRow(
-                "최초 매수 수량:", QLabel(f"{first_buy['quantity']:,}주")
+                "최초 매수가:", _value_label(_fmt_currency(first_buy["price"]))
+            )
+            self._first_buy_form.addRow(
+                "최초 매수 수량:", _value_label(f"{first_buy['quantity']:,}주")
             )
         else:
-            self._first_buy_form.addRow(QLabel("거래 이력 없음"))
+            self._first_buy_form.addRow(_value_label("거래 이력 없음"))
 
         if portfolio:
             self._first_buy_form.addRow(
-                "리밸런싱 일자:", QLabel(portfolio["rebalance_date"])
+                "리밸런싱 일자:", _value_label(portfolio["rebalance_date"])
             )
             self._first_buy_form.addRow(
-                "목표 비중:", QLabel(f"{portfolio['weight'] * 100:.2f}%")
+                "목표 비중:",
+                _value_label(f"{portfolio['weight'] * 100:.2f}%"),
             )
 
     def _fill_factor(self, data: dict) -> None:
         self._clear_form(self._factor_form)
         factor = data.get("factor")
         if not factor:
-            self._factor_form.addRow(QLabel("팩터 데이터 없음"))
+            self._factor_form.addRow(_value_label("팩터 데이터 없음"))
             return
 
         self._factor_form.addRow(
-            "Value 점수:", QLabel(f"{factor['value_score']:.2f}")
+            "Value 점수:", _value_label(f"{factor['value_score']:.2f}")
         )
         self._factor_form.addRow(
-            "Momentum 점수:", QLabel(f"{factor['momentum_score']:.2f}")
+            "Momentum 점수:", _value_label(f"{factor['momentum_score']:.2f}")
         )
         self._factor_form.addRow(
-            "Quality 점수:", QLabel(f"{factor['quality_score']:.2f}")
+            "Quality 점수:", _value_label(f"{factor['quality_score']:.2f}")
         )
         self._factor_form.addRow(
-            "복합 점수:", QLabel(f"{factor['composite_score']:.2f}")
+            "복합 점수:", _value_label(f"{factor['composite_score']:.2f}")
         )
         rank = factor.get("rank")
         if rank is not None:
-            self._factor_form.addRow("순위:", QLabel(f"{rank}위"))
+            self._factor_form.addRow("순위:", _value_label(f"{rank}위"))
 
     def _fill_disclosures(self, data: dict) -> None:
         self._clear_layout(self._disc_layout)
         disclosures = data.get("disclosures", [])
         if not disclosures:
-            self._disc_layout.addWidget(QLabel("최근 공시 없음"))
+            self._disc_layout.addWidget(_value_label("최근 공시 없음"))
             return
 
+        # 링크는 accent(강조) 색으로 명시 — QSS QLabel에 anchor 색이 없으면
+        # 시스템 기본(파랑)이 라이트/다크 양쪽에서 읽힘. 가독성 명시 강화.
+        link_color = self._palette["loss"]  # 파랑 계열 — 한국 시장 컨벤션상 안전
         for d in disclosures:
             rcept_dt = d.get("rcept_dt", "")
             if len(rcept_dt) == 8:
@@ -347,11 +413,13 @@ class StockDetailDialog(QDialog):
             title = d.get("report_nm", "")
             url = _DART_DOC_FMT.format(rcept_no=d["rcept_no"])
             label = QLabel(
-                f"<a href='{url}'>{date_str} — {title}</a>"
+                f"<a href='{url}' style='color:{link_color}; text-decoration:none;'>"
+                f"{date_str} — {title}</a>"
             )
             label.setTextFormat(Qt.TextFormat.RichText)
             label.setOpenExternalLinks(True)
             label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
             self._disc_layout.addWidget(label)
 
     # ── 외부 링크 ──
