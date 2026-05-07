@@ -14,6 +14,13 @@ QMainWindow {{
     background-color: {bg};
     color: {fg};
 }}
+/* QDialog는 별도 top-level window이므로 QMainWindow 룰을 자동 상속하지 않음.
+   명시적으로 background/color를 지정해야 라이트/다크 양쪽에서 정상 표시된다.
+   (2026-05-09 stock_detail_dialog 라이트 모드 다크 배경 이슈 수정) */
+QDialog {{
+    background-color: {bg};
+    color: {fg};
+}}
 QWidget {{
     color: {fg};
 }}

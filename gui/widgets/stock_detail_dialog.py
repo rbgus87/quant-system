@@ -204,10 +204,61 @@ class StockDetailDialog(QDialog):
     # ── 테마 ──
 
     def _apply_dialog_stylesheet(self) -> None:
-        """QDialog는 부모 MainWindow의 QSS를 자동 상속하지 않을 수 있어
-        themes.py의 라이트/다크 스타일을 직접 적용한다.
+        """QDialog는 부모 MainWindow의 QSS를 자동 상속하지 않으므로 themes.py
+        스타일을 직접 적용 + 다이얼로그 전용 overlay로 배경/섹션 제목/그룹박스
+        잘림 문제를 보강한다 (2026-05-09 사용자 보고).
         """
-        self.setStyleSheet(dark_theme() if self._is_dark else light_theme())
+        base = dark_theme() if self._is_dark else light_theme()
+
+        # 다이얼로그 전용 톤 (themes.py 본문보다 약간 강조)
+        if self._is_dark:
+            dlg_bg = "#1E1E1E"
+            dlg_fg = "#E0E0E0"
+            section_color = "#FF8A80"   # 섹션 제목(빨강 계열) — 강조 전용, 수익/손실 무관
+            border = "#424242"
+            groupbox_bg = "#25262B"
+        else:
+            dlg_bg = "#FFFFFF"
+            dlg_fg = "#212121"
+            section_color = "#C62828"
+            border = "#BDBDBD"
+            groupbox_bg = "#FAFAFA"
+
+        # QGroupBox::title의 background를 다이얼로그 배경과 같은 색으로 깔아야
+        # title이 박스 테두리 위에 잘리지 않고 깔끔히 보인다 (PyQt6 QSS 관행).
+        overlay = f"""
+        QDialog {{
+            background-color: {dlg_bg};
+            color: {dlg_fg};
+        }}
+        QDialog QLabel {{
+            color: {dlg_fg};
+            background: transparent;
+        }}
+        QDialog QGroupBox {{
+            background-color: {groupbox_bg};
+            color: {dlg_fg};
+            border: 1px solid {border};
+            border-radius: 6px;
+            margin-top: 18px;
+            padding: 10px 8px 8px 8px;
+            font-weight: bold;
+        }}
+        QDialog QGroupBox::title {{
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 12px;
+            padding: 0 8px;
+            color: {section_color};
+            background-color: {dlg_bg};
+            font-size: 13px;
+            font-weight: bold;
+        }}
+        QDialog QPushButton {{
+            color: {dlg_fg};
+        }}
+        """
+        self.setStyleSheet(base + overlay)
 
     # ── UI ──
 
