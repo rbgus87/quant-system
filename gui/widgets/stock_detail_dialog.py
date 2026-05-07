@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -40,9 +42,16 @@ def _fmt_pct(v: float) -> str:
 
 
 def _value_label(text: str) -> QLabel:
-    """긴 값에서도 잘리지 않도록 wordWrap 강제 + 좌측 정렬 라벨"""
+    """긴 값에서도 잘리지 않도록 wordWrap + 최소 높이 + 너비 확장 정책 강제
+
+    `setMinimumHeight(22)` — 한 줄짜리 값도 form 행이 너무 작아 인접 행과 겹치는
+    것을 방지. `Expanding/Preferred` sizePolicy로 부모 너비를 채워 wordWrap이
+    제대로 작동하게 한다.
+    """
     lbl = QLabel(text)
     lbl.setWordWrap(True)
+    lbl.setMinimumHeight(22)
+    lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
     lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
     return lbl
@@ -192,9 +201,9 @@ class StockDetailDialog(QDialog):
         self._palette = accent_palette(is_dark)
 
         self.setWindowTitle(f"{self._name} ({ticker}) 상세")
-        # 너비 확대 — 긴 종목명/금액(콤마+퍼센트) 잘림 방지
-        self.setMinimumSize(640, 620)
-        self.resize(680, 680)
+        # 넉넉한 기본 크기 + 작은 화면에서도 스크롤로 모든 내용 접근 가능
+        self.setMinimumSize(500, 600)
+        self.resize(680, 750)
 
         self._worker: Optional[_DetailLoadWorker] = None
         self._apply_dialog_stylesheet()
@@ -257,15 +266,24 @@ class StockDetailDialog(QDialog):
         QDialog QPushButton {{
             color: {dlg_fg};
         }}
+        /* 스크롤 영역과 viewport도 다이얼로그 배경과 일관되게 (회색 기본 차단) */
+        QDialog QScrollArea {{
+            background: {dlg_bg};
+            border: none;
+        }}
+        QDialog QScrollArea > QWidget > QWidget {{
+            background: {dlg_bg};
+        }}
         """
         self.setStyleSheet(base + overlay)
 
     # ── UI ──
 
     def _setup_ui(self) -> None:
+        # 다이얼로그 root: 헤더 + 스크롤 가능한 본문 + 외부 링크 버튼
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)  # 섹션 간 간격 확대
+        root.setSpacing(15)
 
         # 헤더 — 종목명/코드. gray는 라이트/다크 모두 보이는 muted 사용
         muted = self._palette["muted"]
@@ -277,7 +295,20 @@ class StockDetailDialog(QDialog):
         header.setWordWrap(True)
         root.addWidget(header)
 
-        # 1) 매수 정보 + 현재 상태 (잔고 dict 기반 — 즉시 표시)
+        # ── 스크롤 컨테이너 ──
+        # 본문이 길거나 사용자가 다이얼로그 크기를 줄여도 모든 섹션 접근 가능.
+        # WidgetResizable=True 면 내부 widget이 ScrollArea 너비를 채워
+        # QFormLayout이 wordWrap을 정상 계산한다.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(15)  # 섹션 간 간격
+
+        # 1) 매수 정보 + 현재 상태
         cur_box = QGroupBox("매수/현재 상태")
         cur_form = self._make_form()
         avg_price = self._holding.get("avg_price", 0)
@@ -304,32 +335,37 @@ class StockDetailDialog(QDialog):
         rate_lbl.setTextFormat(Qt.TextFormat.RichText)
         cur_form.addRow("수익률:", rate_lbl)
 
-        cur_box.setLayout(cur_form)
-        root.addWidget(cur_box)
+        self._install_in_groupbox(cur_box, cur_form)
+        content_layout.addWidget(cur_box)
 
         # 2) 매수 이력 + 포트폴리오 비중
         self._first_buy_box = QGroupBox("매수 이력 / 포트폴리오 비중")
         self._first_buy_form = self._make_form()
         self._first_buy_form.addRow(_value_label("로딩 중..."))
-        self._first_buy_box.setLayout(self._first_buy_form)
-        root.addWidget(self._first_buy_box)
+        self._install_in_groupbox(self._first_buy_box, self._first_buy_form)
+        content_layout.addWidget(self._first_buy_box)
 
         # 3) 팩터 점수
         self._factor_box = QGroupBox("팩터 점수 (리밸런싱 시점)")
         self._factor_form = self._make_form()
         self._factor_form.addRow(_value_label("로딩 중..."))
-        self._factor_box.setLayout(self._factor_form)
-        root.addWidget(self._factor_box)
+        self._install_in_groupbox(self._factor_box, self._factor_form)
+        content_layout.addWidget(self._factor_box)
 
         # 4) 최근 공시 3건
         self._disc_box = QGroupBox("최근 공시 (최근 3건)")
         self._disc_layout = QVBoxLayout()
-        self._disc_layout.setSpacing(6)
+        self._disc_layout.setSpacing(8)
         self._disc_layout.addWidget(_value_label("로딩 중..."))
-        self._disc_box.setLayout(self._disc_layout)
-        root.addWidget(self._disc_box)
+        self._install_in_groupbox(self._disc_box, self._disc_layout)
+        content_layout.addWidget(self._disc_box)
 
-        # 5) 외부 링크 버튼
+        content_layout.addStretch(1)
+
+        scroll.setWidget(content)
+        root.addWidget(scroll, 1)  # stretch=1 — 다이얼로그 높이의 대부분 차지
+
+        # 5) 외부 링크 버튼 (스크롤 밖에 고정)
         link_row = QHBoxLayout()
         link_row.setSpacing(8)
         dart_btn = QPushButton("DART 페이지")
@@ -346,15 +382,34 @@ class StockDetailDialog(QDialog):
 
     @staticmethod
     def _make_form() -> QFormLayout:
-        """일관된 spacing + 라벨 정책의 QFormLayout 생성"""
+        """일관된 spacing + 라벨 정책의 QFormLayout 생성
+
+        간격을 충분히 넓혀 행 간/라벨-값 겹침 방지. QGroupBox title 아래 25px
+        여백은 `_install_in_groupbox`에서 contentsMargins로 별도 확보한다.
+        """
         form = QFormLayout()
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(8)
+        form.setHorizontalSpacing(20)
+        form.setVerticalSpacing(12)
+        form.setContentsMargins(12, 12, 12, 12)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         # 값 라벨이 부모 너비에 맞게 늘어나도록 — 긴 텍스트 wordWrap 보장
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
         return form
+
+    @staticmethod
+    def _install_in_groupbox(box: QGroupBox, inner) -> None:
+        """QGroupBox 안에 inner layout을 설치 + title 아래 25px 여백 확보.
+
+        groupBox.setLayout(form)만 하면 PyQt6의 기본 contentsMargins가 작아
+        title이 첫 행과 겹쳐 보임. wrapper QVBoxLayout으로 contentsMargins
+        (10,25,10,10)을 명시한다.
+        """
+        wrapper = QVBoxLayout()
+        wrapper.setContentsMargins(10, 25, 10, 10)
+        wrapper.setSpacing(0)
+        wrapper.addLayout(inner)
+        box.setLayout(wrapper)
 
     # ── 로딩 ──
 
