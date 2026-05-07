@@ -72,6 +72,7 @@ def build() -> None:
         "--hidden-import=gui.themes",
         "--hidden-import=gui.tray_icon",
         "--hidden-import=gui.widgets.chart_view",
+        "--hidden-import=gui.widgets.disclosure_view",
         "--hidden-import=gui.widgets.emergency_panel",
         "--hidden-import=gui.widgets.factor_scores",
         "--hidden-import=gui.widgets.log_handler",
@@ -81,6 +82,7 @@ def build() -> None:
         "--hidden-import=gui.widgets.rebalance_history",
         "--hidden-import=gui.widgets.scheduler_panel",
         "--hidden-import=gui.widgets.status_bar",
+        "--hidden-import=gui.widgets.stock_detail_dialog",
         # 외부 런타임 동적 import (PyInstaller 자동 감지 불가)
         "--hidden-import=yaml",
         "--hidden-import=quantstats",

@@ -78,6 +78,8 @@ class PortfolioView(QWidget):
         super().__init__(parent)
         self._worker: Optional[_BalanceWorker] = None
         self._report_worker: Optional[_TelegramReportWorker] = None
+        # 잔고 캐시 (행 더블클릭 시 holding dict 조회용)
+        self._holdings_cache: list[dict] = []
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -117,6 +119,9 @@ class PortfolioView(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setAlternatingRowColors(True)
+        self._table.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._table.setToolTip("종목 행을 더블클릭하면 상세 정보를 볼 수 있습니다")
+        self._table.cellDoubleClicked.connect(self._on_row_double_clicked)
         group_layout.addWidget(self._table)
 
         layout.addWidget(group)
@@ -143,6 +148,7 @@ class PortfolioView(QWidget):
         holdings = balance.get("holdings", [])
         cash = balance.get("cash", 0)
         total = balance.get("total_eval_amount", 0)
+        self._holdings_cache = list(holdings)
 
         # 정렬 일시 비활성화 (행 삽입 중 정렬 방지)
         self._table.setSortingEnabled(False)
@@ -246,3 +252,25 @@ class PortfolioView(QWidget):
         self._report_btn.setText("발송 오류")
         QTimer.singleShot(3000, lambda: self._report_btn.setText("텔레그램 리포트"))
         logger.error(f"텔레그램 리포트 발송 오류: {error_msg}")
+
+    # ── 종목 상세 ──
+
+    def _on_row_double_clicked(self, row: int, _col: int) -> None:
+        """행 더블클릭 → 종목 상세 팝업"""
+        ticker_item = self._table.item(row, 0)
+        if ticker_item is None:
+            return
+        ticker = ticker_item.text()
+        if not ticker:
+            return
+        # 캐시에서 holding dict 찾기 (정렬된 상태에서도 ticker로 매칭)
+        holding = next(
+            (h for h in self._holdings_cache if h.get("ticker") == ticker),
+            None,
+        )
+        if holding is None:
+            return
+        from gui.widgets.stock_detail_dialog import StockDetailDialog
+
+        dialog = StockDetailDialog(ticker, holding, parent=self)
+        dialog.exec()

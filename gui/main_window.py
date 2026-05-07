@@ -31,6 +31,7 @@ _REFRESH_INTERVAL_MARKET_MS = 30_000     # 장중 30초
 _REFRESH_INTERVAL_OFF_HOURS_MS = 300_000  # 장외 5분 (키움 API 호출 90% 감축)
 from gui.tray_icon import TrayIcon
 from gui.widgets.chart_view import ChartView
+from gui.widgets.disclosure_view import DisclosureView
 from gui.widgets.emergency_panel import EmergencyPanel
 from gui.widgets.factor_scores import FactorScores
 from gui.widgets.log_viewer import TabbedLogViewer
@@ -133,6 +134,10 @@ class MainWindow(QMainWindow):
         # 차트 탭
         self._chart_view = ChartView()
         self._tabs.addTab(self._chart_view, "차트")
+
+        # 공시 탭
+        self._disclosure_view = DisclosureView()
+        self._tabs.addTab(self._disclosure_view, "공시")
 
         # 설정 탭
         self._emergency_panel = EmergencyPanel()
