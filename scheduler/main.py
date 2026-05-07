@@ -568,8 +568,25 @@ def run_daily_defense_check() -> None:
         notifier.send_error(f"방어 체크 오류: {e}")
 
 
+def _is_balance_empty(balance: dict) -> bool:
+    """잔고 응답이 비정상(total=0 and cash=0)인지 판정.
+
+    리밸런싱·방어체크와 동일한 패턴. -100% 리포트 발송 방지용.
+    """
+    return (
+        balance.get("total_eval_amount", 0) == 0
+        and balance.get("cash", 0) == 0
+    )
+
+
 def run_daily_report() -> None:
-    """장 마감 후 상세 일별 수익 리포트 발송 + 스냅샷 DB 저장"""
+    """장 마감 후 상세 일별 수익 리포트 발송 + 스냅샷 DB 저장.
+
+    방어:
+      - 잔고 API 0원 응답 시 30초 대기 후 1회 재시도
+      - 재시도도 실패하면 에러 알림만 보내고 잘못된 -100% 리포트 미발송
+      - 정상 응답이라도 당일 -50% 이하 또는 총 평가가 원금의 10% 미만이면 경고 추가
+    """
     if not is_business_day():
         return
 
@@ -577,6 +594,27 @@ def run_daily_report() -> None:
     try:
         api = get_api()
         balance = api.get_balance()
+
+        # ── 잔고 0원 방어 (2026-05-07 사고 재발 방지) ──
+        if _is_balance_empty(balance):
+            logger.warning("일별 리포트: 잔고 API 비정상 응답 (total=0, cash=0) — 30초 후 재시도")
+            import time as _time
+
+            _time.sleep(30)
+            balance = api.get_balance()
+
+            if _is_balance_empty(balance):
+                logger.error(
+                    "일별 리포트: 잔고 API 재시도도 실패 — 리포트 발송 중단 "
+                    "(잘못된 -100% 리포트 방지)"
+                )
+                notifier.send_error(
+                    "일별 리포트 생성 실패\n"
+                    "키움 API 잔고 조회 비정상 (total=0, cash=0)\n"
+                    "GUI에서 수동 확인 필요"
+                )
+                return  # 잘못된 리포트 발송하지 않음
+            logger.info("일별 리포트: 재시도 후 잔고 정상 복구")
 
         # 스냅샷 수집 + DB 저장
         snapshot = None
@@ -597,8 +635,37 @@ def run_daily_report() -> None:
         except Exception as e:
             logger.error(f"스냅샷 저장 실패 (리포트는 계속 발송): {e}")
 
-        # 기존 리포트 + 벤치마크 + 드리프트 확장
-        notifier.send_detailed_daily_report(balance, snapshot=snapshot)
+        # ── 발송 직전 상식 검증 (정상 응답이지만 의심스러운 수치 감지) ──
+        warnings: list[str] = []
+        total_eval = balance.get("total_eval_amount", 0)
+        total_profit = balance.get("total_profit", 0)
+        invested = total_eval - total_profit if total_profit else total_eval
+
+        # 1) 당일 수익률이 -50% 이상 하락이면 비정상 의심
+        if snapshot is not None:
+            daily_ret = snapshot.get("portfolio", {}).get("daily_return_pct", 0.0)
+            if daily_ret <= -0.50:
+                logger.warning(
+                    "일별 리포트: 당일 수익률 %.1f%%는 비정상 의심", daily_ret * 100
+                )
+                warnings.append(
+                    f"당일 수익률 {daily_ret * 100:+.1f}% 비정상 의심 — GUI에서 확인 필요"
+                )
+
+        # 2) 총 평가가 투자 원금의 10% 미만이면 비정상
+        if total_eval > 0 and invested > 0 and total_eval < invested * 0.10:
+            logger.warning(
+                "일별 리포트: 총 평가 %d원이 원금 %d원의 10%% 미만 — 비정상 의심",
+                int(total_eval), int(invested),
+            )
+            warnings.append(
+                f"총 평가 {total_eval:,.0f}원이 원금 {invested:,.0f}원의 10% 미만"
+            )
+
+        # 기존 리포트 + 벤치마크 + 드리프트 + 경고 섹션
+        notifier.send_detailed_daily_report(
+            balance, snapshot=snapshot, warnings=warnings or None
+        )
     except Exception as e:
         logger.error(f"일별 리포트 오류: {e}")
         notifier.send_error(str(e))

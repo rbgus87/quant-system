@@ -476,6 +476,15 @@ class KiwoomRestClient:
         try:
             data = self._post_with_retry(url, "kt00018", body)
 
+            # 응답 원본 DEBUG 로깅 — 향후 빈 응답 원인 추적용
+            if logger.isEnabledFor(logging.DEBUG):
+                import json as _json
+
+                logger.debug(
+                    "잔고 API 응답 원본 (kt00018): %s",
+                    _json.dumps(data, ensure_ascii=False)[:1500],
+                )
+
             holdings = []
             for item in data.get("acnt_evlt_remn_indv_tot", []):
                 holdings.append(
@@ -496,6 +505,20 @@ class KiwoomRestClient:
             eval_amount = _safe_float(data.get("tot_evlt_amt"))
             # 예수금 = 추정예탁자산 - 평가금액
             cash = total_asset - eval_amount if total_asset > 0 else 0.0
+
+            # 200 OK이지만 본문에 잔고 데이터가 비어 있는 비정상 응답 감지
+            # (2026-05-07 사고: 토큰 충돌 등으로 이런 응답이 발생한 것으로 추정)
+            if not holdings and total_asset == 0 and eval_amount == 0:
+                import json as _json
+
+                return_msg = data.get("return_msg") or data.get("msg1") or ""
+                logger.warning(
+                    "잔고 API 빈 응답 감지 (return_code=%s, return_msg=%s) — 본문: %s",
+                    data.get("return_code"),
+                    return_msg,
+                    _json.dumps(data, ensure_ascii=False)[:1000],
+                )
+
             return {
                 "holdings": holdings,
                 "cash": cash,

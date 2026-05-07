@@ -365,3 +365,120 @@ class TestRunDailyReport:
             ):
                 run_daily_report()
                 mock_notifier_instance.send_error.assert_called_once()
+
+    # ── 잔고 0원 방어 회귀 테스트 (2026-05-07 사고 방지) ──
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_zero_balance_aborts_report(self, mock_bday) -> None:
+        """잔고 0원 응답 + 재시도도 0원 → send_error만 호출, 리포트 미발송
+
+        2026-05-07: 키움 API가 200 OK로 빈 응답을 반환했는데 검증 없이 발송되어
+        텔레그램에 "총 평가 0원, -100%" 잘못된 리포트가 발송됨. 이를 방지한다.
+        """
+        import scheduler.main as scheduler_main
+        from scheduler.main import run_daily_report
+
+        scheduler_main._api = None  # 싱글톤 리셋
+
+        mock_notifier_instance = MagicMock()
+        mock_api = MagicMock()
+        mock_api.get_balance.return_value = {
+            "holdings": [],
+            "total_eval_amount": 0,
+            "total_profit": 0,
+            "cash": 0,
+        }
+        with patch(
+            "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
+        ):
+            with patch("scheduler.main.get_api", return_value=mock_api):
+                with patch("time.sleep"):
+                    run_daily_report()
+
+        # 잘못된 -100% 리포트가 절대 발송되지 않음
+        mock_notifier_instance.send_detailed_daily_report.assert_not_called()
+        # 에러 알림은 발송됨
+        mock_notifier_instance.send_error.assert_called_once()
+        err_msg = mock_notifier_instance.send_error.call_args[0][0]
+        assert "잔고" in err_msg or "비정상" in err_msg or "total=0" in err_msg
+        # 잔고 API는 정확히 2번 호출 (초기 + 30초 후 재시도)
+        assert mock_api.get_balance.call_count == 2
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_zero_balance_recovers_on_retry(self, mock_bday) -> None:
+        """첫 호출 0원이지만 재시도에서 정상 응답 → 정상 리포트 발송"""
+        import scheduler.main as scheduler_main
+        from scheduler.main import run_daily_report
+
+        scheduler_main._api = None
+
+        mock_notifier_instance = MagicMock()
+        mock_notifier_instance.send_detailed_daily_report.return_value = True
+        mock_api = MagicMock()
+        mock_api.get_balance.side_effect = [
+            # 첫 호출: 빈 응답
+            {"holdings": [], "total_eval_amount": 0, "total_profit": 0, "cash": 0},
+            # 재시도: 정상
+            {
+                "holdings": [{"ticker": "005930"}],
+                "total_eval_amount": 50000000,
+                "total_profit": 1000000,
+                "cash": 5000000,
+            },
+        ]
+        with patch(
+            "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
+        ):
+            with patch("scheduler.main.get_api", return_value=mock_api):
+                with patch("time.sleep"):
+                    run_daily_report()
+
+        # 재시도 후 정상 리포트 발송됨
+        mock_notifier_instance.send_detailed_daily_report.assert_called_once()
+        # 에러 알림은 발송 안 함
+        mock_notifier_instance.send_error.assert_not_called()
+        # API는 2번 호출
+        assert mock_api.get_balance.call_count == 2
+
+    @patch("scheduler.main.is_business_day", return_value=True)
+    def test_extreme_daily_loss_adds_warning(self, mock_bday) -> None:
+        """정상 응답이지만 당일 수익률 -50% 이하 → warnings 인자에 포함"""
+        import scheduler.main as scheduler_main
+        from scheduler.main import run_daily_report
+
+        scheduler_main._api = None
+
+        mock_notifier_instance = MagicMock()
+        mock_notifier_instance.send_detailed_daily_report.return_value = True
+        mock_api = MagicMock()
+        mock_api.get_balance.return_value = {
+            "holdings": [{"ticker": "005930"}],
+            "total_eval_amount": 30000000,
+            "total_profit": -30000000,
+            "cash": 0,
+        }
+        # snapshot이 -60% 반환
+        mock_snapshot = {
+            "date": "2026-05-07",
+            "portfolio": {"daily_return_pct": -0.60},
+            "holdings": [],
+        }
+        with patch(
+            "scheduler.main.TelegramNotifier", return_value=mock_notifier_instance
+        ):
+            with patch("scheduler.main.get_api", return_value=mock_api):
+                with patch(
+                    "monitor.snapshot.take_daily_snapshot",
+                    return_value=mock_snapshot,
+                ):
+                    with patch("monitor.storage.MonitorStorage"):
+                        with patch(
+                            "monitor.drift.calculate_drift", return_value=None
+                        ):
+                            run_daily_report()
+
+        # 리포트는 발송되지만 warnings 인자에 비정상 의심 메시지 포함
+        call = mock_notifier_instance.send_detailed_daily_report.call_args
+        warnings = call.kwargs.get("warnings")
+        assert warnings is not None
+        assert any("당일 수익률" in w for w in warnings)

@@ -281,6 +281,7 @@ class TelegramNotifier:
         self,
         balance: dict,
         snapshot: Optional[dict] = None,
+        warnings: Optional[list[str]] = None,
     ) -> bool:
         """상세 일별 리포트
 
@@ -288,6 +289,7 @@ class TelegramNotifier:
             balance: KiwoomRestClient.get_balance() 결과
                 {holdings, cash, total_eval_amount, total_profit}
             snapshot: take_daily_snapshot() 결과 (벤치마크 섹션 추가용, 없으면 생략)
+            warnings: 메시지 끝에 표시할 경고 라인 (수치 이상 감지 등). None이면 생략
 
         Returns:
             발송 성공 여부
@@ -447,6 +449,12 @@ class TelegramNotifier:
                     f"  최대: {max_name} `{max_drift_val:+.1f}%p` "
                     f"({max_target:.1f}\u2192{max_current:.1f}%)"
                 )
+
+        # 수치 이상 감지 등 외부에서 전달된 경고 라인 추가
+        if warnings:
+            lines.append("")
+            for w in warnings:
+                lines.append(f"⚠️ {w}")
 
         msg = "\n".join(lines)
         return self.send(msg)
