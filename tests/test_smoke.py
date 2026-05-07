@@ -77,18 +77,3 @@ class TestEntrypointExecution:
         )
         assert "DRY-RUN" in result.stderr  # logging은 stderr로 출력
 
-    def test_run_backtest_help(self) -> None:
-        """python run_backtest.py --help 가 정상 종료"""
-        result = subprocess.run(
-            [sys.executable, "run_backtest.py", "--help"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-        assert result.returncode == 0, (
-            f"run_backtest --help 실패:\n{result.stderr}"
-        )
-        assert "백테스트" in result.stdout or "backtest" in result.stdout.lower()
-

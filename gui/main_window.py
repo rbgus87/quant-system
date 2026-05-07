@@ -30,7 +30,6 @@ _KRX_CLOSE = time(15, 30)
 _REFRESH_INTERVAL_MARKET_MS = 30_000     # 장중 30초
 _REFRESH_INTERVAL_OFF_HOURS_MS = 300_000  # 장외 5분 (키움 API 호출 90% 감축)
 from gui.tray_icon import TrayIcon
-from gui.widgets.backtest_runner import BacktestRunner
 from gui.widgets.chart_view import ChartView
 from gui.widgets.emergency_panel import EmergencyPanel
 from gui.widgets.factor_scores import FactorScores
@@ -134,10 +133,6 @@ class MainWindow(QMainWindow):
         # 차트 탭
         self._chart_view = ChartView()
         self._tabs.addTab(self._chart_view, "차트")
-
-        # 백테스트 탭
-        self._backtest_runner = BacktestRunner()
-        self._tabs.addTab(self._backtest_runner, "백테스트")
 
         # 설정 탭
         self._emergency_panel = EmergencyPanel()

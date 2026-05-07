@@ -71,7 +71,6 @@ def build() -> None:
         "--hidden-import=gui.main_window",
         "--hidden-import=gui.themes",
         "--hidden-import=gui.tray_icon",
-        "--hidden-import=gui.widgets.backtest_runner",
         "--hidden-import=gui.widgets.chart_view",
         "--hidden-import=gui.widgets.emergency_panel",
         "--hidden-import=gui.widgets.factor_scores",
