@@ -40,6 +40,7 @@ from gui.widgets.preset_panel import PresetPanel
 from gui.widgets.rebalance_history import RebalanceHistory
 from gui.widgets.scheduler_panel import SchedulerPanel
 from gui.widgets.status_bar import StatusBarWidget
+from gui.widgets.summary_card import SummaryCard
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,10 @@ class MainWindow(QMainWindow):
         self._scheduler_panel._start_btn.setObjectName("startBtn")
         self._scheduler_panel._stop_btn.setObjectName("stopBtn")
         left_layout.addWidget(self._scheduler_panel)
+
+        # 요약 카드 (스케줄러 아래)
+        self._summary_card = SummaryCard()
+        left_layout.addWidget(self._summary_card)
 
         left_layout.addStretch()
 
@@ -224,6 +229,11 @@ class MainWindow(QMainWindow):
             self._status_widget.set_scheduler_status
         )
         self._scheduler_panel.status_changed.connect(self._update_tray_tooltip)
+
+        # 잔고 갱신 → 좌측 요약 카드 갱신
+        self._portfolio_view.balance_updated.connect(
+            self._summary_card.update_balance
+        )
 
         # 프리셋 변경 시 상태바 업데이트
         self._preset_panel.preset_changed.connect(self._on_preset_changed)

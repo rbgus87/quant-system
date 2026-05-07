@@ -83,6 +83,7 @@ def build() -> None:
         "--hidden-import=gui.widgets.scheduler_panel",
         "--hidden-import=gui.widgets.status_bar",
         "--hidden-import=gui.widgets.stock_detail_dialog",
+        "--hidden-import=gui.widgets.summary_card",
         # 외부 런타임 동적 import (PyInstaller 자동 감지 불가)
         "--hidden-import=yaml",
         "--hidden-import=quantstats",

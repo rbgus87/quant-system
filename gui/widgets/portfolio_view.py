@@ -2,6 +2,7 @@
 """포트폴리오 보유 현황 테이블"""
 
 import logging
+from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
@@ -74,6 +75,9 @@ class PortfolioView(QWidget):
 
     HEADERS = ["종목코드", "종목명", "수량", "매수가", "현재가", "평가금액", "수익률"]
 
+    # 잔고 갱신 완료 시 외부 위젯(SummaryCard 등)에 잔고 dict 전파
+    balance_updated = pyqtSignal(dict)
+
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._worker: Optional[_BalanceWorker] = None
@@ -122,6 +126,8 @@ class PortfolioView(QWidget):
         self._table.setCursor(Qt.CursorShape.PointingHandCursor)
         self._table.setToolTip("종목 행을 더블클릭하면 상세 정보를 볼 수 있습니다")
         self._table.cellDoubleClicked.connect(self._on_row_double_clicked)
+        # 기본 정렬: 종목코드 오름차순 (헤더 클릭 시 ▲▼ 화살표 표시됨)
+        self._table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
         group_layout.addWidget(self._table)
 
         layout.addWidget(group)
@@ -207,10 +213,14 @@ class PortfolioView(QWidget):
 
         # 총 수익률 계산
         total_rate = (total_profit / total_buy * 100) if total_buy else 0
+        fetched_at = datetime.now().strftime("%H:%M:%S")
         self._total_label.setText(
             f"총 평가: {total:,.0f}원 | 손익: {total_profit:+,.0f}원 ({total_rate:+.2f}%) | "
-            f"예수금: {cash:,.0f}원 | {len(holdings)}종목"
+            f"예수금: {cash:,.0f}원 | {len(holdings)}종목 | 조회: {fetched_at}"
         )
+
+        # 외부 위젯(SummaryCard 등)에 잔고 전파
+        self.balance_updated.emit(balance)
 
     def _on_balance_error(self, error_msg: str) -> None:
         """잔고 조회 실패"""
