@@ -8,7 +8,7 @@
 스케줄:
   - 매 영업일 {rebalance_time}  → 월말이면 리밸런싱 신호 계산 실행 (config.yaml)
   - 매 영업일 15:15  → 일별 방어 체크 (MDD 서킷브레이커 + 트레일링 스톱)
-  - 매 영업일 15:35  → 일별 수익 리포트 발송
+  - 매 영업일 {schedule.daily_report.hour:minute} → 일별 수익 리포트 발송 (기본 15:50)
 """
 
 import argparse
@@ -581,12 +581,15 @@ def _is_balance_empty(balance: dict) -> bool:
     )
 
 
+_DAILY_REPORT_RETRY_DELAYS_SEC = (30, 60, 120)
+
+
 def run_daily_report() -> None:
     """장 마감 후 상세 일별 수익 리포트 발송 + 스냅샷 DB 저장.
 
     방어:
-      - 잔고 API 0원 응답 시 30초 대기 후 1회 재시도
-      - 재시도도 실패하면 에러 알림만 보내고 잘못된 -100% 리포트 미발송
+      - 잔고 API 0원 응답 시 30초/60초/120초 간격으로 최대 3회 재시도
+      - 모든 재시도 실패 시 에러 알림만 보내고 잘못된 -100% 리포트 미발송
       - 정상 응답이라도 당일 -50% 이하 또는 총 평가가 원금의 10% 미만이면 경고 추가
     """
     if not is_business_day():
@@ -599,24 +602,36 @@ def run_daily_report() -> None:
 
         # ── 잔고 0원 방어 (2026-05-07 사고 재발 방지) ──
         if _is_balance_empty(balance):
-            logger.warning("일별 리포트: 잔고 API 비정상 응답 (total=0, cash=0) — 30초 후 재시도")
             import time as _time
 
-            _time.sleep(30)
-            balance = api.get_balance()
+            recovered = False
+            n_retries = len(_DAILY_REPORT_RETRY_DELAYS_SEC)
+            for attempt, delay in enumerate(_DAILY_REPORT_RETRY_DELAYS_SEC, start=1):
+                logger.warning(
+                    f"일별 리포트: 잔고 API 비정상 응답 (total=0, cash=0) — "
+                    f"{delay}초 후 재시도 ({attempt}/{n_retries})"
+                )
+                _time.sleep(delay)
+                balance = api.get_balance()
+                if not _is_balance_empty(balance):
+                    logger.info(f"일별 리포트: 재시도 {attempt}회 후 잔고 정상 복구")
+                    recovered = True
+                    break
 
-            if _is_balance_empty(balance):
+            if not recovered:
+                total_wait = sum(_DAILY_REPORT_RETRY_DELAYS_SEC)
                 logger.error(
-                    "일별 리포트: 잔고 API 재시도도 실패 — 리포트 발송 중단 "
-                    "(잘못된 -100% 리포트 방지)"
+                    f"일별 리포트: 잔고 API 재시도 {n_retries}회 모두 실패 — "
+                    f"리포트 발송 중단 (잘못된 -100% 리포트 방지)"
                 )
                 notifier.send_error(
                     "일별 리포트 생성 실패\n"
                     "키움 API 잔고 조회 비정상 (total=0, cash=0)\n"
+                    f"{len(_DAILY_REPORT_RETRY_DELAYS_SEC)}회 재시도 후 포기 "
+                    f"(총 {total_wait}초 대기)\n"
                     "GUI에서 수동 확인 필요"
                 )
                 return  # 잘못된 리포트 발송하지 않음
-            logger.info("일별 리포트: 재시도 후 잔고 정상 복구")
 
         # 스냅샷 수집 + DB 저장
         snapshot = None
@@ -1254,12 +1269,13 @@ def main() -> None:
         misfire_grace_time=300,
     )
 
+    drp = settings.schedule.daily_report
     scheduler.add_job(
         run_daily_report,
         trigger="cron",
         day_of_week="mon-fri",
-        hour=15,
-        minute=35,
+        hour=drp.hour,
+        minute=drp.minute,
         id="daily_report",
         misfire_grace_time=7200,  # 2h
     )
@@ -1389,7 +1405,8 @@ def main() -> None:
     logger.info("스케줄러 시작 (Ctrl+C로 종료)")
     logger.info(
         f"  {settings.portfolio.rebalance_time} {freq_desc} 리밸런싱 | "
-        f"09:00-15:00 리스크 감시 | 15:15 방어 체크 | 15:35 일별 리포트"
+        f"09:00-15:00 리스크 감시 | 15:15 방어 체크 | "
+        f"{drp.hour:02d}:{drp.minute:02d} 일별 리포트"
     )
     if dc.enabled:
         logger.info(

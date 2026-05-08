@@ -300,6 +300,18 @@ class DelistedRefreshConfig:
 
 
 @dataclass
+class DailyReportConfig:
+    """일별 리포트 Job 설정.
+
+    장 마감(15:30) 직후에는 키움 잔고 API가 결제 처리 중이라 빈 응답을 반환하는
+    경우가 있다. 안정 시점(약 15:50 이후)에 발송하도록 시각을 늦춘다.
+    """
+
+    hour: int = 15
+    minute: int = 50
+
+
+@dataclass
 class ScheduleConfig:
     """스케줄러 Job 설정"""
 
@@ -309,6 +321,7 @@ class ScheduleConfig:
     delisted_refresh: DelistedRefreshConfig = field(
         default_factory=DelistedRefreshConfig
     )
+    daily_report: DailyReportConfig = field(default_factory=DailyReportConfig)
 
 
 # --- YAML 로드 / 적용 / 검증 ---
@@ -583,6 +596,14 @@ def validate_settings(s: "Settings") -> None:
         errors.append(
             f"schedule.delisted_refresh.day_of_month는 -1(마지막 영업일) 또는 "
             f"1~28이어야 합니다: {dr.day_of_month}"
+        )
+
+    drp = s.schedule.daily_report
+    if not (0 <= drp.hour <= 23):
+        errors.append(f"schedule.daily_report.hour는 0~23이어야 합니다: {drp.hour}")
+    if not (0 <= drp.minute <= 59):
+        errors.append(
+            f"schedule.daily_report.minute는 0~59이어야 합니다: {drp.minute}"
         )
 
     # ── logging 검증 ──

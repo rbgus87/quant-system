@@ -410,8 +410,8 @@ class TestRunDailyReport:
         mock_notifier_instance.send_error.assert_called_once()
         err_msg = mock_notifier_instance.send_error.call_args[0][0]
         assert "잔고" in err_msg or "비정상" in err_msg or "total=0" in err_msg
-        # 잔고 API는 정확히 2번 호출 (초기 + 30초 후 재시도)
-        assert mock_api.get_balance.call_count == 2
+        # 잔고 API는 정확히 4번 호출 (초기 + 30초/60초/120초 재시도 3회)
+        assert mock_api.get_balance.call_count == 4
 
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_zero_balance_recovers_on_retry(self, mock_bday) -> None:
