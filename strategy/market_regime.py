@@ -8,8 +8,10 @@
 KOSPI 200일 이동평균 + VAA 모멘텀 스코어를 결합하여
 시장 상태에 따라 투자 비중을 동적으로 조절합니다.
 
-KODEX 200 ETF(069500)를 KOSPI 프록시로 사용합니다.
-(KRX 인덱스 API 차단으로 직접 지수 조회 불가)
+KOSPI 종합지수(코드 1001)를 직접 사용한다.
+시계열 소스는 `data/kospi_index.py` 모듈이 캡슐화한다
+(DB 캐시 → Naver Finance 페이지네이션 → KRX Open API 폴백).
+monitor.benchmark 와 동일 소스로 통일되어 있다.
 """
 import pandas as pd
 import numpy as np
@@ -20,9 +22,6 @@ from typing import Optional
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
-
-# KOSPI 프록시 ETF
-KOSPI_PROXY_TICKER = "069500"  # KODEX 200
 
 # 동일한 (date, kind, ratio) 경고를 매 호출마다 출력하지 않도록 억제.
 # 같은 키는 최초 1회 WARNING, 이후는 DEBUG로 강등한다.
@@ -139,8 +138,24 @@ class MarketRegimeFilter:
         )
         return ratio
 
+    def _get_kospi_index(self, start_str: str, end_str: str) -> pd.DataFrame:
+        """KOSPI 종합지수 시계열을 캐시 우선으로 조회.
+
+        market_regime은 collector를 통해 storage 에 접근한다.
+        collector에 storage가 없는 경우(테스트 mock 등)에는
+        `load_daily_prices`만 가진 객체로도 동작하도록 한다.
+        """
+        from data.kospi_index import get_or_load_kospi_index
+
+        storage = getattr(self.collector, "storage", None)
+        if storage is None:
+            # collector 가 storage 를 노출하지 않으면 외부 fetch 만 시도
+            from data.kospi_index import fetch_kospi_index_series
+            return fetch_kospi_index_series(start_str, end_str)
+        return get_or_load_kospi_index(storage, start_str, end_str)
+
     def _check_trend_signal(self, date: str, ma_days: int = 200) -> bool:
-        """KOSPI(KODEX 200) 이동평균 추세 확인
+        """KOSPI 종합지수 200일 이동평균 추세 확인
 
         Args:
             date: 기준 날짜 (YYYYMMDD)
@@ -155,7 +170,7 @@ class MarketRegimeFilter:
         start_str = start_dt.strftime("%Y%m%d")
 
         try:
-            df = self.collector.get_ohlcv(KOSPI_PROXY_TICKER, start_str, date)
+            df = self._get_kospi_index(start_str, date)
             if df is None or df.empty or len(df) < ma_days:
                 count = len(df) if df is not None else 0
                 _warn_once(
@@ -175,8 +190,8 @@ class MarketRegimeFilter:
 
             is_above = current_price > current_ma
             logger.debug(
-                f"[{date}] 추세: KODEX200={current_price:,.0f}, "
-                f"MA{ma_days}={current_ma:,.0f} → "
+                f"[{date}] 추세: KOSPI={current_price:,.2f}, "
+                f"MA{ma_days}={current_ma:,.2f} → "
                 f"{'상승' if is_above else '하락'}"
             )
             return is_above
@@ -206,7 +221,7 @@ class MarketRegimeFilter:
         start_str = start_dt.strftime("%Y%m%d")
 
         try:
-            df = self.collector.get_ohlcv(KOSPI_PROXY_TICKER, start_str, date)
+            df = self._get_kospi_index(start_str, date)
             if df is None or df.empty or len(df) < 20:
                 _warn_once(
                     date,

@@ -49,17 +49,22 @@ class TestMarketRegimeFilter:
     """MarketRegimeFilter 테스트"""
 
     def _make_filter(self, ohlcv_df: pd.DataFrame) -> MarketRegimeFilter:
-        """mock collector를 가진 MarketRegimeFilter 생성
+        """KOSPI 지수 시계열을 주입한 MarketRegimeFilter 생성
+
+        market_regime은 `_get_kospi_index(start, end)`를 통해
+        KOSPI 종합지수 시계열을 가져온다. 테스트에서는 외부 호출을 차단하기 위해
+        이 메서드를 직접 교체한다.
 
         Args:
-            ohlcv_df: get_ohlcv가 반환할 DataFrame
+            ohlcv_df: _get_kospi_index가 반환할 DataFrame (close 컬럼 필수)
 
         Returns:
             MarketRegimeFilter 인스턴스
         """
         collector = MagicMock()
-        collector.get_ohlcv.return_value = ohlcv_df
-        return MarketRegimeFilter(collector)
+        filt = MarketRegimeFilter(collector)
+        filt._get_kospi_index = MagicMock(return_value=ohlcv_df)
+        return filt
 
     def test_disabled_returns_full_ratio(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """cfg.enabled = False일 때 get_invest_ratio()가 1.0 반환"""
@@ -71,8 +76,8 @@ class TestMarketRegimeFilter:
         ratio = filt.get_invest_ratio("20240101")
 
         assert ratio == 1.0
-        # enabled=False이면 collector를 호출하지 않아야 함
-        filt.collector.get_ohlcv.assert_not_called()
+        # enabled=False이면 KOSPI 지수를 조회하지 않아야 함
+        filt._get_kospi_index.assert_not_called()
 
     def test_bullish_regime(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """추세 + 모멘텀 모두 강세일 때 1.0 반환"""

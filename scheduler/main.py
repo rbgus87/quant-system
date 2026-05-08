@@ -158,7 +158,7 @@ def is_last_business_day_of_month() -> bool:
 
 
 def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
-    """변동성 타겟팅 — KODEX 200 실현 변동성 기반 투자 비중 산출
+    """변동성 타겟팅 — KOSPI 종합지수 실현 변동성 기반 투자 비중 산출
 
     market_regime.calc_vol_target_scale() 공통 함수에 위임.
 
@@ -169,6 +169,7 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
         투자 비중 배율 (0.2 ~ 1.0)
     """
     from strategy.market_regime import calc_vol_target_scale
+    from data.kospi_index import get_or_load_kospi_index
 
     vol_target = settings.trading.vol_target
     lookback = settings.trading.vol_lookback_days
@@ -178,12 +179,13 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
 
     try:
         collector = get_collector()
+        storage = getattr(collector, "storage", None) or get_storage()
         end_dt = datetime.now()
         start_dt = end_dt - timedelta(days=int(lookback * 1.5))
         start_str = start_dt.strftime("%Y%m%d")
         end_str = end_dt.strftime("%Y%m%d")
 
-        df = collector.get_ohlcv("069500", start_str, end_str)  # KODEX 200
+        df = get_or_load_kospi_index(storage, start_str, end_str)
         if df is None or df.empty or len(df) < max(lookback, 20):
             logger.info("변동성 타겟팅: 데이터 부족 -> 비중 1.0")
             return 1.0
@@ -905,27 +907,15 @@ def _collect_daily_data_once(date_str: str, markets: list[str]) -> tuple[int, in
             date_str, market, fund_count,
         )
 
-    # 3) KOSPI 프록시 (KODEX 200, 069500) — market_regime 200일 MA 의존성.
-    #    KRX KOSPI 일별 거래 응답에서 ETF가 누락되므로 명시적으로 갱신.
+    # 3) KOSPI 종합지수 (코드 1001) — market_regime 200일 MA + benchmark 동일 소스.
+    #    KRX 인덱스 API가 일반 시장 응답에 포함되지 않으므로 별도 갱신.
     try:
-        from strategy.market_regime import KOSPI_PROXY_TICKER
-        proxy_df = collector.get_ohlcv(
-            KOSPI_PROXY_TICKER, date_str, date_str
-        )
-        if proxy_df is not None and not proxy_df.empty:
-            logger.info(
-                "[%s] KOSPI 프록시(%s) 갱신 완료",
-                date_str, KOSPI_PROXY_TICKER,
-            )
-        else:
-            logger.warning(
-                "[%s] KOSPI 프록시(%s) 응답 비어 있음",
-                date_str, KOSPI_PROXY_TICKER,
-            )
+        from data.kospi_index import update_kospi_index_for_date
+        ok = update_kospi_index_for_date(collector.storage, date_str)
+        if not ok:
+            logger.warning("[%s] KOSPI 지수 갱신 실패", date_str)
     except Exception as e:
-        logger.warning(
-            "[%s] KOSPI 프록시 갱신 실패: %s", date_str, e,
-        )
+        logger.warning("[%s] KOSPI 지수 갱신 예외: %s", date_str, e)
 
     return prefetch_total, fund_total
 
