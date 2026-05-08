@@ -905,6 +905,28 @@ def _collect_daily_data_once(date_str: str, markets: list[str]) -> tuple[int, in
             date_str, market, fund_count,
         )
 
+    # 3) KOSPI 프록시 (KODEX 200, 069500) — market_regime 200일 MA 의존성.
+    #    KRX KOSPI 일별 거래 응답에서 ETF가 누락되므로 명시적으로 갱신.
+    try:
+        from strategy.market_regime import KOSPI_PROXY_TICKER
+        proxy_df = collector.get_ohlcv(
+            KOSPI_PROXY_TICKER, date_str, date_str
+        )
+        if proxy_df is not None and not proxy_df.empty:
+            logger.info(
+                "[%s] KOSPI 프록시(%s) 갱신 완료",
+                date_str, KOSPI_PROXY_TICKER,
+            )
+        else:
+            logger.warning(
+                "[%s] KOSPI 프록시(%s) 응답 비어 있음",
+                date_str, KOSPI_PROXY_TICKER,
+            )
+    except Exception as e:
+        logger.warning(
+            "[%s] KOSPI 프록시 갱신 실패: %s", date_str, e,
+        )
+
     return prefetch_total, fund_total
 
 

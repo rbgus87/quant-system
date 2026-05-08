@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 # KOSPI 프록시 ETF
 KOSPI_PROXY_TICKER = "069500"  # KODEX 200
 
+# 동일한 (date, kind, ratio) 경고를 매 호출마다 출력하지 않도록 억제.
+# 같은 키는 최초 1회 WARNING, 이후는 DEBUG로 강등한다.
+_warned_keys: set[tuple[str, str, str]] = set()
+
+
+def _warn_once(date: str, kind: str, message: str, ratio_bucket: str = "") -> None:
+    """동일 키 1회만 WARNING, 이후 DEBUG로 강등."""
+    key = (date, kind, ratio_bucket)
+    if key in _warned_keys:
+        logger.debug(message)
+    else:
+        _warned_keys.add(key)
+        logger.warning(message)
+
 
 def calc_vol_target_scale(
     recent_values: list[float],
@@ -143,9 +157,11 @@ class MarketRegimeFilter:
         try:
             df = self.collector.get_ohlcv(KOSPI_PROXY_TICKER, start_str, date)
             if df is None or df.empty or len(df) < ma_days:
-                logger.warning(
-                    f"[{date}] 추세 신호: 데이터 부족 ({len(df) if df is not None else 0}일)"
-                    f" — 상승 추세 가정"
+                count = len(df) if df is not None else 0
+                _warn_once(
+                    date,
+                    "trend_data_short",
+                    f"[{date}] 추세 신호: 데이터 부족 ({count}일) — 상승 추세 가정",
                 )
                 return True
 
@@ -166,7 +182,11 @@ class MarketRegimeFilter:
             return is_above
 
         except Exception as e:
-            logger.warning(f"[{date}] 추세 신호 실패: {e} — 상승 추세 가정")
+            _warn_once(
+                date,
+                "trend_signal_error",
+                f"[{date}] 추세 신호 실패: {e} — 상승 추세 가정",
+            )
             return True
 
     def _check_momentum_signal(self, date: str) -> bool:
@@ -188,7 +208,11 @@ class MarketRegimeFilter:
         try:
             df = self.collector.get_ohlcv(KOSPI_PROXY_TICKER, start_str, date)
             if df is None or df.empty or len(df) < 20:
-                logger.warning(f"[{date}] 모멘텀 신호: 데이터 부족 — 양수 가정")
+                _warn_once(
+                    date,
+                    "momentum_data_short",
+                    f"[{date}] 모멘텀 신호: 데이터 부족 — 양수 가정",
+                )
                 return True
 
             closes = df["close"]
@@ -222,5 +246,9 @@ class MarketRegimeFilter:
             return is_positive
 
         except Exception as e:
-            logger.warning(f"[{date}] 모멘텀 신호 실패: {e} — 양수 가정")
+            _warn_once(
+                date,
+                "momentum_signal_error",
+                f"[{date}] 모멘텀 신호 실패: {e} — 양수 가정",
+            )
             return True

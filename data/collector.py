@@ -248,17 +248,24 @@ class KRXDataCollector:
         sd = _parse_date(start_date)
         ed = _parse_date(end_date)
 
-        # 1. 캐시 확인 (요청 기간 대비 충분한 데이터가 있는지 검증)
+        # 1. 캐시 확인 (요청 기간 대비 충분한 데이터 + 끝 날짜 신선도 검증)
         cached = self.storage.load_daily_prices(ticker, sd, ed)
         if not cached.empty:
-            # 요청 기간이 1일이면 캐시 히트로 충분
             request_days = (ed - sd).days
-            if request_days <= 1 or len(cached) >= max(request_days * 0.5, 3):
+            # 단일 날짜 요청은 캐시 히트로 충분
+            if request_days <= 1:
                 return cached
-            # 캐시 데이터가 부족하면 pykrx로 보충 시도
+            # 끝 날짜 신선도: 캐시 최신값이 요청 종료일에 충분히 가까운지 확인
+            # (영업일 1~2일 + 주말 마진 = 4일 이내)
+            cache_max = pd.Timestamp(cached.index.max())
+            end_ts = pd.Timestamp(ed)
+            cache_fresh = (end_ts - cache_max) <= pd.Timedelta(days=4)
+            if cache_fresh and len(cached) >= max(request_days * 0.5, 3):
+                return cached
+            # 캐시 부족 또는 끝 날짜 누락 → pykrx로 보충
             logger.debug(
-                f"[{ticker}] 캐시 부분 히트 ({len(cached)}건), "
-                f"pykrx로 전체 기간 조회 시도"
+                f"[{ticker}] 캐시 부분 히트 ({len(cached)}건, "
+                f"max={cache_max.date()}, 요청 종료={ed}), pykrx 보충 시도"
             )
 
         # 2. pykrx (개별 OHLCV는 여전히 작동)
