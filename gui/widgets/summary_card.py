@@ -163,7 +163,12 @@ class SummaryCard(QGroupBox):
     # ── 잔고 시그널 수신 ──
 
     def update_balance(self, balance: dict) -> None:
-        """PortfolioView.balance_updated 시그널 수신 핸들러"""
+        """PortfolioView.balance_updated 시그널 수신 핸들러
+
+        손익/수익률 분모는 키움 API 응답의 ``purchase_amount`` (총매입금액)을
+        그대로 사용한다. PortfolioView 상단 바와 동일한 소스/분모를 사용하여
+        화면에 두 다른 숫자가 표시되는 문제를 차단한다.
+        """
         if not isinstance(balance, dict):
             return
         self._last_balance = balance
@@ -171,13 +176,16 @@ class SummaryCard(QGroupBox):
         total = balance.get("total_eval_amount", 0)
         cash = balance.get("cash", 0)
         total_profit = balance.get("total_profit", 0)
-        invested = total - total_profit if total_profit else total
+        # 신규 키 우선 사용. 구버전 잔고 dict 호환 위해 평가-손익 역산 폴백.
+        purchase_amount = balance.get("purchase_amount")
+        if not purchase_amount:
+            purchase_amount = total - total_profit if total_profit else total
 
         self._total_lbl.setText(f"{total:,.0f}원")
         self._cash_lbl.setText(f"{cash:,.0f}원")
 
-        if invested > 0:
-            rate = total_profit / invested * 100
+        if purchase_amount > 0:
+            rate = total_profit / purchase_amount * 100
             color = palette["profit"] if rate >= 0 else palette["loss"]
             self._total_return_lbl.setTextFormat(Qt.TextFormat.RichText)
             self._total_return_lbl.setText(

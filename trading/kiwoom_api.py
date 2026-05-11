@@ -518,6 +518,26 @@ class KiwoomRestClient:
             # 예수금 = 추정예탁자산 - 평가금액
             cash = total_asset - eval_amount if total_asset > 0 else 0.0
 
+            # 총 매입금액 — 키움 응답에 있는 후보 키 우선, 없으면 보유 종목 합산.
+            # GUI 상단 바와 요약 카드가 동일 분모로 손익/수익률을 계산하도록 한다.
+            purchase_amount = _safe_float(
+                data.get("tot_pur_amt")
+                or data.get("tot_pchs_amt")
+                or data.get("pchs_amt_smtot")
+            )
+            total_profit = _safe_float(
+                data.get("tot_evlt_pl") or data.get("tot_pfls")
+            )
+            if purchase_amount <= 0:
+                # 폴백 1: 평가금액 - 평가손익
+                if eval_amount > 0 and total_profit:
+                    purchase_amount = eval_amount - total_profit
+                # 폴백 2: 보유 종목별 매입가 × 수량 합산
+                if purchase_amount <= 0:
+                    purchase_amount = sum(
+                        (h["avg_price"] or 0) * (h["qty"] or 0) for h in holdings
+                    )
+
             # 200 OK이지만 본문에 잔고 데이터가 비어 있는 비정상 응답 감지
             # (2026-05-07 사고: 토큰 충돌 등으로 이런 응답이 발생한 것으로 추정)
             if not holdings and total_asset == 0 and eval_amount == 0:
@@ -535,9 +555,8 @@ class KiwoomRestClient:
                 "holdings": holdings,
                 "cash": cash,
                 "total_eval_amount": eval_amount,
-                "total_profit": _safe_float(
-                    data.get("tot_evlt_pl") or data.get("tot_pfls")
-                ),
+                "total_profit": total_profit,
+                "purchase_amount": purchase_amount,
             }
         except Exception as e:
             logger.error(f"잔고 조회 실패: {e}")
@@ -546,6 +565,7 @@ class KiwoomRestClient:
                 "cash": 0,
                 "total_eval_amount": 0,
                 "total_profit": 0,
+                "purchase_amount": 0,
             }
 
     def get_unfilled_orders(self) -> list:

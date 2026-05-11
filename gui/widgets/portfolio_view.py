@@ -201,14 +201,15 @@ class PortfolioView(QWidget):
         holdings = balance.get("holdings", [])
         cash = balance.get("cash", 0)
         total = balance.get("total_eval_amount", 0)
+        # 손익/수익률은 키움 API 응답값을 그대로 사용 — 상단 바와 좌측
+        # SummaryCard가 동일한 분모(purchase_amount)로 계산하도록 통일한다.
+        total_profit = balance.get("total_profit", 0)
+        purchase_amount = balance.get("purchase_amount", 0)
         self._holdings_cache = list(holdings)
 
         # 정렬 일시 비활성화 (행 삽입 중 정렬 방지)
         self._table.setSortingEnabled(False)
         self._table.setRowCount(len(holdings))
-
-        total_profit = 0
-        total_buy = 0
 
         for row, h in enumerate(holdings):
             ticker = h.get("ticker", "")
@@ -218,11 +219,6 @@ class PortfolioView(QWidget):
             current_price = h.get("current_price", 0)
             eval_amount = h.get("eval_amount", 0)
             profit_rate = h.get("profit_rate", 0)
-
-            buy_amount = avg_price * qty
-            eval_profit = eval_amount - buy_amount
-            total_profit += eval_profit
-            total_buy += buy_amount
 
             # 당일 등락률 — 미확보(None) 시 정렬용 0, 표시는 "-"
             change_rate = h.get("change_rate")
@@ -281,8 +277,8 @@ class PortfolioView(QWidget):
 
         self._table.setSortingEnabled(True)
 
-        # 총 수익률 계산
-        total_rate = (total_profit / total_buy * 100) if total_buy else 0
+        # 손익/수익률은 키움 API 응답의 purchase_amount 분모 기준 — SummaryCard 와 통일.
+        total_rate = (total_profit / purchase_amount * 100) if purchase_amount else 0
         fetched_at = datetime.now().strftime("%H:%M:%S")
         self._total_label.setText(
             f"총 평가: {total:,.0f}원 | 손익: {total_profit:+,.0f}원 ({total_rate:+.2f}%) | "
