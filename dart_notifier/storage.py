@@ -15,9 +15,28 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
-)
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_DB_DIR = os.path.join(_PROJECT_ROOT, "data")
+
+
+def _resolve_db_path(db_path: Optional[str]) -> str:
+    """db_path를 절대 경로로 정규화하고 부모 디렉토리를 보장한다.
+
+    상대 경로가 들어오면 프로젝트 루트 기준으로 해석한다.
+    SQLite는 부모 디렉토리를 자동 생성하지 않으므로 여기서 생성한다.
+    `data/storage.py`의 DataStorage 와 동일한 정책을 공유한다.
+    """
+    if db_path is None:
+        resolved = os.path.join(_DEFAULT_DB_DIR, "monitor.db")
+    elif os.path.isabs(db_path):
+        resolved = db_path
+    else:
+        resolved = os.path.join(_PROJECT_ROOT, db_path)
+
+    parent = os.path.dirname(resolved)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    return resolved
 
 
 class Base(DeclarativeBase):
@@ -46,9 +65,8 @@ class DartDisclosureStorage:
     """
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        if db_path is None:
-            db_path = os.path.join(_DEFAULT_DB_DIR, "monitor.db")
-
+        db_path = _resolve_db_path(db_path)
+        self.db_path = db_path
         self.engine = create_engine(f"sqlite:///{db_path}", echo=False)
 
         @event.listens_for(self.engine, "connect")

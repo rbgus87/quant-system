@@ -78,6 +78,7 @@ class _DetailLoadWorker(QThread):
                 "portfolio": None,
                 "factor": None,
                 "disclosures": [],
+                "disclosures_error": None,
             }
 
             storage = get_storage()
@@ -148,26 +149,37 @@ class _DetailLoadWorker(QThread):
                         "amount": float(trade[3] or 0),
                     }
 
-            # 최근 공시 3건
-            disc_storage = get_disclosure_storage()
-            with disc_storage.SessionLocal() as session:
-                rows = session.execute(
-                    text(
-                        "SELECT rcept_no, report_nm, pblntf_detail_ty, rcept_dt "
-                        "FROM dart_disclosures WHERE stock_code = :t "
-                        "ORDER BY rcept_dt DESC, rcept_no DESC LIMIT 3"
-                    ),
-                    {"t": self._ticker},
-                ).fetchall()
-                result["disclosures"] = [
-                    {
-                        "rcept_no": r[0],
-                        "report_nm": r[1],
-                        "pblntf_detail_ty": r[2],
-                        "rcept_dt": r[3],
-                    }
-                    for r in rows
-                ]
+            # 최근 공시 3건 — 공시 DB 열기/조회 실패해도 다이얼로그 자체는 떠야 함.
+            # 사용자에게 에러 팝업 대신 섹션 내 안내 문구로 표시한다.
+            try:
+                disc_storage = get_disclosure_storage()
+                with disc_storage.SessionLocal() as session:
+                    rows = session.execute(
+                        text(
+                            "SELECT rcept_no, report_nm, pblntf_detail_ty, rcept_dt "
+                            "FROM dart_disclosures WHERE stock_code = :t "
+                            "ORDER BY rcept_dt DESC, rcept_no DESC LIMIT 3"
+                        ),
+                        {"t": self._ticker},
+                    ).fetchall()
+                    result["disclosures"] = [
+                        {
+                            "rcept_no": r[0],
+                            "report_nm": r[1],
+                            "pblntf_detail_ty": r[2],
+                            "rcept_dt": r[3],
+                        }
+                        for r in rows
+                    ]
+            except Exception as disc_err:
+                logger.error(
+                    "최근 공시 조회 실패 (ticker=%s): %s",
+                    self._ticker,
+                    disc_err,
+                    exc_info=True,
+                )
+                result["disclosures"] = []
+                result["disclosures_error"] = str(disc_err)
 
             self.finished.emit(result)
         except Exception as e:
@@ -502,6 +514,11 @@ class StockDetailDialog(QDialog):
     def _fill_disclosures(self, data: dict) -> None:
         self._clear_layout(self._disc_layout)
         disclosures = data.get("disclosures", [])
+        if data.get("disclosures_error"):
+            self._disc_layout.addWidget(
+                _value_label("공시 데이터를 불러올 수 없습니다")
+            )
+            return
         if not disclosures:
             self._disc_layout.addWidget(_value_label("최근 공시 없음"))
             return
