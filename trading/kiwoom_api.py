@@ -487,6 +487,17 @@ class KiwoomRestClient:
 
             holdings = []
             for item in data.get("acnt_evlt_remn_indv_tot", []):
+                # 당일 등락률: 키움 응답 종류에 따라 키가 다르므로 가능한 후보 모두 시도.
+                # 없으면 None → 호출자가 DB 전일 종가로 보강한다.
+                change_rate_raw = (
+                    item.get("flu_rt")
+                    or item.get("prdy_ctrt")
+                    or item.get("fluc_rt")
+                    or item.get("dpr_rt")
+                )
+                change_rate = (
+                    _safe_float(change_rate_raw) if change_rate_raw not in (None, "") else None
+                )
                 holdings.append(
                     {
                         "ticker": item.get("stk_cd", "").lstrip("A"),
@@ -497,6 +508,7 @@ class KiwoomRestClient:
                         "eval_amount": _safe_float(item.get("evlt_amt")),
                         "eval_profit": _safe_float(item.get("evltv_prft") or item.get("evlt_pfls")),
                         "profit_rate": _safe_float(item.get("prft_rt") or item.get("pfls_rt")),
+                        "change_rate": change_rate,
                     }
                 )
 

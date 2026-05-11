@@ -44,9 +44,54 @@ class _BalanceWorker(QThread):
             from gui.services import get_api
 
             balance = get_api().get_balance()
+            self._enrich_change_rate(balance)
             self.finished.emit(balance)
         except Exception as e:
             self.error.emit(str(e))
+
+    @staticmethod
+    def _enrich_change_rate(balance: dict) -> None:
+        """잔고 응답이 당일 등락률을 포함하지 않으면 DB 전일 종가로 보강한다.
+
+        키움 잔고 API 응답에 등락률 필드가 누락된 종목에 대해서만 1회 DB 쿼리로
+        직전 daily_price.close 를 조회해 (현재가 - 전일종가)/전일종가 × 100 을 채운다.
+        DB 조회 실패는 무시(change_rate=None 유지).
+        """
+        holdings = balance.get("holdings") or []
+        tickers_to_fetch = [
+            h["ticker"]
+            for h in holdings
+            if h.get("change_rate") is None and h.get("ticker") and h.get("current_price")
+        ]
+        if not tickers_to_fetch:
+            return
+        try:
+            from sqlalchemy import bindparam, text
+
+            from gui.services import get_storage
+
+            storage = get_storage()
+            # 보유 종목별 최신 daily_price.close — IN 쿼리 1회
+            stmt = text(
+                "SELECT dp.ticker, dp.close FROM daily_price dp "
+                "JOIN (SELECT ticker, MAX(date) AS mx FROM daily_price "
+                "      WHERE ticker IN :tickers GROUP BY ticker) g "
+                "ON dp.ticker = g.ticker AND dp.date = g.mx"
+            ).bindparams(bindparam("tickers", expanding=True))
+            with storage.engine.connect() as conn:
+                rows = conn.execute(stmt, {"tickers": tickers_to_fetch}).fetchall()
+            prev_close_by_ticker = {r[0]: float(r[1]) for r in rows if r[1]}
+        except Exception as e:
+            logger.warning("당일 등락률 DB 보강 실패: %s", e)
+            return
+
+        for h in holdings:
+            if h.get("change_rate") is not None:
+                continue
+            prev_close = prev_close_by_ticker.get(h.get("ticker"))
+            cur = h.get("current_price")
+            if prev_close and cur and prev_close > 0:
+                h["change_rate"] = (cur - prev_close) / prev_close * 100.0
 
 
 class _TelegramReportWorker(QThread):
@@ -72,7 +117,10 @@ class _TelegramReportWorker(QThread):
 class PortfolioView(QWidget):
     """보유 종목 테이블 위젯"""
 
-    HEADERS = ["종목코드", "종목명", "수량", "매수가", "현재가", "평가금액", "수익률"]
+    HEADERS = [
+        "종목코드", "종목명", "수량", "매수가", "현재가",
+        "평가금액", "수익률", "당일등락",
+    ]
 
     # 잔고 갱신 완료 시 외부 위젯(SummaryCard 등)에 잔고 dict 전파
     balance_updated = pyqtSignal(dict)
@@ -176,6 +224,15 @@ class PortfolioView(QWidget):
             total_profit += eval_profit
             total_buy += buy_amount
 
+            # 당일 등락률 — 미확보(None) 시 정렬용 0, 표시는 "-"
+            change_rate = h.get("change_rate")
+            if change_rate is None:
+                change_text = "-"
+                change_sort = 0.0
+            else:
+                change_text = f"{change_rate:+.2f}%"
+                change_sort = float(change_rate)
+
             display_values = [
                 (ticker, None),
                 (name, None),
@@ -184,6 +241,7 @@ class PortfolioView(QWidget):
                 (f"{current_price:,.0f}", float(current_price)),
                 (f"{eval_amount:,.0f}", float(eval_amount)),
                 (f"{profit_rate:+.2f}%", float(profit_rate)),
+                (change_text, change_sort),
             ]
 
             for col, (text, sort_val) in enumerate(display_values):
@@ -206,6 +264,19 @@ class PortfolioView(QWidget):
                     elif profit_rate < 0:
                         item.setForeground(QColor("#4DABF7"))
                         item.setBackground(QColor(77, 171, 247, 25))
+                # 당일등락 색상 — 한국 컨벤션 (양:빨강, 음:파랑, 보합:회색)
+                elif col == 7 and change_rate is not None:
+                    font = item.font()
+                    font.setBold(True)
+                    item.setFont(font)
+                    if change_rate > 0:
+                        item.setForeground(QColor("#FF4444"))
+                        item.setBackground(QColor(255, 68, 68, 25))
+                    elif change_rate < 0:
+                        item.setForeground(QColor("#4DABF7"))
+                        item.setBackground(QColor(77, 171, 247, 25))
+                    else:
+                        item.setForeground(QColor("#9E9E9E"))
                 self._table.setItem(row, col, item)
 
         self._table.setSortingEnabled(True)
