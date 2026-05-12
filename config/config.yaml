@@ -85,6 +85,10 @@ presets:
     universe:
       market: "KOSPI"
       min_market_cap_percentile: 10.0
+      # ── S4 섹터 분산 제약 (2026-05-13 채택) ──
+      sector_diversification_enabled: true    # S4 채택
+      max_sector_count: 4
+      max_sector_pct: 0.25
     momentum:
       absolute_momentum_enabled: false
     quality:
@@ -105,6 +109,10 @@ presets:
       consecutive_profit_metric: "operating_income"
       consecutive_profit_require_all: false     # ★ 변형 (2): 평균 양수
       consecutive_profit_min_data: 3
+      # ── S2 부채비율 상한 필터 (실험, 검증 후 활성화) ──
+      debt_ratio_filter_enabled: false
+      max_debt_ratio: 200.0
+      exclude_capital_impairment: true
     volatility:
       max_percentile: 70.0
     market_regime:
@@ -134,6 +142,10 @@ presets:
     universe:
       market: "KOSPI"
       min_market_cap_percentile: 10.0
+      # ── S4 섹터 분산 제약 (2026-05-13 채택) ──
+      sector_diversification_enabled: true    # S4 채택
+      max_sector_count: 4
+      max_sector_pct: 0.25
     momentum:
       absolute_momentum_enabled: false
     quality:
@@ -154,6 +166,10 @@ presets:
       consecutive_profit_metric: "operating_income"
       consecutive_profit_require_all: false     # ★ 변형 (2): 평균 양수
       consecutive_profit_min_data: 3
+      # ── S2 부채비율 상한 필터 (실험, 검증 후 활성화) ──
+      debt_ratio_filter_enabled: false
+      max_debt_ratio: 200.0
+      exclude_capital_impairment: true
     volatility:
       max_percentile: 50.0
     market_regime:
@@ -183,6 +199,10 @@ presets:
     universe:
       market: "KOSPI"
       min_market_cap_percentile: 10.0
+      # ── S4 섹터 분산 제약 (2026-05-13 채택) ──
+      sector_diversification_enabled: true    # S4 채택
+      max_sector_count: 4
+      max_sector_pct: 0.25
     momentum:
       absolute_momentum_enabled: false
     quality:
@@ -203,6 +223,10 @@ presets:
       consecutive_profit_metric: "operating_income"
       consecutive_profit_require_all: false     # ★ 변형 (2): 평균 양수
       consecutive_profit_min_data: 3
+      # ── S2 부채비율 상한 필터 (실험, 검증 후 활성화) ──
+      debt_ratio_filter_enabled: false
+      max_debt_ratio: 200.0
+      exclude_capital_impairment: true
     volatility:
       max_percentile: 70.0
     market_regime:

@@ -6,6 +6,90 @@
 
 ## [Unreleased]
 
+### 변경 — S4 채택 (2026-05-13)
+
+- config: sector_diversification_enabled 3개 프리셋 활성화 (S4 채택, max_sector_count=4)
+- POLICY.md: S4 채택 이력 + #4 예외 조항 (섹터 분산 등 종목 교체 목적 변경은 위양성 분석으로 대체 평가)
+- 금융주 제외는 별도 config 불필요 — screener가 stock_sector 자동 감지
+
+### 추가 — S4-A 정리 + S4-B 섹터 분산 제약 (2026-05-13)
+
+- **fix(sectors): is_financial 종목명 휴리스틱 기준으로 재정렬**
+  - `scripts/fix_financial_classification.py` 신규 — KSIC 64/66 매핑으로 잘못 is_financial=True가 된 지주회사/투자업체를 휴리스틱 미매칭 시 False로 복원
+  - 결과: 125 → **56종목**, 2,115행 UPDATE
+- **verify_finance_exclusion_impact 재실행 (56종목 기준)**
+  - ΔCAGR = **-0.51%p** (이전 125종목 기준 -1.78%p에서 크게 개선)
+  - 금융주 32분기 합계 선정: **30건** (이전 245건의 1/8)
+  - POLICY 조건 1 (-1%p 이내) 통과 → 금융주 제외 자동 적용 OK
+- **feat(screener): 섹터 분산 제약 (S4-B)**
+  - `strategy/screener.py`: `_select_with_sector_diversification()` 신규
+    composite_score 내림차순으로 후보를 순회하면서 섹터당 max_sector_count 제한.
+    "기타"(매핑 없음) 섹터는 면제. select_top 호출 두 곳 모두 통합.
+  - `config/settings.py`/`config.yaml`: `UniverseConfig` 4 필드 추가 (기본 OFF)
+    sector_diversification_enabled / max_sector_count / max_sector_pct / sector_exempt_names
+  - 캐시 키에 2 필드 확장 (enabled, max_count)
+  - 단위 테스트 4 케이스 (`TestSectorDiversification`)
+  - `scripts/backtest_sector_diversification_s4.py` — A/B(max=4)/C(max=3)/D(max=5) 비교
+- **S4-B 백테스트 결과 (2017-2024 KOSPI 프리셋A)**
+  - A (OFF): CAGR 6.36% / Sharpe 0.240 / HHI 2025 / 최대섹터 36.4%
+  - **B (max=4)**: CAGR 6.80% (+0.44%p), Sharpe 0.259 (+0.019), HHI 1191, 최대섹터 20.0%
+  - C (max=3): CAGR 6.11%, Sharpe 0.229 (alpha 손실)
+  - D (max=5): CAGR 6.57%, Sharpe 0.250
+  - **판정**: 자동 ❌ 미채택 (겹침률 73.4%로 조건 4 미달). 그러나 B는 alpha 동시 개선 + HHI 41% 감소 + 위양성 +1.07%(매우 작음) → 사용자 검토 필요
+  - 보고서: `docs/reports/sector_diversification_s4_analysis.md`
+
+### 추가 — S4-A 보강: DART 기업개황 KSIC + baseline 검증 (2026-05-12)
+
+- **feat(dart): 기업개황 API → 업종코드 수집**
+  - `data/dart_client.py`: `fetch_company_info()` + `fetch_sector_batch()` 신규
+  - `factors/composite.py`: `KSIC_TO_SECTOR` 매핑 (KSIC 상위 2자리 → 투자용 섹터 20개) + `classify_by_ksic()` 함수
+  - `scripts/backfill_sectors.py`: `--use-dart-company` 옵션 추가, DART KSIC + 종목명 휴리스틱 합집합 적용
+  - 백필 결과: 1,134종목 DART 조회 → 매핑 적용. 매핑 실패 코드 자동 로깅
+- **금융주 제외 baseline 영향 측정 (verify_finance_exclusion_impact.py)**
+  - 신규 스크립트로 Step 1 + Step 3v2 활성 상태에서 `exclude_finance` ON/OFF 비교
+  - **⚠️ 중대한 발견**: 금융주 제외 시 CAGR -1.78%p, Sharpe -0.083, MDD -3.59%p 손실
+  - 금융주 32분기 합산 선정: 245건 (분기당 평균 ~7.7개)
+  - 원인 추정: KSIC 64/66 매핑이 광범위 (지주회사 다수 포함 → 정상 사업회사를 금융주로 오분류)
+  - **운용 결정 필요**: 종목명 휴리스틱만 사용(58종목) vs KSIC 활용(125종목) vs 수동 화이트리스트 정제
+  - 보고서: `docs/reports/finance_exclusion_impact_analysis.md`
+- 단위 테스트: `TestClassifyByKsic` 6 케이스 추가
+
+### 추가 — S4-A 섹터 인프라 + 금융주 제외 수정 (2026-05-12)
+
+- **fix(screener): 백테스트에서 금융주 제외 미작동 문제 해결**
+  - `engine.py` → `screener.screen()` 호출 시 `finance_tickers=None`이 전달되어 PRD 위반 (금융주 제외 무효화)되던 문제
+  - `screener.screen()`이 `settings.universe.exclude_finance=True`이고 외부 주입 없을 때 `storage.get_finance_tickers(date)` 자동 호출하도록 수정
+  - engine.py 변경 0줄, screener에서 자체 해결
+- **feat(data): 섹터(업종) 인프라**
+  - `data/storage.py`: `StockSector` 테이블 신규 + `upsert_stock_sectors`/`load_stock_sectors`(PIT 180일 폴백)/`get_finance_tickers`
+  - `data/collector.py`: `get_stock_sectors()` 신규 — KRX Open API 응답에서 종목명 추출 후 휴리스틱 매칭 (pykrx 폴백)
+  - `factors/composite.py`: `FINANCE_SECTORS` 확장 + `FINANCIAL_NAME_PATTERNS` + `FINANCIAL_TICKER_WHITELIST` + `classify_financial_by_name()` 휴리스틱 함수
+    - 배경: KRX 2025-12-27 이용약관 변경으로 KRX/pykrx/FDR 섹터 API 모두 차단됨
+    - 종목명 키워드: 은행/증권/보험/생명/화재/카드/캐피탈/파이낸셜/금융지주
+    - 화이트리스트: 신한지주/하나금융지주/우리금융지주/카카오뱅크 등 (키워드 미매칭 보강)
+  - `scripts/backfill_sectors.py` 신규 — 분기말 영업일 32개 백필
+  - 백필 결과: 32분기 × 961종목 = 29,527행 / **금융주 58종목** (KOSPI 2024-12-30 기준: 증권 29 + 보험 15 + 금융업 11 + 은행 3)
+- 단위 테스트 추가: `TestClassifyFinancialByName` 6 케이스 + `TestStockSector` 5 케이스
+
+### 추가 — S2 부채비율 상한 필터 (실험, 미채택)
+
+- **feat(data): S2 debt/equity columns + filter (미채택)**
+  - `data/dart_client.py`: `TOTAL_LIABILITIES_ACCOUNT_NAMES` 신규 + `_extract_financial_items` 반환 튜플 7→8 (부채 추가) + `get_fundamentals_for_date` 결과에 `TOTAL_EQUITY`/`TOTAL_LIABILITIES`/`DEBT_RATIO` 3 컬럼 추가
+  - `data/storage.py`: `Fundamental` 테이블에 nullable 컬럼 3개 추가 (DB_SCHEMA_POLICY 준수) + 마이그레이션
+  - `factors/quality.py`: `apply_debt_ratio_filter()` 신규 — 부채비율 상한 + 자본잠식 차단
+  - `config/settings.py`/`config.yaml`: `debt_ratio_filter_enabled` (기본 OFF) 등 3 필드
+  - `strategy/screener.py`: Step 3 직후 호출 + 캐시 키 3 필드 확장
+  - `scripts/backfill_debt_ratio.py` 신규 — 기존 fundamental 행에 BS 데이터 백필 (idempotent)
+  - `scripts/backtest_debt_ratio_s2.py` 신규 — 4모드 (A/B-200/C-300/D-400) 비교
+  - `docs/reports/debt_ratio_s2_analysis.md` 자동 생성
+  - 단위 테스트: `TestDebtRatioFilter` 4 케이스 + `test_save_debt_ratio_columns`
+  - **판정: ❌ 미채택** — 3 임계값 모두 5조건 미달:
+    - 005620은 이미 Step 3 변형(2)에서 차단됨 → 추가 폐지 회피 효과 없음
+    - 위양성 분석: B/C/D 모두 추가 제거 종목 평균 수익률 +3.14% ~ +4.48% (alpha 손실)
+    - 종목 겹침률 67.8%/77.4%/81.7% 모두 90% 미달
+    - 2022-2024 구간 ΔCAGR -2.03/-2.29/-3.86%p 모두 -2%p 미달
+  - 부채비율 필터는 한국 KOSPI에서 부적합 — S4(섹터 중립화)로 진행 권고
+
 ### 추가 — DB 스키마 변경 정책 (2026-05-12)
 
 - docs: DB 스키마 변경 정책 (dev/prod 분리 워크플로우)
