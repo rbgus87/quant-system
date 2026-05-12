@@ -15,6 +15,7 @@
 | 2차 | 폐지 임박 일일 알림 | `monitor/risk_guard.py::check_delisting_imminent` | 매일 16:30 |
 | 3차 | 분기 리밸런싱 자동 교체 | `strategy/rebalancer.py` | 분기말 리밸런싱 |
 | 보조 | KRX 관리종목 감지 | `monitor/risk_guard.py::_check_delisting` | 장중 30분 간격 |
+| 4차(opt-in) | 폐지 임박 자동 매도 | `monitor/risk_guard.py::execute_delisting_auto_sell` | 매일 09:30 |
 
 ### 수용된 한계
 

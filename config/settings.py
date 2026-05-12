@@ -138,6 +138,15 @@ class RiskGuardConfig:
     stop_loss_pct: float = -20.0  # 종목별 손절 경고 기준 (%)
     max_drawdown_alert_pct: float = -15.0  # 포트폴리오 드로다운 경고 기준 (%)
     check_interval_minutes: int = 30  # 장중 체크 간격 (분)
+    # ── 폐지 임박 자동 매도 (opt-in, 기본 OFF) ──
+    # check_delisting_imminent가 감지한 보유 종목 중 failure/expired/other 카테고리를
+    # 시장가 매도. 합병(merger)/자진폐지(voluntary)는 절대 자동매도 대상 아님.
+    delisting_auto_sell_enabled: bool = False
+    delisting_auto_sell_categories: list[str] = field(
+        default_factory=lambda: ["failure", "expired", "other"]
+    )
+    delisting_auto_sell_dry_run: bool = True  # 첫 운용은 dry-run 권장
+    delisting_auto_sell_max_days_until: int = 30  # 폐지 N일 전부터 트리거
 
 
 @dataclass

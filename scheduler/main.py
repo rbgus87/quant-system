@@ -730,7 +730,7 @@ def run_risk_guard_check() -> None:
 
 
 def run_risk_guard_delisting() -> None:
-    """관리종목 캐시 갱신 (하루 1회, 09:30)"""
+    """관리종목 캐시 갱신 + (opt-in) 폐지 임박 자동 매도 (하루 1회, 09:30)"""
     if not is_business_day():
         return
 
@@ -739,6 +739,35 @@ def run_risk_guard_delisting() -> None:
         guard.refresh_delisting_cache()
     except Exception as e:
         logger.error(f"관리종목 캐시 갱신 오류: {e}")
+        return
+
+    # 폐지 임박 자동 매도 (config에서 opt-in 시에만 실행)
+    if not getattr(guard._cfg, "delisting_auto_sell_enabled", False):
+        return
+
+    try:
+        api = get_api()
+        balance = api.get_balance()
+        if not balance.get("holdings"):
+            logger.debug("폐지 자동 매도: 보유 종목 없음 — 스킵")
+            return
+
+        notifier = TelegramNotifier()
+        actions = guard.execute_delisting_auto_sell(
+            balance=balance,
+            order_client=api,
+            notifier=notifier,
+        )
+        if actions:
+            real_sold = sum(1 for a in actions if a.get("action") == "sold")
+            dry_runs = sum(1 for a in actions if a.get("action") == "dry_run")
+            failed = sum(1 for a in actions if a.get("action") == "failed")
+            logger.warning(
+                f"폐지 자동 매도 결과: {len(actions)}건 "
+                f"(sold={real_sold}, dry_run={dry_runs}, failed={failed})"
+            )
+    except Exception as e:
+        logger.error(f"폐지 자동 매도 오류: {e}", exc_info=True)
 
 
 def run_auto_backfill() -> None:

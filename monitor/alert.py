@@ -55,6 +55,69 @@ _FORMATTERS = {
 }
 
 
+_ACTION_ICON = {
+    "sold": "✅",       # ✅
+    "dry_run": "\U0001f4dd", # 📝
+    "failed": "❌",     # ❌
+    "skipped": "⏭️",  # ⏭️
+}
+
+
+def format_delisting_auto_sell_message(actions: list[dict]) -> str:
+    """폐지 임박 자동 매도 결과 알림 메시지.
+
+    dry_run 건과 실매도 건을 구분하여 한 메시지로 묶어 표시.
+
+    Args:
+        actions: RiskGuard.execute_delisting_auto_sell() 반환값
+
+    Returns:
+        텔레그램 발송용 메시지 문자열
+    """
+    if not actions:
+        return ""
+
+    has_real = any(not a.get("dry_run", True) for a in actions)
+    header = (
+        "\U0001f534 *폐지 임박 자동 매도*"
+        if has_real
+        else "\U0001f4dd *폐지 임박 자동 매도 (DRY-RUN)*"
+    )
+
+    lines: list[str] = [header, ""]
+    for a in actions:
+        icon = _ACTION_ICON.get(a.get("action", ""), "")
+        ticker = a.get("ticker", "")
+        name = a.get("name", ticker)
+        qty = a.get("qty", 0)
+        category = a.get("category", "")
+        days_until = a.get("days_until", 0)
+        delist_date = a.get("delist_date", "")
+        order_id = a.get("order_id", "")
+        action = a.get("action", "")
+
+        suffix = ""
+        if action == "sold" and order_id:
+            suffix = f"  주문번호: {order_id}"
+        elif action == "dry_run":
+            suffix = "  (실주문 미발생)"
+        elif action == "failed":
+            suffix = "  ⚠️ 매도 실패 — 수동 확인 필요"
+        elif action == "skipped":
+            suffix = "  (이미 처리됨)"
+
+        lines.append(
+            f"{icon} {name} ({ticker}) {qty}주\n"
+            f"   카테고리: {category} | 폐지일: {delist_date} (D-{days_until}){suffix}"
+        )
+
+    if not has_real:
+        lines.append("")
+        lines.append("⚠️ dry_run 모드 — 실제 주문은 발생하지 않았습니다.")
+
+    return "\n".join(lines)
+
+
 def send_risk_alerts(alerts: list[dict]) -> int:
     """리스크 경고를 Telegram으로 발송한다.
 

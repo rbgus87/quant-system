@@ -334,6 +334,212 @@ class TestSendRiskAlerts:
         mock_notifier_cls.assert_not_called()
 
 
+# ── 폐지 임박 자동 매도 테스트 ──
+
+
+def _make_auto_sell_guard(
+    enabled: bool = True,
+    dry_run: bool = True,
+    categories: list[str] | None = None,
+    max_days: int = 30,
+) -> RiskGuard:
+    """execute_delisting_auto_sell 테스트용 RiskGuard 인스턴스"""
+    cfg = MagicMock()
+    cfg.enabled = True
+    cfg.stop_loss_pct = -20.0
+    cfg.max_drawdown_alert_pct = -15.0
+    cfg.delisting_auto_sell_enabled = enabled
+    cfg.delisting_auto_sell_dry_run = dry_run
+    cfg.delisting_auto_sell_categories = categories or ["failure", "expired", "other"]
+    cfg.delisting_auto_sell_max_days_until = max_days
+    return RiskGuard(cfg=cfg)
+
+
+def _make_imminent_returns(*items: dict):
+    """check_delisting_imminent를 mock 반환값으로 교체하는 패치 헬퍼"""
+    def _fake(self, balance, days_ahead=30):  # type: ignore[no-untyped-def]
+        return list(items)
+    return _fake
+
+
+class TestExecuteDelistingAutoSell:
+    """execute_delisting_auto_sell 단위 테스트"""
+
+    def _balance_with(self, ticker: str = "123456", qty: int = 50) -> dict:
+        return {
+            "holdings": [
+                {"ticker": ticker, "name": "테스트종목",
+                 "qty": qty, "current_price": 1000},
+            ],
+            "cash": 0,
+            "total_eval_amount": qty * 1000,
+            "total_profit": 0,
+        }
+
+    def test_disabled_returns_empty(self) -> None:
+        """delisting_auto_sell_enabled=False 면 빈 리스트, 매도 호출 X"""
+        guard = _make_auto_sell_guard(enabled=False)
+        order_client = MagicMock()
+
+        actions = guard.execute_delisting_auto_sell(
+            balance=self._balance_with(),
+            order_client=order_client,
+        )
+        assert actions == []
+        order_client.sell_stock.assert_not_called()
+
+    def test_dry_run_no_real_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """dry_run=True 이면 sell_stock 호출되지 않고 action='dry_run'"""
+        guard = _make_auto_sell_guard(enabled=True, dry_run=True)
+        monkeypatch.setattr(
+            RiskGuard, "check_delisting_imminent",
+            _make_imminent_returns({
+                "ticker": "123456", "name": "테스트종목",
+                "delist_date": "2026-06-01", "reason": "감사의견 거절",
+                "category": "failure", "days_until": 20,
+                "qty": 50, "current_price": 1000,
+            }),
+        )
+        order_client = MagicMock()
+        order_client.is_paper = True
+
+        actions = guard.execute_delisting_auto_sell(
+            balance=self._balance_with(),
+            order_client=order_client,
+        )
+        assert len(actions) == 1
+        assert actions[0]["action"] == "dry_run"
+        assert actions[0]["dry_run"] is True
+        order_client.sell_stock.assert_not_called()
+
+    def test_live_sell_invokes_order_client(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """dry_run=False 이면 sell_stock 호출 + action='sold'"""
+        guard = _make_auto_sell_guard(enabled=True, dry_run=False)
+        monkeypatch.setattr(
+            RiskGuard, "check_delisting_imminent",
+            _make_imminent_returns({
+                "ticker": "123456", "name": "테스트종목",
+                "delist_date": "2026-06-01", "reason": "감사의견 거절",
+                "category": "failure", "days_until": 20,
+                "qty": 50, "current_price": 1000,
+            }),
+        )
+        order_client = MagicMock()
+        order_client.is_paper = True
+        order_client.sell_stock.return_value = {
+            "return_code": 0, "ord_no": "ORD-001",
+        }
+
+        actions = guard.execute_delisting_auto_sell(
+            balance=self._balance_with(),
+            order_client=order_client,
+        )
+        assert len(actions) == 1
+        assert actions[0]["action"] == "sold"
+        assert actions[0]["order_id"] == "ORD-001"
+        order_client.sell_stock.assert_called_once()
+        kwargs = order_client.sell_stock.call_args.kwargs
+        assert kwargs["ticker"] == "123456"
+        assert kwargs["qty"] == 50
+        assert kwargs["order_type"] == "3"  # 시장가
+
+    def test_merger_voluntary_excluded(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """merger/voluntary 카테고리는 자동 매도 대상 아님 (정상 폐지)"""
+        guard = _make_auto_sell_guard(enabled=True, dry_run=False)
+        monkeypatch.setattr(
+            RiskGuard, "check_delisting_imminent",
+            _make_imminent_returns(
+                {"ticker": "111111", "name": "합병종목",
+                 "delist_date": "2026-06-01", "reason": "합병",
+                 "category": "merger", "days_until": 10,
+                 "qty": 30, "current_price": 5000},
+                {"ticker": "222222", "name": "자진폐지종목",
+                 "delist_date": "2026-06-01", "reason": "자진폐지",
+                 "category": "voluntary", "days_until": 10,
+                 "qty": 30, "current_price": 5000},
+            ),
+        )
+        order_client = MagicMock()
+        order_client.is_paper = True
+        order_client.sell_stock.return_value = {"return_code": 0}
+
+        actions = guard.execute_delisting_auto_sell(
+            balance={"holdings": [
+                {"ticker": "111111", "name": "합병종목", "qty": 30,
+                 "current_price": 5000},
+                {"ticker": "222222", "name": "자진폐지종목", "qty": 30,
+                 "current_price": 5000},
+            ]},
+            order_client=order_client,
+        )
+        assert actions == []
+        order_client.sell_stock.assert_not_called()
+
+    def test_days_until_over_max_excluded(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """days_until > max_days_until 종목은 매도 안 함"""
+        guard = _make_auto_sell_guard(
+            enabled=True, dry_run=False, max_days=30,
+        )
+        monkeypatch.setattr(
+            RiskGuard, "check_delisting_imminent",
+            _make_imminent_returns({
+                "ticker": "123456", "name": "테스트종목",
+                "delist_date": "2026-07-01", "reason": "감사의견 거절",
+                "category": "failure", "days_until": 45,  # 30 초과
+                "qty": 50, "current_price": 1000,
+            }),
+        )
+        order_client = MagicMock()
+        order_client.is_paper = True
+        order_client.sell_stock.return_value = {"return_code": 0}
+
+        actions = guard.execute_delisting_auto_sell(
+            balance=self._balance_with(),
+            order_client=order_client,
+        )
+        assert actions == []
+        order_client.sell_stock.assert_not_called()
+
+
+class TestDelistingAutoSellMessage:
+    """format_delisting_auto_sell_message — 알림 메시지 포맷"""
+
+    def test_dry_run_header(self) -> None:
+        """dry_run 건만 있으면 DRY-RUN 헤더"""
+        from monitor.alert import format_delisting_auto_sell_message
+
+        actions = [{
+            "ticker": "123456", "name": "테스트종목", "qty": 50,
+            "action": "dry_run", "order_id": "", "category": "failure",
+            "days_until": 20, "dry_run": True,
+            "current_price": 1000, "delist_date": "2026-06-01",
+        }]
+        msg = format_delisting_auto_sell_message(actions)
+        assert "DRY-RUN" in msg
+        assert "테스트종목" in msg
+        assert "실주문 미발생" in msg or "실제 주문은 발생하지 않았습니다" in msg
+
+    def test_sold_message(self) -> None:
+        """실매도 건은 주문번호 포함"""
+        from monitor.alert import format_delisting_auto_sell_message
+
+        actions = [{
+            "ticker": "123456", "name": "테스트종목", "qty": 50,
+            "action": "sold", "order_id": "ORD-001", "category": "failure",
+            "days_until": 20, "dry_run": False,
+            "current_price": 1000, "delist_date": "2026-06-01",
+        }]
+        msg = format_delisting_auto_sell_message(actions)
+        assert "DRY-RUN" not in msg
+        assert "ORD-001" in msg
+
+
 # ── 관리종목 조회 폴백 체인 테스트 ──
 
 

@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### 추가 — 폐지 임박 자동 매도 (opt-in)
+
+- **feat(risk_guard): delisting auto-sell option (default OFF, dry-run first)**
+  - `monitor/risk_guard.py`: `execute_delisting_auto_sell()` 메서드 신규 — `check_delisting_imminent` 감지 종목 중 `failure`/`expired`/`other` 카테고리만 시장가 매도. `merger`/`voluntary`는 정상 폐지로 자동매도 대상 아님 (정리매매로 가치 회수).
+  - `config/settings.py` `RiskGuardConfig` 4 필드 추가 (`delisting_auto_sell_enabled`/`_categories`/`_dry_run`/`_max_days_until`)
+  - `config/config.yaml` `monitoring.risk_guard` 섹션 확장 (기본 OFF, dry_run=true)
+  - `monitor/alert.py` `format_delisting_auto_sell_message()` 신규 (dry_run/sold/failed 구분 표시)
+  - `scheduler/main.py` `run_risk_guard_delisting` (09:30 Job)에 자동매도 호출 통합
+  - `tests/test_risk_guard.py` 7 케이스 추가 (`TestExecuteDelistingAutoSell` + `TestDelistingAutoSellMessage`)
+  - `docs/POLICY.md` 다층 방어 구조 표에 4차(opt-in) 행 추가
+  - 단계적 활성화 권장: 1주차 `enabled:true + dry_run:true` → 2주차 `dry_run:false`
+
 ### 변경 — Step 1 채택 (2026-05-12)
 
 - POLICY.md: 5조건 #2 재정의 — alpha 개선 경로 (b) 추가

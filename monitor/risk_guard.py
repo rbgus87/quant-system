@@ -30,13 +30,15 @@ class RiskGuard:
         self._today_alerts: set[tuple[str, str, str]] = set()  # (date, ticker, type)
         self._today_str: str = ""  # 날짜 변경 시 alerts 초기화
         self._delisting_cache: dict[str, set[str]] = {}  # {date_str: set(codes)}
+        self._today_auto_sells: set[tuple[str, str]] = set()  # (date, ticker) 중복 매도 방지
 
     def _reset_if_new_day(self) -> str:
-        """날짜가 바뀌면 _today_alerts를 초기화하고 오늘 날짜를 반환한다."""
+        """날짜가 바뀌면 _today_alerts/_today_auto_sells를 초기화하고 오늘 날짜를 반환한다."""
         today = datetime.now().strftime("%Y-%m-%d")
         if today != self._today_str:
             self._today_str = today
             self._today_alerts.clear()
+            self._today_auto_sells.clear()
         return today
 
     def check_all(self, balance: dict) -> list[dict]:
@@ -333,3 +335,211 @@ class RiskGuard:
                 "current_price": h.get("current_price", 0),
             })
         return alerts
+
+    def execute_delisting_auto_sell(
+        self,
+        balance: dict,
+        order_client: object,
+        notifier: Optional[object] = None,
+    ) -> list[dict]:
+        """폐지 임박 보유 종목 자동 매도.
+
+        `check_delisting_imminent()`로 감지된 폐지 예정 보유 종목 중
+        `cfg.delisting_auto_sell_categories`에 포함된 카테고리만 시장가 매도한다.
+        합병(merger)/자진폐지(voluntary)는 정상 폐지로 간주, 자동매도 대상 아님
+        (정리매매로 가치 회수 가능).
+
+        Args:
+            balance: KiwoomRestClient.get_balance() 결과
+            order_client: 매도 주문 실행 객체. `sell_stock(ticker, qty, price, order_type, exchange)`
+                메서드가 있어야 하며, `is_paper` 속성을 사용해 KRX/SOR 결정.
+            notifier: 매도 결과 텔레그램 알림 객체. `send(msg)` 메서드 필요.
+
+        Returns:
+            매도 처리 내역 리스트.
+            [{"ticker", "name", "qty", "action", "order_id", "category",
+              "days_until", "dry_run", "current_price", "delist_date"}]
+            action ∈ {"sold", "skipped", "dry_run", "failed"}
+        """
+        if not getattr(self._cfg, "delisting_auto_sell_enabled", False):
+            return []
+
+        max_days = getattr(self._cfg, "delisting_auto_sell_max_days_until", 30)
+        allowed_categories = set(
+            getattr(
+                self._cfg,
+                "delisting_auto_sell_categories",
+                ["failure", "expired", "other"],
+            )
+        )
+        dry_run = bool(getattr(self._cfg, "delisting_auto_sell_dry_run", True))
+
+        today = self._reset_if_new_day()
+
+        # 폐지 임박 종목 조회 (max_days만큼 lookahead)
+        try:
+            imminent = self.check_delisting_imminent(balance, days_ahead=max_days)
+        except Exception as e:
+            logger.error(f"폐지 임박 자동 매도 — 임박 종목 조회 실패: {e}")
+            return []
+
+        if not imminent:
+            return []
+
+        # 카테고리 + days_until 필터링
+        targets: list[dict] = []
+        for item in imminent:
+            category = item.get("category", "")
+            if category not in allowed_categories:
+                continue
+            days_until = item.get("days_until", 0)
+            if days_until > max_days:
+                continue
+            if item.get("qty", 0) <= 0:
+                continue
+            targets.append(item)
+
+        if not targets:
+            return []
+
+        logger.warning(
+            f"폐지 임박 자동 매도 후보 {len(targets)}종목 "
+            f"(dry_run={dry_run}, max_days={max_days})"
+        )
+
+        exchange = "KRX"
+        if hasattr(order_client, "is_paper"):
+            exchange = "KRX" if getattr(order_client, "is_paper") else "SOR"
+
+        actions: list[dict] = []
+        for item in targets:
+            ticker = item["ticker"]
+            name = item.get("name", ticker)
+            qty = int(item.get("qty", 0))
+            category = item.get("category", "")
+            days_until = item.get("days_until", 0)
+
+            # 중복 매도 방지 (같은 ticker 하루 1회)
+            sell_key = (today, ticker)
+            if sell_key in self._today_auto_sells:
+                logger.info(
+                    f"폐지 자동 매도 스킵 (이미 처리됨): {name}({ticker})"
+                )
+                actions.append({
+                    "ticker": ticker,
+                    "name": name,
+                    "qty": qty,
+                    "action": "skipped",
+                    "order_id": "",
+                    "category": category,
+                    "days_until": days_until,
+                    "dry_run": dry_run,
+                    "current_price": item.get("current_price", 0),
+                    "delist_date": str(item.get("delist_date", "")),
+                })
+                continue
+
+            # 잔고 재확인 (race condition 방어)
+            holding = next(
+                (h for h in balance.get("holdings", []) if h.get("ticker") == ticker),
+                None,
+            )
+            if not holding or holding.get("qty", 0) <= 0:
+                logger.warning(
+                    f"폐지 자동 매도 스킵 — 보유 없음: {name}({ticker})"
+                )
+                continue
+
+            self._today_auto_sells.add(sell_key)
+
+            if dry_run:
+                logger.warning(
+                    f"[DRY-RUN] 폐지 자동 매도 시뮬: {name}({ticker}) "
+                    f"{qty}주, 카테고리={category}, D-{days_until}"
+                )
+                actions.append({
+                    "ticker": ticker,
+                    "name": name,
+                    "qty": qty,
+                    "action": "dry_run",
+                    "order_id": "",
+                    "category": category,
+                    "days_until": days_until,
+                    "dry_run": True,
+                    "current_price": item.get("current_price", 0),
+                    "delist_date": str(item.get("delist_date", "")),
+                })
+                continue
+
+            # 실주문 — 재시도 1회
+            order_id = ""
+            ok = False
+            for attempt in range(2):
+                try:
+                    result = order_client.sell_stock(
+                        ticker=ticker,
+                        qty=qty,
+                        price=0,
+                        order_type="3",  # 시장가
+                        exchange=exchange,
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"폐지 자동 매도 예외 (시도 {attempt + 1}/2): "
+                        f"{name}({ticker}) {e}"
+                    )
+                    result = {}
+
+                if result and result.get("return_code") == 0:
+                    ok = True
+                    order_id = result.get("ord_no", "")
+                    break
+                logger.warning(
+                    f"폐지 자동 매도 실패 (시도 {attempt + 1}/2): "
+                    f"{name}({ticker}) msg={result.get('return_msg', 'unknown')}"
+                )
+
+            if ok:
+                logger.warning(
+                    f"폐지 자동 매도 체결 접수: {name}({ticker}) {qty}주 "
+                    f"(주문번호={order_id}, D-{days_until})"
+                )
+                actions.append({
+                    "ticker": ticker,
+                    "name": name,
+                    "qty": qty,
+                    "action": "sold",
+                    "order_id": order_id,
+                    "category": category,
+                    "days_until": days_until,
+                    "dry_run": False,
+                    "current_price": item.get("current_price", 0),
+                    "delist_date": str(item.get("delist_date", "")),
+                })
+            else:
+                actions.append({
+                    "ticker": ticker,
+                    "name": name,
+                    "qty": qty,
+                    "action": "failed",
+                    "order_id": "",
+                    "category": category,
+                    "days_until": days_until,
+                    "dry_run": False,
+                    "current_price": item.get("current_price", 0),
+                    "delist_date": str(item.get("delist_date", "")),
+                })
+
+        # 알림 발송
+        if notifier is not None and actions:
+            try:
+                from monitor.alert import format_delisting_auto_sell_message
+
+                msg = format_delisting_auto_sell_message(actions)
+                send_fn = getattr(notifier, "send", None)
+                if callable(send_fn):
+                    send_fn(msg)
+            except Exception as e:
+                logger.error(f"폐지 자동 매도 알림 발송 실패: {e}")
+
+        return actions
