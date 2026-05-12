@@ -376,6 +376,121 @@ class QualityFactor:
         return filtered
 
     @staticmethod
+    def apply_consecutive_profit_filter(
+        fundamentals: pd.DataFrame,
+        storage,
+        as_of_date,
+        n_quarters: int = 4,
+        metric: str = "operating_income",
+        require_all_positive: bool = True,
+        min_data_quarters: int = 3,
+    ) -> pd.DataFrame:
+        """최근 n_quarters 연속 흑자 종목만 통과 (Step 3).
+
+        Step 3-A에서 백필된 `fundamental_quarterly` 테이블을 PIT 안전하게 조회.
+        005620 유형(분기보고서 직후 일회성 흑자 전환) 차단 목적.
+
+        규칙:
+          - 각 ticker에 대해 storage.load_fundamentals_quarterly로 최근 n_quarters 조회
+          - 반환된 분기 행 중 `metric` 값이 NaN이 아닌 행만 카운트
+          - 카운트 < min_data_quarters → 통과 (데이터 부족, 보수적)
+          - require_all_positive=True: 모든 유효 값이 > 0 이어야 통과
+          - require_all_positive=False: 평균이 > 0 이어야 통과
+
+        Args:
+            fundamentals: index=ticker 펀더멘털 DataFrame
+            storage: DataStorage 인스턴스 (load_fundamentals_quarterly 제공)
+            as_of_date: PIT 기준일 (date 또는 'YYYYMMDD'/'YYYY-MM-DD' 문자열)
+            n_quarters: 검증할 연속 분기 수 (기본 4)
+            metric: "operating_income" (권장, 본업 흑자) 또는 "eps"
+            require_all_positive: True 모두 양수 요구, False 평균 양수 요구
+            min_data_quarters: 필터 적용 최소 분기 수 (이하면 통과)
+
+        Returns:
+            필터링된 fundamentals. 제거된 종목 수 + 사유별 분해 logger.info.
+        """
+        from datetime import date as _date, datetime as _dt
+
+        if fundamentals.empty:
+            return fundamentals
+
+        # as_of_date 정규화
+        if isinstance(as_of_date, str):
+            s = as_of_date.replace("-", "")
+            try:
+                as_of = _dt.strptime(s, "%Y%m%d").date()
+            except ValueError:
+                logger.warning(
+                    f"consecutive_profit_filter: 잘못된 as_of_date={as_of_date} — "
+                    f"필터 스킵"
+                )
+                return fundamentals
+        elif isinstance(as_of_date, _date):
+            as_of = as_of_date
+        else:
+            logger.warning(
+                f"consecutive_profit_filter: 지원하지 않는 as_of_date 타입={type(as_of_date)} — 스킵"
+            )
+            return fundamentals
+
+        if metric not in ("operating_income", "eps"):
+            logger.warning(
+                f"consecutive_profit_filter: 지원하지 않는 metric={metric} — 스킵"
+            )
+            return fundamentals
+
+        before = len(fundamentals)
+        keep_mask = pd.Series(True, index=fundamentals.index)
+
+        removed_loss = 0          # 연속 흑자 미달로 제거
+        passed_insufficient = 0   # 데이터 부족으로 통과
+        no_data = 0               # 분기 데이터 자체 없음 (통과)
+
+        for ticker in fundamentals.index:
+            try:
+                df = storage.load_fundamentals_quarterly(
+                    ticker, as_of, n_quarters=n_quarters,
+                )
+            except Exception as e:
+                logger.debug(
+                    f"consecutive_profit_filter: {ticker} 분기 데이터 조회 실패 — "
+                    f"통과 ({e})"
+                )
+                no_data += 1
+                continue
+
+            if df is None or df.empty or metric not in df.columns:
+                no_data += 1
+                continue
+
+            values = df[metric].dropna()
+            if len(values) < min_data_quarters:
+                passed_insufficient += 1
+                continue
+
+            if require_all_positive:
+                passed = bool((values > 0).all())
+            else:
+                passed = bool(values.mean() > 0)
+
+            if not passed:
+                keep_mask.loc[ticker] = False
+                removed_loss += 1
+
+        filtered = fundamentals[keep_mask]
+        total_removed = before - len(filtered)
+
+        logger.info(
+            f"연속 흑자 필터: {before} → {len(filtered)}개 종목 "
+            f"({total_removed}개 제거 — 적자 {removed_loss}, "
+            f"데이터 부족 통과 {passed_insufficient}, "
+            f"분기 없음 통과 {no_data} | "
+            f"n_q={n_quarters}, metric={metric}, "
+            f"all_positive={require_all_positive}, min_q={min_data_quarters})"
+        )
+        return filtered
+
+    @staticmethod
     def detect_eps_flip(
         storage,
         tickers: list[str],

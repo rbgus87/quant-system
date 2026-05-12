@@ -125,6 +125,11 @@ class MultiFactorScreener:
                 bool(settings.quality.require_op_income_positive),
                 bool(settings.quality.require_revenue_positive),
                 bool(settings.quality.require_op_cf_positive_if_available),
+                bool(settings.quality.consecutive_profit_filter_enabled),
+                int(settings.quality.consecutive_profit_n_quarters),
+                str(settings.quality.consecutive_profit_metric),
+                bool(settings.quality.consecutive_profit_require_all),
+                int(settings.quality.consecutive_profit_min_data),
             )
             if cache_key in MultiFactorScreener._factor_cache:
                 composite_df = MultiFactorScreener._factor_cache[cache_key]
@@ -290,6 +295,18 @@ class MultiFactorScreener:
                         require_op_income_positive=settings.quality.require_op_income_positive,
                         require_revenue_positive=settings.quality.require_revenue_positive,
                         require_op_cf_positive_if_available=settings.quality.require_op_cf_positive_if_available,
+                    )
+
+                # Step 3: 연속 흑자 4분기 필터 (PIT 안전, 일회성 흑자 전환 차단)
+                if settings.quality.consecutive_profit_filter_enabled:
+                    filtered_fund = self.quality_factor.apply_consecutive_profit_filter(
+                        filtered_fund,
+                        storage=self.collector.storage,
+                        as_of_date=fund_query_date,
+                        n_quarters=settings.quality.consecutive_profit_n_quarters,
+                        metric=settings.quality.consecutive_profit_metric,
+                        require_all_positive=settings.quality.consecutive_profit_require_all,
+                        min_data_quarters=settings.quality.consecutive_profit_min_data,
                     )
 
                 value_score = self.value_factor.calculate(filtered_fund)

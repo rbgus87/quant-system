@@ -85,6 +85,14 @@ class QualityConfig:
     require_op_income_positive: bool = True
     require_revenue_positive: bool = True
     require_op_cf_positive_if_available: bool = True
+    # ── Step 3: 연속 흑자 4분기 필터 ──
+    # fundamental_quarterly 시계열을 PIT 안전하게 조회하여 검증.
+    # 005620 유형(분기보고서 직후 일회성 흑자 전환) 차단 목적.
+    consecutive_profit_filter_enabled: bool = False
+    consecutive_profit_n_quarters: int = 4
+    consecutive_profit_metric: str = "operating_income"
+    consecutive_profit_require_all: bool = True
+    consecutive_profit_min_data: int = 3
 
 
 @dataclass

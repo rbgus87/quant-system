@@ -544,6 +544,122 @@ class TestFScore:
 # ───────────────────────────────────────────────
 
 
+class TestConsecutiveProfitFilter:
+    """apply_consecutive_profit_filter — 연속 흑자 N분기 필터 (Step 3)"""
+
+    @staticmethod
+    def _mock_storage(per_ticker_quarters: dict) -> object:
+        """ticker → DataFrame 매핑을 받아 load_fundamentals_quarterly를 mock.
+
+        Args:
+            per_ticker_quarters: {ticker: DataFrame(columns include operating_income)}
+        """
+        from unittest.mock import MagicMock
+
+        store = MagicMock()
+        def _load(ticker, as_of_date, n_quarters=4):
+            return per_ticker_quarters.get(ticker, pd.DataFrame())
+        store.load_fundamentals_quarterly = _load
+        return store
+
+    def test_all_four_positive_passes(self) -> None:
+        """4분기 모두 영업이익 양수 → 통과"""
+        from datetime import date as _date
+
+        store = self._mock_storage({
+            "AAA": pd.DataFrame({
+                "bsns_year": ["2024", "2023", "2023", "2023"],
+                "reprt_code": ["11011", "11014", "11012", "11013"],
+                "operating_income": [1e9, 8e8, 5e8, 4e8],
+            }),
+        })
+        fund = pd.DataFrame({"PBR": [1.0]}, index=["AAA"])
+        result = QualityFactor.apply_consecutive_profit_filter(
+            fund, store, as_of_date=_date(2025, 4, 15),
+        )
+        assert "AAA" in result.index
+
+    def test_one_negative_quarter_removed(self) -> None:
+        """4분기 중 1개 음수 → require_all_positive=True 면 제외"""
+        from datetime import date as _date
+
+        store = self._mock_storage({
+            "BAD": pd.DataFrame({
+                "bsns_year": ["2024", "2023", "2023", "2023"],
+                "reprt_code": ["11011", "11014", "11012", "11013"],
+                "operating_income": [1e9, -2e8, 5e8, 4e8],  # Q3 음수
+            }),
+        })
+        fund = pd.DataFrame({"PBR": [1.0]}, index=["BAD"])
+        result = QualityFactor.apply_consecutive_profit_filter(
+            fund, store, as_of_date=_date(2025, 4, 15),
+        )
+        assert "BAD" not in result.index
+
+    def test_three_quarters_data_passes_min_data_3(self) -> None:
+        """데이터 3분기 + min_data=3 → 필터 적용. 모두 양수면 통과"""
+        from datetime import date as _date
+
+        store = self._mock_storage({
+            "OK": pd.DataFrame({
+                "bsns_year": ["2024", "2023", "2023"],
+                "reprt_code": ["11011", "11014", "11012"],
+                "operating_income": [1e9, 5e8, 3e8],
+            }),
+        })
+        fund = pd.DataFrame({"PBR": [1.0]}, index=["OK"])
+        result = QualityFactor.apply_consecutive_profit_filter(
+            fund, store, as_of_date=_date(2025, 4, 15),
+            min_data_quarters=3,
+        )
+        assert "OK" in result.index
+
+    def test_two_quarters_data_passes_due_to_insufficient(self) -> None:
+        """데이터 2분기 + min_data=3 → 데이터 부족으로 통과 (보수적)"""
+        from datetime import date as _date
+
+        store = self._mock_storage({
+            "LOSS": pd.DataFrame({
+                "bsns_year": ["2024", "2023"],
+                "reprt_code": ["11011", "11014"],
+                "operating_income": [-1e9, -5e8],  # 둘 다 음수지만 데이터 부족
+            }),
+        })
+        fund = pd.DataFrame({"PBR": [1.0]}, index=["LOSS"])
+        result = QualityFactor.apply_consecutive_profit_filter(
+            fund, store, as_of_date=_date(2025, 4, 15),
+            min_data_quarters=3,
+        )
+        # 2분기 < min_data 3 이므로 필터 미적용 → 통과
+        assert "LOSS" in result.index
+
+    def test_005620_scenario_removed(self) -> None:
+        """005620 시나리오: 2017-06-30 PIT에서 4분기 중 3분기 영업적자 → 제외"""
+        from datetime import date as _date
+
+        # 실제 DB 백필 결과 그대로 mock
+        store = self._mock_storage({
+            "005620": pd.DataFrame({
+                "bsns_year": ["2017", "2016", "2016", "2016"],
+                "reprt_code": ["11013", "11011", "11014", "11012"],
+                "operating_income": [
+                    807178945,         # 2017-Q1 흑자 전환
+                    -19805979906,      # 2016 Annual 대규모 적자
+                    -721015514,        # 2016 Q3 적자
+                    -7237165374,       # 2016 Half 대규모 적자
+                ],
+            }),
+        })
+        fund = pd.DataFrame({"PBR": [0.27]}, index=["005620"])
+        result = QualityFactor.apply_consecutive_profit_filter(
+            fund, store, as_of_date=_date(2017, 6, 30),
+            n_quarters=4, metric="operating_income",
+            require_all_positive=True, min_data_quarters=3,
+        )
+        # 005620은 명확히 제외되어야 함
+        assert "005620" not in result.index
+
+
 class TestOperatingQualityFilter:
     """apply_operating_quality_filter — 영업이익/매출/영업CF 양수 필터 검증"""
 
