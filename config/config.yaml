@@ -99,6 +99,12 @@ presets:
       require_op_income_positive: true
       require_revenue_positive: true
       require_op_cf_positive_if_available: true
+      # ── Step 3 변형 (2) 연속 흑자 4분기 필터 (2026-05-12 채택) ──
+      consecutive_profit_filter_enabled: true   # Step 3 변형(2) 채택
+      consecutive_profit_n_quarters: 4
+      consecutive_profit_metric: "operating_income"
+      consecutive_profit_require_all: false     # ★ 변형 (2): 평균 양수
+      consecutive_profit_min_data: 3
     volatility:
       max_percentile: 70.0
     market_regime:
@@ -142,6 +148,12 @@ presets:
       require_op_income_positive: true
       require_revenue_positive: true
       require_op_cf_positive_if_available: true
+      # ── Step 3 변형 (2) 연속 흑자 4분기 필터 (2026-05-12 채택) ──
+      consecutive_profit_filter_enabled: true   # Step 3 변형(2) 채택
+      consecutive_profit_n_quarters: 4
+      consecutive_profit_metric: "operating_income"
+      consecutive_profit_require_all: false     # ★ 변형 (2): 평균 양수
+      consecutive_profit_min_data: 3
     volatility:
       max_percentile: 50.0
     market_regime:
@@ -185,6 +197,12 @@ presets:
       require_op_income_positive: true
       require_revenue_positive: true
       require_op_cf_positive_if_available: true
+      # ── Step 3 변형 (2) 연속 흑자 4분기 필터 (2026-05-12 채택) ──
+      consecutive_profit_filter_enabled: true   # Step 3 변형(2) 채택
+      consecutive_profit_n_quarters: 4
+      consecutive_profit_metric: "operating_income"
+      consecutive_profit_require_all: false     # ★ 변형 (2): 평균 양수
+      consecutive_profit_min_data: 3
     volatility:
       max_percentile: 70.0
     market_regime:

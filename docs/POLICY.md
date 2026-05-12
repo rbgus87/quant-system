@@ -124,6 +124,24 @@
 
 상세: `docs/reports/quality_filter_step1_analysis.md`
 
+### Step 3 변형 (2): consecutive_profit_filter (2026-05-12 채택)
+
+최근 4분기 영업이익 평균 > 0 필터.
+
+| 지표 | Δ |
+|------|---|
+| CAGR | +0.50%p (6.37% → 6.87%) |
+| Sharpe | +0.024 (0.239 → 0.263) |
+| MDD | +4.25%p (개선) |
+| 종목 겹침률 | 96.2% |
+| 005620 회피 | ✅ |
+| 위양성 차단 | n=12, 평균 -1.79% |
+
+채택 근거: POLICY 5조건 전부 통과 + CAGR/Sharpe/MDD 동시 개선.
+본 실험(require_all_positive=True)은 미채택 (위양성 평균 +18.15%, 겹침 70.7%) — 변형 (2)에서 해결.
+
+상세: `docs/reports/quality_filter_step3_variant2_analysis.md`
+
 ---
 
 ## 변경 이력
@@ -136,6 +154,7 @@
 | 2026-04-15 | `strict_reporting_lag` 실험 → 원복 | CAGR -12.18%p 부작용 |
 | 2026-05-12 | POLICY #2 재정의 (alpha 개선 경로 추가) | Step 1 분석 결과 |
 | 2026-05-12 | Step 1 (operating_quality_filter) 채택 | CAGR+0.34%p, Sharpe+0.015, 겹침률 97.6% |
+| 2026-05-12 | Step 3 변형 (2) 채택 | 5조건 전부 통과 (CAGR+0.50%p, Sharpe+0.024, MDD+4.25%p, 겹침 96.2%, 005620 회피) |
 | 2026-04-15 | 폐지 방어 정책 확정 (Baseline 유지) | 005620 분석 시리즈 종결 |
 
 ---

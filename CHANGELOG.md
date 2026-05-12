@@ -6,6 +6,22 @@
 
 ## [Unreleased]
 
+### 추가 — Step 3-B/C 연속 흑자 4분기 필터 + 백테스트 (미채택)
+
+- **feat(quality): consecutive profit filter (Step 3-B)** — 운용 활성화 보류
+  - `factors/quality.py`: `apply_consecutive_profit_filter()` 신규 — Step 3-A의 분기 시계열을 PIT 안전하게 조회하여 최근 N분기 연속 흑자 검증
+  - `config/settings.py` `QualityConfig` 5 필드 추가 (`consecutive_profit_*`, 기본 OFF)
+  - `config/config.yaml` 프리셋 A/B/C에 5 라인 추가 (모두 false)
+  - `strategy/screener.py` Step 1 직후 호출 + 캐시 키 5 필드 확장
+  - `tests/test_factors.py` `TestConsecutiveProfitFilter` 5 케이스 (005620 시나리오 포함)
+- **script/report: scripts/backtest_quality_filter_step3.py + docs/reports/quality_filter_step3_analysis.md**
+  - A(Step1만) vs B(Step1+Step3) 2017-2024 KOSPI 비교 + 위양성 분석
+  - **판정: ❌ 미채택** — 005620 회피는 성공했으나:
+    - 조건 4 종목 겹침률 70.7% (기준 90% 미달)
+    - 조건 5 2020-2022 구간 ΔCAGR=-3.63%p (기준 -2%p 미달)
+    - 위양성 평균 수익률 **+18.15%** (n=118) — alpha 손실 명백
+  - 변형안 후보 (보고서 명시): n_quarters=2 완화 / require_all_positive=False / KOSPI 외 시장 확장
+
 ### 추가 — Step 3-A 분기 재무 시계열 인프라
 
 - **feat(data): quarterly fundamentals storage + DART quarterly series fetcher (Step 3-A)**
@@ -34,6 +50,11 @@
 
 - POLICY.md: 5조건 #2 재정의 — alpha 개선 경로 (b) 추가
 - config: operating_quality_filter_enabled 3개 프리셋 활성화 (Step 1 채택)
+
+### 변경 — Step 3 변형 (2) 채택 (2026-05-12)
+
+- config: consecutive_profit_filter 활성화 (Step 3 변형 2 채택, require_all_positive=false)
+- POLICY.md: 채택된 방어 장치 + 변경 이력 추가 (5조건 전부 통과)
 
 ### 추가 — Step 1 본업 품질 필터
 
