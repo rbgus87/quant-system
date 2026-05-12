@@ -121,6 +121,10 @@ class MultiFactorScreener:
                 bool(settings.quality.eps_flip_filter_enabled),
                 bool(settings.quality.halt_history_filter_enabled),
                 int(settings.quality.min_fscore),
+                bool(settings.quality.operating_quality_filter_enabled),
+                bool(settings.quality.require_op_income_positive),
+                bool(settings.quality.require_revenue_positive),
+                bool(settings.quality.require_op_cf_positive_if_available),
             )
             if cache_key in MultiFactorScreener._factor_cache:
                 composite_df = MultiFactorScreener._factor_cache[cache_key]
@@ -277,6 +281,15 @@ class MultiFactorScreener:
                     fscore = self.quality_factor.calc_fscore(filtered_fund)
                     filtered_fund = self.quality_factor.apply_fscore_filter(
                         filtered_fund, fscore
+                    )
+
+                # 본업 품질 필터 (영업이익/매출/영업CF 양수 — 일회성 이익 차단)
+                if settings.quality.operating_quality_filter_enabled:
+                    filtered_fund = self.quality_factor.apply_operating_quality_filter(
+                        filtered_fund,
+                        require_op_income_positive=settings.quality.require_op_income_positive,
+                        require_revenue_positive=settings.quality.require_revenue_positive,
+                        require_op_cf_positive_if_available=settings.quality.require_op_cf_positive_if_available,
                     )
 
                 value_score = self.value_factor.calculate(filtered_fund)

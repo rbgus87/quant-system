@@ -276,6 +276,106 @@ class QualityFactor:
         return filtered
 
     @staticmethod
+    def apply_operating_quality_filter(
+        fundamentals: pd.DataFrame,
+        require_op_income_positive: bool = True,
+        require_revenue_positive: bool = True,
+        require_op_cf_positive_if_available: bool = True,
+    ) -> pd.DataFrame:
+        """본업 품질 필터 — 영업이익/매출/영업CF 양수 검증
+
+        일회성 이익(영업외수익·자산매각·환차익)으로 흑자 전환된 가치함정 종목을
+        스크리닝 단계에서 사전 차단한다. 005620 유형 사례 방어가 본 필터의 동기.
+
+        규칙 (각 단계는 독립 누적 적용):
+          1. 영업이익(OPERATING_INCOME) > 0 — 본업 흑자 검증 (1차)
+          2. 매출액(REVENUE) > 0 — 매출 발생 검증 (2차)
+          3. PCR이 NaN이 아니고 양수 — 영업CF > 0 의미 (3차)
+
+        NaN 정책 (의도적 보수):
+          - 컬럼 전체가 NaN인 경우: 해당 필터 단계 스킵 (데이터 소스 한계로 간주)
+          - 개별 종목 NaN: 통과 처리 (데이터 없음 != 음수)
+          - PCR 음수: DART에서 cfps>0인 경우만 PCR을 계산하므로 음수는 드물지만,
+            안전을 위해 NaN/양수만 통과 시킴 (음수 PCR은 데이터 이상 신호로 간주)
+
+        Args:
+            fundamentals: index=ticker, columns에 OPERATING_INCOME/REVENUE/PCR 포함 가능
+            require_op_income_positive: 영업이익 > 0 종목만 통과
+            require_revenue_positive: 매출 > 0 종목만 통과
+            require_op_cf_positive_if_available: PCR 양수(=영업CF>0) 종목만 통과,
+                NaN은 통과
+
+        Returns:
+            필터링된 fundamentals DataFrame. 단계별 제거 종목 수는 logger.info 출력.
+        """
+        if fundamentals.empty:
+            return fundamentals
+
+        before = len(fundamentals)
+        keep_mask = pd.Series(True, index=fundamentals.index)
+
+        removed_op_income = 0
+        removed_revenue = 0
+        removed_op_cf = 0
+
+        # 1차: 영업이익 양수
+        if require_op_income_positive:
+            if "OPERATING_INCOME" not in fundamentals.columns or \
+                    not fundamentals["OPERATING_INCOME"].notna().any():
+                logger.warning(
+                    "operating quality filter: OPERATING_INCOME 컬럼 부재/전체 NaN — "
+                    "영업이익 단계 스킵"
+                )
+            else:
+                oi = fundamentals["OPERATING_INCOME"]
+                # NaN은 통과, 값이 있으면 > 0만 통과
+                step_mask = oi.isna() | (oi > 0)
+                removed_op_income = int((keep_mask & ~step_mask).sum())
+                keep_mask &= step_mask
+
+        # 2차: 매출 양수
+        if require_revenue_positive:
+            if "REVENUE" not in fundamentals.columns or \
+                    not fundamentals["REVENUE"].notna().any():
+                logger.warning(
+                    "operating quality filter: REVENUE 컬럼 부재/전체 NaN — "
+                    "매출 단계 스킵"
+                )
+            else:
+                rv = fundamentals["REVENUE"]
+                step_mask = rv.isna() | (rv > 0)
+                removed_revenue = int((keep_mask & ~step_mask).sum())
+                keep_mask &= step_mask
+
+        # 3차: PCR 양수(영업CF>0) — NaN은 통과
+        if require_op_cf_positive_if_available:
+            if "PCR" not in fundamentals.columns or \
+                    not fundamentals["PCR"].notna().any():
+                logger.info(
+                    "operating quality filter: PCR 컬럼 부재/전체 NaN — "
+                    "영업CF 단계 스킵 (데이터 없음 시 통과 정책)"
+                )
+            else:
+                pcr = fundamentals["PCR"]
+                # NaN은 통과 (데이터 없음), 값이 있으면 > 0만 통과
+                step_mask = pcr.isna() | (pcr > 0)
+                removed_op_cf = int((keep_mask & ~step_mask).sum())
+                keep_mask &= step_mask
+
+        filtered = fundamentals[keep_mask]
+        total_removed = before - len(filtered)
+
+        if total_removed > 0:
+            logger.info(
+                f"본업 품질 필터: {before} → {len(filtered)}개 종목 "
+                f"({total_removed}개 제거 — "
+                f"영업이익={removed_op_income}, 매출={removed_revenue}, "
+                f"영업CF={removed_op_cf})"
+            )
+
+        return filtered
+
+    @staticmethod
     def detect_eps_flip(
         storage,
         tickers: list[str],

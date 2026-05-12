@@ -540,6 +540,75 @@ class TestFScore:
 
 
 # ───────────────────────────────────────────────
+# 본업 품질 필터 (Step 1) 테스트
+# ───────────────────────────────────────────────
+
+
+class TestOperatingQualityFilter:
+    """apply_operating_quality_filter — 영업이익/매출/영업CF 양수 필터 검증"""
+
+    def test_negative_op_income_removed(self) -> None:
+        """영업이익 음수 종목은 제거된다"""
+        df = pd.DataFrame(
+            {
+                "OPERATING_INCOME": [1e9, -5e8, 3e9],
+                "REVENUE": [10e9, 10e9, 10e9],
+                "PCR": [5.0, 5.0, 5.0],
+            },
+            index=["GOOD", "LOSS", "OK"],
+        )
+        result = QualityFactor.apply_operating_quality_filter(
+            df,
+            require_op_income_positive=True,
+            require_revenue_positive=False,
+            require_op_cf_positive_if_available=False,
+        )
+        assert "GOOD" in result.index
+        assert "OK" in result.index
+        assert "LOSS" not in result.index
+
+    def test_nan_op_income_passes(self) -> None:
+        """영업이익이 NaN인 개별 종목은 데이터 없음으로 간주, 통과한다"""
+        df = pd.DataFrame(
+            {
+                "OPERATING_INCOME": [1e9, np.nan, -5e8],
+                "REVENUE": [10e9, 10e9, 10e9],
+                "PCR": [5.0, 5.0, 5.0],
+            },
+            index=["GOOD", "UNKNOWN", "LOSS"],
+        )
+        result = QualityFactor.apply_operating_quality_filter(
+            df,
+            require_op_income_positive=True,
+            require_revenue_positive=False,
+            require_op_cf_positive_if_available=False,
+        )
+        assert "GOOD" in result.index
+        assert "UNKNOWN" in result.index  # NaN은 통과 (음수 아님)
+        assert "LOSS" not in result.index
+
+    def test_nan_pcr_passes_op_cf_step(self) -> None:
+        """PCR=NaN 종목은 영업CF 필터에 영향받지 않고 통과한다"""
+        df = pd.DataFrame(
+            {
+                "OPERATING_INCOME": [1e9, 1e9, 1e9],
+                "REVENUE": [10e9, 10e9, 10e9],
+                "PCR": [np.nan, 5.0, -3.0],
+            },
+            index=["NOCF", "WITHCF", "NEGCF"],
+        )
+        result = QualityFactor.apply_operating_quality_filter(
+            df,
+            require_op_income_positive=False,
+            require_revenue_positive=False,
+            require_op_cf_positive_if_available=True,
+        )
+        assert "NOCF" in result.index  # PCR NaN은 통과
+        assert "WITHCF" in result.index  # PCR 양수 통과
+        assert "NEGCF" not in result.index  # PCR 음수는 제거
+
+
+# ───────────────────────────────────────────────
 # 변동성 필터 테스트
 # ───────────────────────────────────────────────
 
