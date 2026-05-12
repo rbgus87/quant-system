@@ -46,6 +46,7 @@ OPERATING_CF_ACCOUNT_NAMES = {"영업활동현금흐름", "영업활동으로인
 REVENUE_ACCOUNT_NAMES = {"매출액", "수익(매출액)", "영업수익"}
 OPERATING_INCOME_ACCOUNT_NAMES = {"영업이익", "영업이익(손실)"}
 TOTAL_ASSETS_ACCOUNT_NAMES = {"자산총계"}
+TOTAL_LIABILITIES_ACCOUNT_NAMES = {"부채총계"}
 
 
 class DartClient:
@@ -446,6 +447,7 @@ class DartClient:
         (
             eps_map, net_income_map, equity_map, operating_cf_map,
             revenue_map, operating_income_map, total_assets_map,
+            total_liabilities_map,
         ) = self._extract_financial_items(raw_data)
 
         # DPS (주당배당금) 조회 → DIV 계산용
@@ -505,6 +507,16 @@ class DartClient:
             op_income = operating_income_map.get(ticker)
             total_assets = total_assets_map.get(ticker)
 
+            # 부채총계 + 부채비율 (S2: debt_ratio_filter)
+            total_liabilities = total_liabilities_map.get(ticker)
+            debt_ratio: Optional[float] = None
+            if (
+                total_liabilities is not None
+                and total_equity is not None
+                and total_equity > 0
+            ):
+                debt_ratio = total_liabilities / total_equity * 100.0
+
             # DIV = DPS / 종가 × 100 (배당수익률 %)
             div = None
             dps = dps_map.get(ticker)
@@ -523,6 +535,9 @@ class DartClient:
                 "REVENUE": revenue,
                 "OPERATING_INCOME": op_income,
                 "TOTAL_ASSETS": total_assets,
+                "TOTAL_EQUITY": total_equity,
+                "TOTAL_LIABILITIES": total_liabilities,
+                "DEBT_RATIO": debt_ratio,
             })
 
         if not rows:
@@ -541,6 +556,96 @@ class DartClient:
             f"DIV={n_div}, 총자산={n_ta})"
         )
         return df
+
+    # ───────────────────────────────────────────────
+    # 기업 개황 (S4-A 섹터 매핑용)
+    # ───────────────────────────────────────────────
+
+    def fetch_company_info(self, corp_code: str) -> Optional[dict]:
+        """DART 기업개황 API 1건 조회.
+
+        Args:
+            corp_code: DART 고유번호
+
+        Returns:
+            {"corp_name", "induty_code", "stock_code", ...} 또는 None
+        """
+        if not self.api_key or not corp_code:
+            return None
+        try:
+            self.api_call_count += 1
+            resp = self._request_with_retry(
+                f"{DART_BASE_URL}/company.json",
+                params={"crtfc_key": self.api_key, "corp_code": corp_code},
+            )
+            data = resp.json()
+            status = data.get("status", "")
+            if status == "000":
+                return data
+            elif status == "013":
+                logger.debug(f"DART 기업개황: corp_code={corp_code} 조회 결과 없음")
+            else:
+                logger.debug(
+                    f"DART 기업개황 응답: status={status}, "
+                    f"msg={data.get('message', '')}"
+                )
+            return None
+        except Exception as e:
+            logger.warning(f"DART 기업개황 조회 실패 ({corp_code}): {e}")
+            return None
+
+    def fetch_sector_batch(
+        self, tickers: list[str],
+    ) -> dict[str, dict]:
+        """복수 ticker에 대해 DART 기업개황으로 업종코드 일괄 수집.
+
+        ticker → corp_code 변환 후 fetch_company_info 반복.
+        rate-limit (self.delay) 준수.
+
+        Args:
+            tickers: 종목코드 리스트
+
+        Returns:
+            {ticker: {"induty_code": str, "corp_name": str, "raw": dict}}
+            업종코드 취득 실패한 종목은 dict에서 빠짐.
+        """
+        if not tickers:
+            return {}
+
+        result: dict[str, dict] = {}
+        cmap = self.corp_code_map
+        if not cmap:
+            logger.warning("DART corp_code_map 로드 실패 — 섹터 배치 스킵")
+            return {}
+
+        for i, ticker in enumerate(tickers):
+            corp_code = cmap.get(ticker)
+            if not corp_code:
+                continue
+
+            info = self.fetch_company_info(corp_code)
+            if info is None:
+                time.sleep(self.delay)
+                continue
+
+            induty_code = (info.get("induty_code") or "").strip()
+            if induty_code:
+                result[ticker] = {
+                    "induty_code": induty_code,
+                    "corp_name": (info.get("corp_name") or "").strip(),
+                    "stock_name": (info.get("stock_name") or "").strip(),
+                }
+
+            time.sleep(self.delay)
+            if (i + 1) % 100 == 0:
+                logger.info(
+                    f"DART 기업개황 진행: {i + 1}/{len(tickers)}"
+                )
+
+        logger.info(
+            f"DART 기업개황 완료: 요청 {len(tickers)} → 수집 {len(result)}"
+        )
+        return result
 
     # ───────────────────────────────────────────────
     # 분기 시계열 (Step 3 연속 흑자 필터용)
@@ -633,10 +738,11 @@ class DartClient:
                 continue
 
             # 분기 데이터: ticker별 EPS / 영업이익 / 매출 추출
-            # _extract_financial_items의 7-tuple 활용
+            # _extract_financial_items의 8-tuple 활용 (Step 3는 부채 미사용)
             (
                 eps_map, _net_income, _equity, _op_cf,
                 revenue_map, operating_income_map, _total_assets,
+                _total_liabilities,
             ) = self._extract_financial_items(items)
 
             # fs_div는 별도로 picked (CFS 우선)
@@ -799,7 +905,7 @@ class DartClient:
     ) -> tuple[
         dict[str, float], dict[str, float], dict[str, float],
         dict[str, float], dict[str, float], dict[str, float],
-        dict[str, float],
+        dict[str, float], dict[str, float],
     ]:
         """DART 응답에서 주요 재무 항목 추출
 
@@ -809,7 +915,8 @@ class DartClient:
 
         Returns:
             (eps_map, net_income_map, equity_map, operating_cf_map,
-             revenue_map, operating_income_map, total_assets_map)
+             revenue_map, operating_income_map, total_assets_map,
+             total_liabilities_map)
         """
         eps_data: dict[str, dict[str, float]] = {}
         net_income_data: dict[str, dict[str, float]] = {}
@@ -818,6 +925,7 @@ class DartClient:
         revenue_data: dict[str, dict[str, float]] = {}
         operating_income_data: dict[str, dict[str, float]] = {}
         total_assets_data: dict[str, dict[str, float]] = {}
+        total_liabilities_data: dict[str, dict[str, float]] = {}
 
         for item in items:
             stock_code = (item.get("stock_code") or "").strip()
@@ -847,6 +955,8 @@ class DartClient:
                 operating_income_data.setdefault(ticker, {})[fs_div] = amount
             if account_nm in TOTAL_ASSETS_ACCOUNT_NAMES:
                 total_assets_data.setdefault(ticker, {})[fs_div] = amount
+            if account_nm in TOTAL_LIABILITIES_ACCOUNT_NAMES:
+                total_liabilities_data.setdefault(ticker, {})[fs_div] = amount
 
         def _pick_cfs(data: dict[str, dict[str, float]]) -> dict[str, float]:
             return {t: v.get("CFS", v.get("OFS", 0)) for t, v in data.items()}
@@ -858,16 +968,18 @@ class DartClient:
         revenue_map = _pick_cfs(revenue_data)
         operating_income_map = _pick_cfs(operating_income_data)
         total_assets_map = _pick_cfs(total_assets_data)
+        total_liabilities_map = _pick_cfs(total_liabilities_data)
 
         logger.info(
             f"DART 추출: EPS {len(eps_map)}, 순이익 {len(net_income_map)}, "
             f"자본 {len(equity_map)}, CF {len(operating_cf_map)}, "
             f"매출 {len(revenue_map)}, 영업이익 {len(operating_income_map)}, "
-            f"총자산 {len(total_assets_map)}개 종목"
+            f"총자산 {len(total_assets_map)}, 부채 {len(total_liabilities_map)}개 종목"
         )
         return (
             eps_map, net_income_map, equity_map, operating_cf_map,
             revenue_map, operating_income_map, total_assets_map,
+            total_liabilities_map,
         )
 
     @staticmethod

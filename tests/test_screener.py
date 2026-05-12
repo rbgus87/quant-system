@@ -200,3 +200,111 @@ class TestMultiFactorScreener:
         result = screener.screen("20240102")
 
         assert result.empty
+
+class TestSectorDiversification:
+    """_select_with_sector_diversification — S4-B 섹터 분산 제약"""
+
+    def setup_method(self) -> None:
+        MultiFactorScreener._factor_cache.clear()
+
+    @staticmethod
+    def _make_screener_with_sectors(sector_map: dict[str, str]) -> MultiFactorScreener:
+        screener = MultiFactorScreener.__new__(MultiFactorScreener)
+        screener.collector = MagicMock()
+        screener.composite = MagicMock()
+
+        def _fake_select_top(df, n=20):
+            return df.head(n).copy().assign(weight=lambda d: 1.0 / max(len(d), 1))
+        screener.composite.select_top = _fake_select_top
+
+        sector_df = pd.DataFrame(
+            {"sector_name": list(sector_map.values())},
+            index=list(sector_map.keys()),
+        )
+        screener.collector.storage.load_stock_sectors = (
+            lambda date, market="KOSPI": sector_df
+        )
+        return screener
+
+    def _composite_df(self, tickers: list[str]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"composite_score": [100.0 - i for i in range(len(tickers))]},
+            index=tickers,
+        )
+
+    def test_sector_overconcentration_replaced(self, monkeypatch) -> None:
+        from config.settings import settings as cfg
+        monkeypatch.setattr(cfg.universe, "sector_diversification_enabled", True)
+        monkeypatch.setattr(cfg.universe, "max_sector_count", 4)
+        monkeypatch.setattr(cfg.universe, "sector_exempt_names", ["기타"])
+
+        tickers = [f"T{i}" for i in range(8)]
+        sector_map = {
+            "T0": "화학", "T1": "화학", "T2": "화학",
+            "T3": "화학", "T4": "화학",
+            "T5": "전자IT", "T6": "유통", "T7": "건설",
+        }
+        screener = self._make_screener_with_sectors(sector_map)
+        composite = self._composite_df(tickers)
+
+        result = screener._select_with_sector_diversification(
+            composite, "20240630", n_stocks=5,
+        )
+        assert len(result) == 5
+        result_sectors = [sector_map[t] for t in result.index]
+        assert result_sectors.count("화학") == 4
+        assert "T4" not in result.index
+        assert "T5" in result.index
+
+    def test_no_overconcentration_unchanged(self, monkeypatch) -> None:
+        from config.settings import settings as cfg
+        monkeypatch.setattr(cfg.universe, "sector_diversification_enabled", True)
+        monkeypatch.setattr(cfg.universe, "max_sector_count", 4)
+        monkeypatch.setattr(cfg.universe, "sector_exempt_names", ["기타"])
+
+        tickers = [f"T{i}" for i in range(5)]
+        sector_map = {
+            "T0": "화학", "T1": "전자IT",
+            "T2": "유통", "T3": "건설", "T4": "자동차",
+        }
+        screener = self._make_screener_with_sectors(sector_map)
+        composite = self._composite_df(tickers)
+
+        result = screener._select_with_sector_diversification(
+            composite, "20240630", n_stocks=5,
+        )
+        assert len(result) == 5
+        assert list(result.index) == tickers
+
+    def test_etc_sector_exempt(self, monkeypatch) -> None:
+        from config.settings import settings as cfg
+        monkeypatch.setattr(cfg.universe, "sector_diversification_enabled", True)
+        monkeypatch.setattr(cfg.universe, "max_sector_count", 4)
+        monkeypatch.setattr(cfg.universe, "sector_exempt_names", ["기타"])
+
+        tickers = [f"T{i}" for i in range(6)]
+        sector_map = {t: "기타" for t in tickers}
+        screener = self._make_screener_with_sectors(sector_map)
+        composite = self._composite_df(tickers)
+
+        result = screener._select_with_sector_diversification(
+            composite, "20240630", n_stocks=6,
+        )
+        assert len(result) == 6
+
+    def test_insufficient_candidates(self, monkeypatch) -> None:
+        from config.settings import settings as cfg
+        monkeypatch.setattr(cfg.universe, "sector_diversification_enabled", True)
+        monkeypatch.setattr(cfg.universe, "max_sector_count", 2)
+        monkeypatch.setattr(cfg.universe, "sector_exempt_names", ["기타"])
+
+        tickers = [f"T{i}" for i in range(5)]
+        sector_map = {t: "화학" for t in tickers}
+        screener = self._make_screener_with_sectors(sector_map)
+        composite = self._composite_df(tickers)
+
+        result = screener._select_with_sector_diversification(
+            composite, "20240630", n_stocks=5,
+        )
+        assert len(result) == 2
+        assert list(result.index) == ["T0", "T1"]

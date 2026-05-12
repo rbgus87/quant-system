@@ -152,6 +152,30 @@ class TestFundamental:
         assert len(loaded) == 1
         assert loaded.loc["005930", "PBR"] == 1.5
 
+    def test_save_debt_ratio_columns(self, storage: DataStorage) -> None:
+        """S2: total_equity / total_liabilities / debt_ratio 저장·조회"""
+        df = pd.DataFrame(
+            {
+                "BPS": [50000.0],
+                "PER": [12.5],
+                "PBR": [1.4],
+                "EPS": [5600.0],
+                "DIV": [1.8],
+                "TOTAL_EQUITY": [3.61e14],
+                "TOTAL_LIABILITIES": [9.28e13],
+                "DEBT_RATIO": [25.7],
+            },
+            index=["005930"],
+        )
+        storage.save_fundamentals(date(2024, 1, 2), df)
+        loaded = storage.load_fundamentals(date(2024, 1, 2))
+        assert "TOTAL_EQUITY" in loaded.columns
+        assert "TOTAL_LIABILITIES" in loaded.columns
+        assert "DEBT_RATIO" in loaded.columns
+        assert loaded.loc["005930", "TOTAL_EQUITY"] == 3.61e14
+        assert loaded.loc["005930", "TOTAL_LIABILITIES"] == 9.28e13
+        assert loaded.loc["005930", "DEBT_RATIO"] == 25.7
+
 
 # ───────────────────────────────────────────────
 # FactorScore 테스트
@@ -361,3 +385,93 @@ class TestFundamentalQuarterly:
             ("2023", "11014"),
             ("2023", "11012"),
         ]
+
+
+# ───────────────────────────────────────────────
+# StockSector 테스트 (S4-A 섹터 인프라)
+# ───────────────────────────────────────────────
+
+
+class TestStockSector:
+    """upsert / load_stock_sectors (PIT 폴백) / get_finance_tickers"""
+
+    def test_upsert_and_load(self, storage: DataStorage) -> None:
+        rows = [
+            {"ticker": "005930", "date": "20240630",
+             "sector_name": "전기전자", "is_financial": False,
+             "data_source": "name_heuristic"},
+            {"ticker": "055550", "date": "20240630",
+             "sector_name": "금융업", "is_financial": True,
+             "data_source": "name_heuristic"},
+        ]
+        ins, upd = storage.upsert_stock_sectors(rows)
+        assert ins == 2
+        assert upd == 0
+
+        df = storage.load_stock_sectors("20240630")
+        assert len(df) == 2
+        assert bool(df.loc["055550", "is_financial"]) is True
+        assert bool(df.loc["005930", "is_financial"]) is False
+
+    def test_get_finance_tickers(self, storage: DataStorage) -> None:
+        rows = [
+            {"ticker": "005930", "date": "20240630",
+             "sector_name": "전기전자", "is_financial": False,
+             "data_source": "name_heuristic"},
+            {"ticker": "055550", "date": "20240630",
+             "sector_name": "금융업", "is_financial": True,
+             "data_source": "name_heuristic"},
+            {"ticker": "323410", "date": "20240630",
+             "sector_name": "은행", "is_financial": True,
+             "data_source": "name_heuristic"},
+        ]
+        storage.upsert_stock_sectors(rows)
+
+        fin = storage.get_finance_tickers("20240630")
+        assert set(fin) == {"055550", "323410"}
+
+    def test_pit_fallback_to_earlier_date(self, storage: DataStorage) -> None:
+        """정확한 date에 데이터 없으면 가장 가까운 이전 날짜 사용"""
+        rows = [
+            {"ticker": "055550", "date": "20240331",
+             "sector_name": "금융업", "is_financial": True,
+             "data_source": "name_heuristic"},
+        ]
+        storage.upsert_stock_sectors(rows)
+
+        # 20240630에 직접 데이터 없음 → 20240331 폴백
+        df = storage.load_stock_sectors("20240630")
+        assert len(df) == 1
+        assert bool(df.loc["055550", "is_financial"]) is True
+
+    def test_pit_too_old_excluded(self, storage: DataStorage) -> None:
+        """180일 초과 오래된 데이터는 제외"""
+        rows = [
+            {"ticker": "055550", "date": "20230101",
+             "sector_name": "금융업", "is_financial": True,
+             "data_source": "name_heuristic"},
+        ]
+        storage.upsert_stock_sectors(rows)
+
+        # 20240630은 20230101 기준 545일 후 → 180일 초과로 미반환
+        df = storage.load_stock_sectors("20240630")
+        assert df.empty
+
+    def test_upsert_updates_existing(self, storage: DataStorage) -> None:
+        """동일 (ticker, date) 두 번째 upsert는 갱신"""
+        rows1 = [{
+            "ticker": "055550", "date": "20240630",
+            "sector_name": "금융업", "is_financial": True,
+            "data_source": "name_heuristic",
+        }]
+        rows2 = [{
+            "ticker": "055550", "date": "20240630",
+            "sector_name": "은행", "is_financial": True,
+            "data_source": "krx_api",
+        }]
+        storage.upsert_stock_sectors(rows1)
+        ins, upd = storage.upsert_stock_sectors(rows2)
+        assert ins == 0
+        assert upd == 1
+        df = storage.load_stock_sectors("20240630")
+        assert df.loc["055550", "sector_name"] == "은행"

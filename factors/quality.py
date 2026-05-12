@@ -376,6 +376,74 @@ class QualityFactor:
         return filtered
 
     @staticmethod
+    def apply_debt_ratio_filter(
+        fundamentals: pd.DataFrame,
+        max_debt_ratio: float = 200.0,
+        exclude_capital_impairment: bool = True,
+    ) -> pd.DataFrame:
+        """부채비율 상한 필터 (S2).
+
+        Args:
+            fundamentals: index=ticker, DEBT_RATIO / TOTAL_EQUITY 컬럼 가능
+            max_debt_ratio: 부채비율 상한 (%, 기본 200)
+            exclude_capital_impairment: True면 자본잠식 종목(TOTAL_EQUITY <= 0)
+                추가 제거
+
+        규칙:
+          - DEBT_RATIO NaN → 통과 (데이터 없음, Step 1/3 동일 보수 정책)
+          - DEBT_RATIO > max_debt_ratio → 제거
+          - exclude_capital_impairment=True 이고 TOTAL_EQUITY <= 0 → 제거 (자본잠식)
+          - TOTAL_EQUITY NaN → 자본잠식 미판정 (통과)
+
+        Returns:
+            필터링된 fundamentals. 사유별 분해 logger.info.
+        """
+        if fundamentals.empty:
+            return fundamentals
+
+        before = len(fundamentals)
+        keep_mask = pd.Series(True, index=fundamentals.index)
+        removed_debt = 0
+        removed_capital = 0
+
+        # 1) 부채비율 > 상한
+        if "DEBT_RATIO" in fundamentals.columns and \
+                fundamentals["DEBT_RATIO"].notna().any():
+            dr = fundamentals["DEBT_RATIO"]
+            step_mask = dr.isna() | (dr <= max_debt_ratio)
+            removed_debt = int((keep_mask & ~step_mask).sum())
+            keep_mask &= step_mask
+        else:
+            logger.info(
+                "debt_ratio_filter: DEBT_RATIO 컬럼 부재/전체 NaN — "
+                "부채비율 단계 스킵"
+            )
+
+        # 2) 자본잠식
+        if exclude_capital_impairment:
+            if "TOTAL_EQUITY" in fundamentals.columns and \
+                    fundamentals["TOTAL_EQUITY"].notna().any():
+                te = fundamentals["TOTAL_EQUITY"]
+                step_mask = te.isna() | (te > 0)
+                removed_capital = int((keep_mask & ~step_mask).sum())
+                keep_mask &= step_mask
+            else:
+                logger.info(
+                    "debt_ratio_filter: TOTAL_EQUITY 컬럼 부재/전체 NaN — "
+                    "자본잠식 단계 스킵"
+                )
+
+        filtered = fundamentals[keep_mask]
+        total_removed = before - len(filtered)
+        if total_removed > 0:
+            logger.info(
+                f"부채비율 필터: {before} → {len(filtered)}개 종목 "
+                f"({total_removed}개 제거 — 부채비율>{max_debt_ratio:.0f}%: "
+                f"{removed_debt}, 자본잠식: {removed_capital})"
+            )
+        return filtered
+
+    @staticmethod
     def apply_consecutive_profit_filter(
         fundamentals: pd.DataFrame,
         storage,

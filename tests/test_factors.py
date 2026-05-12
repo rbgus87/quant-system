@@ -544,6 +544,144 @@ class TestFScore:
 # ───────────────────────────────────────────────
 
 
+class TestClassifyByKsic:
+    """factors.composite.classify_by_ksic — KSIC 코드 매핑 검증 (S4-A 보강)"""
+
+    def test_electronics_3digit(self) -> None:
+        from factors.composite import classify_by_ksic
+        # 삼성전자 induty_code='264' → "26" 전자·IT
+        sector, is_fin = classify_by_ksic("264")
+        assert sector == "전자·IT"
+        assert is_fin is False
+
+    def test_finance_5digit(self) -> None:
+        from factors.composite import classify_by_ksic
+        # 신한지주 induty_code='64992' → "64" 금융업
+        sector, is_fin = classify_by_ksic("64992")
+        assert sector == "금융업"
+        assert is_fin is True
+
+    def test_insurance(self) -> None:
+        from factors.composite import classify_by_ksic
+        # 삼성생명 induty_code='65110' → "65" 보험
+        sector, is_fin = classify_by_ksic("65110")
+        assert sector == "보험"
+        assert is_fin is True
+
+    def test_bank(self) -> None:
+        from factors.composite import classify_by_ksic
+        # 기업은행 induty_code='64121' → "64" 금융업
+        sector, is_fin = classify_by_ksic("64121")
+        assert sector == "금융업"
+        assert is_fin is True
+
+    def test_unknown_code_returns_etc(self) -> None:
+        from factors.composite import classify_by_ksic
+        sector, is_fin = classify_by_ksic("99999")
+        assert sector == "기타"
+        assert is_fin is False
+
+    def test_empty_code(self) -> None:
+        from factors.composite import classify_by_ksic
+        sector, is_fin = classify_by_ksic("")
+        assert sector is None
+        assert is_fin is False
+
+
+class TestClassifyFinancialByName:
+    """factors.composite.classify_financial_by_name 휴리스틱 검증 (S4-A)"""
+
+    def test_bank_in_name(self) -> None:
+        from factors.composite import classify_financial_by_name
+        is_fin, sec = classify_financial_by_name("024110", "기업은행")
+        assert is_fin
+        assert sec == "은행"
+
+    def test_securities_in_name(self) -> None:
+        from factors.composite import classify_financial_by_name
+        is_fin, sec = classify_financial_by_name("030200", "미래에셋증권")
+        assert is_fin
+        assert sec == "증권"
+
+    def test_life_insurance(self) -> None:
+        from factors.composite import classify_financial_by_name
+        is_fin, sec = classify_financial_by_name("032830", "삼성생명")
+        assert is_fin
+        assert sec == "보험"
+
+    def test_financial_holdings(self) -> None:
+        from factors.composite import classify_financial_by_name
+        is_fin, sec = classify_financial_by_name("105560", "KB금융지주")
+        assert is_fin
+        assert sec == "금융업"
+
+    def test_whitelist_shinhan(self) -> None:
+        """신한지주는 키워드 매칭 안 되지만 화이트리스트로 처리"""
+        from factors.composite import classify_financial_by_name
+        is_fin, sec = classify_financial_by_name("055550", "신한지주")
+        assert is_fin
+        assert sec == "금융업"
+
+    def test_non_financial(self) -> None:
+        from factors.composite import classify_financial_by_name
+        for ticker, name in [
+            ("005930", "삼성전자"),
+            ("000660", "SK하이닉스"),
+            ("035420", "NAVER"),
+        ]:
+            is_fin, sec = classify_financial_by_name(ticker, name)
+            assert not is_fin
+            assert sec is None
+
+
+class TestDebtRatioFilter:
+    """apply_debt_ratio_filter — 부채비율 상한 + 자본잠식 (S2)"""
+
+    def test_under_threshold_passes(self) -> None:
+        """부채비율 150% < max=200 → 통과"""
+        df = pd.DataFrame({
+            "DEBT_RATIO": [150.0],
+            "TOTAL_EQUITY": [1e10],
+        }, index=["A"])
+        result = QualityFactor.apply_debt_ratio_filter(
+            df, max_debt_ratio=200.0, exclude_capital_impairment=True,
+        )
+        assert "A" in result.index
+
+    def test_over_threshold_removed(self) -> None:
+        """부채비율 250% > max=200 → 제거"""
+        df = pd.DataFrame({
+            "DEBT_RATIO": [250.0],
+            "TOTAL_EQUITY": [1e10],
+        }, index=["B"])
+        result = QualityFactor.apply_debt_ratio_filter(
+            df, max_debt_ratio=200.0, exclude_capital_impairment=True,
+        )
+        assert "B" not in result.index
+
+    def test_nan_debt_ratio_passes(self) -> None:
+        """DEBT_RATIO=NaN → 통과 (데이터 없음, 보수 정책)"""
+        df = pd.DataFrame({
+            "DEBT_RATIO": [np.nan],
+            "TOTAL_EQUITY": [1e10],
+        }, index=["NODATA"])
+        result = QualityFactor.apply_debt_ratio_filter(
+            df, max_debt_ratio=200.0, exclude_capital_impairment=True,
+        )
+        assert "NODATA" in result.index
+
+    def test_capital_impairment_removed(self) -> None:
+        """자본잠식 (TOTAL_EQUITY <= 0) → 제거 (exclude_capital_impairment=True)"""
+        df = pd.DataFrame({
+            "DEBT_RATIO": [np.nan],  # 자본잠식이면 debt_ratio 계산 불가
+            "TOTAL_EQUITY": [-1e8],
+        }, index=["IMPAIRED"])
+        result = QualityFactor.apply_debt_ratio_filter(
+            df, max_debt_ratio=200.0, exclude_capital_impairment=True,
+        )
+        assert "IMPAIRED" not in result.index
+
+
 class TestConsecutiveProfitFilter:
     """apply_consecutive_profit_filter — 연속 흑자 N분기 필터 (Step 3)"""
 

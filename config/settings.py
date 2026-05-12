@@ -49,6 +49,15 @@ class UniverseConfig:
     exclude_finance: bool = True  # 금융주 제외
     min_listing_days: int = 365  # 상장 1년 미만 제외
     min_avg_trading_value: int = 100_000_000  # 20일 평균 거래대금 하한 (1억원)
+    # ── S4-B 섹터 분산 제약 ──
+    # 단일 섹터에 종목이 집중되지 않도록 max_sector_count 까지만 선정.
+    # "기타"(매핑 안 됨) 섹터는 제약 면제.
+    sector_diversification_enabled: bool = False
+    max_sector_count: int = 4         # 단일 섹터 최대 종목 수 (20종목 중 4 = 20%)
+    max_sector_pct: float = 0.25      # 단일 섹터 최대 비중 (참고용, 동일가중 기준)
+    sector_exempt_names: list[str] = field(
+        default_factory=lambda: ["기타"]
+    )
 
 
 @dataclass
@@ -93,6 +102,11 @@ class QualityConfig:
     consecutive_profit_metric: str = "operating_income"
     consecutive_profit_require_all: bool = True
     consecutive_profit_min_data: int = 3
+    # ── S2: 부채비율 상한 필터 ──
+    # 재무 안정성 필터. 자본잠식 종목도 함께 차단.
+    debt_ratio_filter_enabled: bool = False
+    max_debt_ratio: float = 200.0
+    exclude_capital_impairment: bool = True
 
 
 @dataclass

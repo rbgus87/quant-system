@@ -776,6 +776,93 @@ class KRXDataCollector:
 
         return pd.DataFrame(rows).set_index("ticker")
 
+    def get_stock_sectors(
+        self, date: str, market: str = "KOSPI",
+    ) -> pd.DataFrame:
+        """종목별 섹터(업종) 정보 수집 (S4-A).
+
+        KRX/pykrx 섹터 API가 2025-12-27 이용약관 변경으로 차단됨에 따라
+        종목명 휴리스틱(`factors.composite.classify_financial_by_name`)으로
+        is_financial 판정. sector_name도 매칭 키워드 기반.
+
+        ticker/이름 소스 우선순위:
+          1. KRX Open API `stk_isu_base_info` (ISU_SRT_CD + ISU_NM)
+          2. pykrx 폴백 (get_market_ticker_list + get_market_ticker_name)
+
+        Args:
+            date: 기준 날짜 (YYYYMMDD)
+            market: KOSPI / KOSDAQ
+
+        Returns:
+            DataFrame(index=ticker, columns=[name, sector_name, is_financial,
+                                              data_source])
+        """
+        from factors.composite import classify_financial_by_name
+
+        rows: list[dict] = []
+        source = "name_heuristic"
+
+        # 1차: KRX Open API
+        if self.krx_api:
+            try:
+                if market.upper() == "KOSDAQ":
+                    data = self.krx_api.get_kosdaq_stock_base_info(date)
+                else:
+                    data = self.krx_api.get_stock_base_info(date)
+                records = data.get("OutBlock_1", []) if data else []
+                for r in records:
+                    ticker = self._normalize_ticker(r.get("ISU_SRT_CD", ""))
+                    if not ticker:
+                        continue
+                    name = (r.get("ISU_NM") or r.get("ISU_ABBRV") or "").strip()
+                    is_fin, sector = classify_financial_by_name(ticker, name)
+                    rows.append({
+                        "ticker": ticker,
+                        "name": name,
+                        "sector_name": sector,
+                        "is_financial": is_fin,
+                        "data_source": source,
+                    })
+                if rows:
+                    logger.info(
+                        f"[{date}] 섹터 수집: {len(rows)}종목 (KRX API)"
+                    )
+            except Exception as e:
+                logger.warning(f"[{date}] KRX API 섹터 수집 실패: {e}")
+
+        # 2차: pykrx 폴백 (현재 KRX 차단으로 작동 안 할 가능성 높음)
+        if not rows:
+            try:
+                tickers = stock.get_market_ticker_list(date, market=market)
+                for t in tickers:
+                    try:
+                        name = stock.get_market_ticker_name(t)
+                    except Exception:
+                        name = ""
+                    is_fin, sector = classify_financial_by_name(t, name)
+                    rows.append({
+                        "ticker": t,
+                        "name": name,
+                        "sector_name": sector,
+                        "is_financial": is_fin,
+                        "data_source": "pykrx",
+                    })
+                logger.info(
+                    f"[{date}] 섹터 수집: {len(rows)}종목 (pykrx)"
+                )
+            except Exception as e:
+                logger.warning(f"[{date}] pykrx 섹터 수집 실패: {e}")
+
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows).set_index("ticker")
+        n_fin = int(df["is_financial"].sum())
+        logger.info(
+            f"[{date}] 섹터 판정: 금융 {n_fin}종목 / 비금융 {len(df) - n_fin}종목"
+        )
+        return df
+
     def get_ticker_name(self, ticker: str) -> str:
         """종목명 조회 (프리페치 캐시 우선, pykrx 폴백)
 

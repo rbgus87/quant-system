@@ -82,6 +82,10 @@ class Fundamental(Base):
     operating_income = Column(Float)   # 영업이익
     total_assets = Column(Float)       # 총자산
     opa = Column(Float)                # 영업이익/총자산 (OP/A)
+    # S2: 부채비율 필터용
+    total_equity = Column(Float)       # 자본총계
+    total_liabilities = Column(Float)  # 부채총계
+    debt_ratio = Column(Float)         # 부채비율 = 부채총계/자본총계 × 100 (%)
     data_source = Column(String(10), default="DART")  # 데이터 출처
 
 
@@ -181,6 +185,29 @@ class Trade(Base):
     is_paper = Column(Boolean, default=True)
     rebalance_date = Column(Date, nullable=True, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class StockSector(Base):
+    """종목별 섹터(업종) 정보 (S4-A 금융주 제외용)
+
+    업종 분류는 반기~연간 단위로 변경되므로 date 기준으로 관리.
+    KRX/pykrx 섹터 API 차단(2025-12-27) 이후 종목명 휴리스틱 매칭 사용.
+    """
+
+    __tablename__ = "stock_sector"
+    __table_args__ = (
+        UniqueConstraint("ticker", "date", name="uq_sector_ticker_date"),
+        Index("ix_sector_date", "date"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    date = Column(String(8), nullable=False)         # YYYYMMDD
+    sector_name = Column(String(50))                  # "은행"/"증권"/"보험"/"금융업" 등 또는 None
+    sector_code = Column(String(10))                  # 업종코드 (있으면)
+    is_financial = Column(Boolean, default=False, server_default="0")
+    data_source = Column(String(20))                  # "krx_api"/"pykrx"/"name_heuristic"
+    fetched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class DelistedStock(Base):
@@ -294,7 +321,11 @@ class DataStorage:
             logger.debug(f"market_cap 마이그레이션 스킵: {e}")
 
     def _migrate_fundamental_v2_columns(self) -> None:
-        """기존 DB에 v2.0 fundamental 확장 컬럼이 없으면 추가"""
+        """기존 DB에 v2.0 fundamental 확장 컬럼이 없으면 추가.
+
+        S2 (2026-05-12): total_equity / total_liabilities / debt_ratio 추가.
+        모두 nullable. 기존 행 호환 (DB_SCHEMA_POLICY.md 준수).
+        """
         v2_cols = {
             "psr": "FLOAT",
             "revenue": "FLOAT",
@@ -302,6 +333,10 @@ class DataStorage:
             "total_assets": "FLOAT",
             "opa": "FLOAT",
             "data_source": "VARCHAR(10) DEFAULT 'DART'",
+            # S2 (2026-05-12)
+            "total_equity": "FLOAT",
+            "total_liabilities": "FLOAT",
+            "debt_ratio": "FLOAT",
         }
         try:
             with self.engine.connect() as conn:
@@ -606,10 +641,15 @@ class DataStorage:
             "PSR": "psr", "REVENUE": "revenue",
             "OPERATING_INCOME": "operating_income",
             "TOTAL_ASSETS": "total_assets", "OPA": "opa",
+            "TOTAL_EQUITY": "total_equity",
+            "TOTAL_LIABILITIES": "total_liabilities",
+            "DEBT_RATIO": "debt_ratio",
             "DATA_SOURCE": "data_source",
         }
         all_db_cols = ["bps", "per", "pbr", "pcr", "eps", "div",
-                       "psr", "revenue", "operating_income", "total_assets", "opa", "data_source"]
+                       "psr", "revenue", "operating_income", "total_assets", "opa",
+                       "total_equity", "total_liabilities", "debt_ratio",
+                       "data_source"]
         for old, new in col_map.items():
             if old in tmp.columns:
                 tmp[new] = tmp[old]
@@ -643,7 +683,10 @@ class DataStorage:
         sql = (
             "SELECT ticker, bps AS BPS, per AS PER, pbr AS PBR, pcr AS PCR, eps AS EPS, div AS DIV,"
             " psr AS PSR, revenue AS REVENUE, operating_income AS OPERATING_INCOME,"
-            " total_assets AS TOTAL_ASSETS, opa AS OPA, data_source AS DATA_SOURCE "
+            " total_assets AS TOTAL_ASSETS, opa AS OPA,"
+            " total_equity AS TOTAL_EQUITY, total_liabilities AS TOTAL_LIABILITIES,"
+            " debt_ratio AS DEBT_RATIO,"
+            " data_source AS DATA_SOURCE "
             "FROM fundamental WHERE date = :dt AND (market = :market OR market IS NULL)"
         )
         with self.engine.connect() as conn:
@@ -1063,6 +1106,126 @@ class DataStorage:
                 columns=["ticker", "name", "delist_date", "reason", "category", "memo"]
             )
         return pd.DataFrame(rows)
+
+    # ───────────────────────────────────────────────
+    # 종목 섹터 (S4-A 금융주 제외용)
+    # ───────────────────────────────────────────────
+
+    def upsert_stock_sectors(self, rows: list[dict]) -> tuple[int, int]:
+        """종목별 섹터 정보 upsert.
+
+        Args:
+            rows: [{"ticker", "date", "sector_name", "sector_code",
+                    "is_financial", "data_source"}]
+
+        Returns:
+            (신규 추가 건수, 갱신 건수)
+        """
+        if not rows:
+            return 0, 0
+
+        keys = [(r["ticker"], r["date"]) for r in rows]
+        existing_keys: set[tuple[str, str]] = set()
+        with self.engine.connect() as conn:
+            chunk_size = 400
+            for i in range(0, len(keys), chunk_size):
+                chunk = keys[i:i + chunk_size]
+                placeholders = ", ".join(
+                    f"(:t{j}, :d{j})" for j in range(len(chunk))
+                )
+                params: dict = {}
+                for j, (t, d) in enumerate(chunk):
+                    params[f"t{j}"] = t
+                    params[f"d{j}"] = d
+                sql = (
+                    f"SELECT ticker, date FROM stock_sector "
+                    f"WHERE (ticker, date) IN ({placeholders})"
+                )
+                for row in conn.execute(text(sql), params):
+                    existing_keys.add((row[0], row[1]))
+
+        inserted = sum(1 for k in keys if k not in existing_keys)
+        updated = len(keys) - inserted
+
+        normalized: list[dict] = []
+        for r in rows:
+            normalized.append({
+                "ticker": r["ticker"],
+                "date": str(r["date"]),
+                "sector_name": r.get("sector_name"),
+                "sector_code": r.get("sector_code"),
+                "is_financial": bool(r.get("is_financial", False)),
+                "data_source": r.get("data_source"),
+                "fetched_at": datetime.now(timezone.utc),
+            })
+        self._upsert(
+            StockSector, normalized,
+            conflict_cols=["ticker", "date"],
+            update_cols=[
+                "sector_name", "sector_code", "is_financial",
+                "data_source", "fetched_at",
+            ],
+        )
+        logger.debug(
+            f"섹터 upsert: {len(rows)}건 (신규 {inserted}, 갱신 {updated})"
+        )
+        return inserted, updated
+
+    def load_stock_sectors(
+        self, date: str, market: str = "KOSPI",
+    ) -> pd.DataFrame:
+        """특정 날짜 기준 전체 종목 섹터 정보 조회.
+
+        정확한 date에 데이터 없으면 가장 가까운 이전 날짜 사용 (최대 180일).
+
+        Args:
+            date: 기준일 (YYYYMMDD)
+            market: KOSPI/KOSDAQ (현재는 mark 무시, 향후 market 컬럼 추가 시 사용)
+
+        Returns:
+            DataFrame(index=ticker, columns=[sector_name, sector_code, is_financial, date])
+        """
+        from datetime import datetime as _dt, timedelta as _td
+
+        try:
+            target_dt = _dt.strptime(str(date), "%Y%m%d")
+        except ValueError:
+            logger.warning(f"load_stock_sectors: 잘못된 date={date}")
+            return pd.DataFrame()
+
+        min_dt = (target_dt - _td(days=180)).strftime("%Y%m%d")
+
+        # 가장 가까운 이전 날짜를 가진 ticker별 한 행 (sqlite max trick)
+        sql = (
+            "SELECT s.ticker, s.date, s.sector_name, s.sector_code, s.is_financial "
+            "FROM stock_sector s "
+            "WHERE s.date = ("
+            "  SELECT MAX(date) FROM stock_sector s2 "
+            "  WHERE s2.ticker = s.ticker "
+            "  AND s2.date <= :dt AND s2.date >= :min_dt"
+            ") "
+            "AND s.date <= :dt AND s.date >= :min_dt"
+        )
+        with self.engine.connect() as conn:
+            df = pd.read_sql(
+                text(sql), conn,
+                params={"dt": str(date), "min_dt": min_dt},
+            )
+
+        if df.empty:
+            return pd.DataFrame()
+
+        df["is_financial"] = df["is_financial"].astype(bool)
+        return df.set_index("ticker")
+
+    def get_finance_tickers(
+        self, date: str, market: str = "KOSPI",
+    ) -> list[str]:
+        """특정 날짜 기준 금융주 티커 목록 반환 (is_financial=True)."""
+        df = self.load_stock_sectors(date, market=market)
+        if df.empty:
+            return []
+        return df[df["is_financial"]].index.tolist()
 
     # ───────────────────────────────────────────────
     # 분기 재무 시계열 (Step 3 연속 흑자 필터용)

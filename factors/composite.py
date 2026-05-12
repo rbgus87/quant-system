@@ -7,8 +7,160 @@ from factors.utils import weighted_average_nan_safe
 
 logger = logging.getLogger(__name__)
 
-# 금융주 섹터명 (WICS 기준)
-FINANCE_SECTORS = {"은행", "증권", "보험", "기타금융", "다각화된금융"}
+# 금융주 섹터명 (WICS + KRX 표준 통합)
+# KRX/pykrx/FDR 섹터 API 모두 차단(2025-12-27) → 종목명 휴리스틱 매칭 사용
+FINANCE_SECTORS = {
+    "은행", "증권", "보험", "기타금융", "다각화된금융",
+    # KRX/FDR 표준 업종명 확장
+    "금융업", "금융", "보험업", "기타 금융",
+}
+
+# 종목명 휴리스틱 매칭용 — (키워드, 섹터명)
+# 우선순위 순서 (먼저 매칭되는 게 채택)
+FINANCIAL_NAME_PATTERNS: list[tuple[str, str]] = [
+    ("금융지주", "금융업"),
+    ("은행", "은행"),
+    ("증권", "증권"),
+    ("손해보험", "보험"),
+    ("화재해상", "보험"),
+    ("화재", "보험"),
+    ("해상", "보험"),
+    ("생명", "보험"),
+    ("보험", "보험"),
+    ("카드", "금융업"),
+    ("캐피탈", "금융업"),
+    ("파이낸셜", "금융업"),
+]
+
+# 휴리스틱 키워드만으로 잡히지 않는 명시적 금융주 화이트리스트
+# (종목명에 "은행"/"증권" 등 키워드가 없는 케이스)
+FINANCIAL_TICKER_WHITELIST: dict[str, str] = {
+    "055550": "금융업",  # 신한지주 (키워드 매칭 안 됨)
+    "086790": "금융업",  # 하나금융지주 (지주 매칭 보조)
+    "138930": "금융업",  # BNK금융지주
+    "175330": "금융업",  # JB금융지주
+    "139130": "금융업",  # DGB금융지주
+    "316140": "금융업",  # 우리금융지주
+    "323410": "은행",    # 카카오뱅크
+}
+
+
+# KSIC 상위 2자리 → 투자용 섹터 매핑 (15~20개)
+# 출처: 통계청 한국표준산업분류 (KSIC) 중분류 + DART induty_code
+KSIC_TO_SECTOR: dict[str, str] = {
+    # 1차 산업
+    "01": "농림·어업", "02": "농림·어업", "03": "농림·어업",
+    # 광업
+    "05": "광업", "06": "광업", "07": "광업", "08": "광업",
+    # 음식료
+    "10": "식품", "11": "음료", "12": "담배",
+    # 섬유·의류·가죽
+    "13": "섬유·의류", "14": "섬유·의류", "15": "가죽·신발",
+    # 제지·인쇄
+    "17": "제지·목재", "18": "인쇄",
+    # 석유·화학·의약
+    "19": "석유·화학", "20": "석유·화학", "21": "의약품",
+    # 고무·플라스틱·비금속
+    "22": "고무·플라스틱", "23": "비금속광물",
+    # 금속
+    "24": "철강·금속", "25": "철강·금속",
+    # 전자·전기·기계
+    "26": "전자·IT", "27": "전자·IT", "28": "전기장비",
+    "29": "기계", "30": "자동차",
+    "31": "운송장비", "32": "가구·기타", "33": "기타 제조",
+    # 에너지
+    "35": "에너지·유틸리티", "36": "에너지·유틸리티",
+    "37": "에너지·유틸리티", "38": "에너지·유틸리티",
+    "39": "에너지·유틸리티",
+    # 건설
+    "41": "건설", "42": "건설", "43": "건설",
+    # 유통
+    "45": "유통", "46": "유통", "47": "유통",
+    # 운수·물류
+    "49": "운수·물류", "50": "운수·물류",
+    "51": "운수·물류", "52": "운수·물류",
+    # 숙박·음식
+    "55": "숙박·음식", "56": "숙박·음식",
+    # 미디어·통신
+    "58": "출판·미디어", "59": "출판·미디어",
+    "60": "방송·통신", "61": "방송·통신",
+    # IT 서비스
+    "62": "IT서비스", "63": "IT서비스",
+    # 금융 (전부 is_financial)
+    "64": "금융업", "65": "보험", "66": "금융업",
+    # 부동산·전문서비스
+    "68": "부동산",
+    "70": "전문서비스", "71": "전문서비스", "72": "전문서비스",
+    "73": "전문서비스", "74": "전문서비스", "75": "전문서비스",
+    # 공공
+    "84": "공공행정", "85": "교육",
+    # 보건·의료
+    "86": "보건·의료", "87": "보건·의료",
+    # 예술·여가
+    "90": "예술·엔터", "91": "예술·엔터",
+}
+
+# KSIC 매핑 결과가 금융주로 판정되는 섹터명
+KSIC_FINANCIAL_SECTORS: set[str] = {"금융업", "보험"}
+
+
+def classify_by_ksic(induty_code: str) -> tuple[str | None, bool]:
+    """DART induty_code → (sector_name, is_financial) 변환.
+
+    induty_code는 KSIC 5자리(또는 3자리). 상위 2자리로 매핑.
+    매핑 실패 시 ("기타", False) 반환.
+
+    Args:
+        induty_code: DART 기업개황 induty_code 필드 (예: "26410", "64992")
+
+    Returns:
+        (sector_name, is_financial)
+        매핑 안 되면 ("기타", False)
+        induty_code 빈 값이면 (None, False)
+    """
+    if not induty_code:
+        return None, False
+
+    code = str(induty_code).strip()
+    if not code:
+        return None, False
+
+    # 상위 2자리 (3자리 코드면 zfill 처리)
+    prefix = code[:2] if len(code) >= 2 else code.zfill(2)
+    sector = KSIC_TO_SECTOR.get(prefix)
+    if sector is None:
+        return "기타", False
+    is_fin = sector in KSIC_FINANCIAL_SECTORS
+    return sector, is_fin
+
+
+def classify_financial_by_name(
+    ticker: str, name: str,
+) -> tuple[bool, str | None]:
+    """종목코드+이름 기반 금융주 판정 (휴리스틱).
+
+    KRX/pykrx 섹터 API 차단 환경에서 종목명 키워드 매칭으로 금융주 식별.
+    KOSPI 금융주 약 50개 종목에 대해 ~95% 정확도 추정.
+
+    Args:
+        ticker: 종목코드
+        name: 종목명 (예: "신한지주", "삼성생명")
+
+    Returns:
+        (is_financial, sector_name) — sector_name None이면 비금융
+    """
+    # 1. 화이트리스트 우선 (키워드 매칭 미스 보완)
+    if ticker in FINANCIAL_TICKER_WHITELIST:
+        return True, FINANCIAL_TICKER_WHITELIST[ticker]
+
+    # 2. 종목명 키워드 매칭
+    if not name:
+        return False, None
+    for keyword, sector in FINANCIAL_NAME_PATTERNS:
+        if keyword in name:
+            return True, sector
+
+    return False, None
 
 
 class MultiFactorComposite:

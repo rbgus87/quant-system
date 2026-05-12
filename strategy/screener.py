@@ -107,6 +107,25 @@ class MultiFactorScreener:
         market = market or settings.universe.market
         n_stocks = n_stocks or settings.portfolio.n_stocks
 
+        # S4-A: finance_tickers 자동 감지 (외부 주입 없으면 DB에서 조회)
+        # exclude_finance 설정이 true이고 stock_sector 데이터가 있으면 자동 적용.
+        if finance_tickers is None and settings.universe.exclude_finance:
+            try:
+                finance_tickers = self.collector.storage.get_finance_tickers(date)
+                if finance_tickers:
+                    logger.info(
+                        f"[{date}] 금융주 자동 감지: {len(finance_tickers)}종목 "
+                        f"(stock_sector DB)"
+                    )
+                else:
+                    logger.warning(
+                        f"[{date}] stock_sector DB 비어있음 — 금융주 제외 미적용. "
+                        f"`scripts/backfill_sectors.py` 실행 권장."
+                    )
+            except Exception as e:
+                logger.warning(f"[{date}] 금융주 자동 감지 실패: {e}")
+                finance_tickers = None
+
         try:
             # 0. 팩터 스코어 캐시 확인 (인메모리)
             # 캐시 키에 팩터 가중치를 포함하여 프리셋 간 오염 방지
@@ -130,10 +149,17 @@ class MultiFactorScreener:
                 str(settings.quality.consecutive_profit_metric),
                 bool(settings.quality.consecutive_profit_require_all),
                 int(settings.quality.consecutive_profit_min_data),
+                bool(settings.quality.debt_ratio_filter_enabled),
+                float(settings.quality.max_debt_ratio),
+                bool(settings.quality.exclude_capital_impairment),
+                bool(settings.universe.sector_diversification_enabled),
+                int(settings.universe.max_sector_count),
             )
             if cache_key in MultiFactorScreener._factor_cache:
                 composite_df = MultiFactorScreener._factor_cache[cache_key]
-                portfolio = self.composite.select_top(composite_df, n=n_stocks)
+                portfolio = self._select_with_sector_diversification(
+                    composite_df, date, n_stocks,
+                )
                 logger.debug(f"[{date}] 팩터 캐시 히트 (메모리)")
                 return portfolio
 
@@ -309,6 +335,14 @@ class MultiFactorScreener:
                         min_data_quarters=settings.quality.consecutive_profit_min_data,
                     )
 
+                # S2: 부채비율 상한 필터 (재무 안정성 + 자본잠식 차단)
+                if settings.quality.debt_ratio_filter_enabled:
+                    filtered_fund = self.quality_factor.apply_debt_ratio_filter(
+                        filtered_fund,
+                        max_debt_ratio=settings.quality.max_debt_ratio,
+                        exclude_capital_impairment=settings.quality.exclude_capital_impairment,
+                    )
+
                 value_score = self.value_factor.calculate(filtered_fund)
                 quality_score = self.quality_factor.calculate(filtered_fund)
 
@@ -356,7 +390,9 @@ class MultiFactorScreener:
             # 팩터 스코어 인메모리 캐시 저장 (maxsize 제한, 동일 프로세스 내 재활용)
             self._cache_put(cache_key, composite_df)
 
-            portfolio = self.composite.select_top(composite_df, n=n_stocks)
+            portfolio = self._select_with_sector_diversification(
+                composite_df, date, n_stocks,
+            )
 
             logger.info(f"[{date}] 스크리닝 완료: {len(portfolio)}개 종목 선정")
             return portfolio
@@ -364,6 +400,99 @@ class MultiFactorScreener:
         except Exception as e:
             logger.error(f"[{date}] 스크리닝 실패: {e}", exc_info=True)
             return pd.DataFrame()
+
+    def _select_with_sector_diversification(
+        self,
+        composite_df: pd.DataFrame,
+        date: str,
+        n_stocks: int,
+    ) -> pd.DataFrame:
+        """섹터 분산 제약 적용 + select_top (S4-B).
+
+        composite_score 내림차순으로 후보를 순회하면서 각 섹터의 종목 수를
+        `max_sector_count` 이하로 제한. 면제 섹터(`sector_exempt_names`)는
+        제약 무시.
+
+        Args:
+            composite_df: 복합 스코어 DataFrame (composite_score 내림차순 권장)
+            date: 기준일 (YYYYMMDD) — 섹터 매핑 조회용
+            n_stocks: 선정 종목 수
+
+        Returns:
+            섹터 분산 적용된 portfolio_df (index=ticker, columns=composite_score, weight 포함)
+        """
+        if composite_df is None or composite_df.empty:
+            return self.composite.select_top(composite_df, n=n_stocks)
+
+        if not settings.universe.sector_diversification_enabled:
+            return self.composite.select_top(composite_df, n=n_stocks)
+
+        # 섹터 매핑 조회
+        try:
+            sector_df = self.collector.storage.load_stock_sectors(date)
+        except Exception as e:
+            logger.warning(
+                f"[{date}] 섹터 매핑 조회 실패 → 분산 미적용: {e}"
+            )
+            return self.composite.select_top(composite_df, n=n_stocks)
+
+        if sector_df.empty:
+            logger.warning(
+                f"[{date}] 섹터 데이터 없음 → 분산 미적용 "
+                f"(`scripts/backfill_sectors.py` 실행 권장)"
+            )
+            return self.composite.select_top(composite_df, n=n_stocks)
+
+        sector_map: dict[str, str] = sector_df["sector_name"].to_dict()
+        max_count = int(settings.universe.max_sector_count)
+        exempt = set(settings.universe.sector_exempt_names)
+
+        # composite_score 내림차순 정렬
+        if "composite_score" in composite_df.columns:
+            candidates = composite_df.sort_values(
+                "composite_score", ascending=False,
+            )
+        else:
+            candidates = composite_df
+
+        sector_counts: dict[str, int] = {}
+        selected: list[str] = []
+        for ticker in candidates.index:
+            if len(selected) >= n_stocks:
+                break
+            sector = sector_map.get(ticker) or "기타"
+            if sector in exempt:
+                # 제약 면제
+                selected.append(ticker)
+                continue
+            cur = sector_counts.get(sector, 0)
+            if cur < max_count:
+                selected.append(ticker)
+                sector_counts[sector] = cur + 1
+
+        if not selected:
+            return pd.DataFrame()
+
+        portfolio = candidates.loc[selected].copy()
+        # 동일가중 weight 재계산
+        n = len(portfolio)
+        portfolio["weight"] = 1.0 / n if n > 0 else 0.0
+
+        # 로깅: 섹터 분포
+        final_dist = (
+            sector_counts.copy() if sector_counts else {}
+        )
+        # 면제 섹터 카운트도 별도 추적
+        exempt_n = sum(
+            1 for t in selected
+            if (sector_map.get(t) or "기타") in exempt
+        )
+        logger.info(
+            f"[{date}] 섹터 분산: {n}종목 선정 "
+            f"(max_count={max_count}, exempt={exempt_n}, "
+            f"top sector counts={dict(sorted(final_dist.items(), key=lambda x: -x[1])[:5])})"
+        )
+        return portfolio
 
     def _apply_volatility_filter(
         self, tickers: list[str], date: str

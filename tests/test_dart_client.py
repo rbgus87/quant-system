@@ -211,8 +211,9 @@ class TestExtractFinancialItems:
         assert eps_map["035420"] == 5000.0
 
     def test_empty_items(self, dart_client):
+        # 8-tuple: eps/net_income/equity/op_cf/revenue/op_income/total_assets/total_liabilities
         result = dart_client._extract_financial_items([])
-        assert len(result) == 7
+        assert len(result) == 8
         for m in result:
             assert len(m) == 0
 
