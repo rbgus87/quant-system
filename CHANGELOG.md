@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+### 변경 — Step 1 채택 (2026-05-12)
+
+- POLICY.md: 5조건 #2 재정의 — alpha 개선 경로 (b) 추가
+- config: operating_quality_filter_enabled 3개 프리셋 활성화 (Step 1 채택)
+
+### 추가 — Step 1 본업 품질 필터
+
+- **feat(quality): operating quality filter (Step 1)**
+  - `QualityFactor.apply_operating_quality_filter` 신규 (`factors/quality.py`) — 영업이익/매출/영업CF(PCR 양수) 3단계 양수 필터
+  - `config/settings.py` `QualityConfig` 4 필드 추가 (`operating_quality_filter_enabled` 등, 기본 False)
+  - `strategy/screener.py` F-Score 필터 직후 호출 + 캐시 키 신규 4필드 반영
+  - `config/config.yaml` 프리셋 A/B/C 모두에 4 라인 추가 (모두 false 유지 — 검증 후 사용자 확인 후 활성화)
+  - `scripts/backtest_quality_filter_step1.py` — A(OFF) vs B(ON) 2017-2024 비교 백테스트 + POLICY.md 5조건 자동 평가 + 005620 회피 검증
+  - `docs/reports/quality_filter_step1_analysis.md` — 백테스트 결과 보고서 자동 생성
+  - 단위 테스트 3건 추가 (`tests/test_factors.py::TestOperatingQualityFilter`)
+  - 동기: docs/case_studies/005620_lesson.md — 일회성 이익 가치함정 사전 차단 목적
+
 ### Milestone — 2026-04-15: 005620 분석 시리즈 완료, 폐지 방어 정책 확정
 
 **결론**: Baseline (현 설정) + `risk_guard` 다층 방어가 최적. 추가 방어 장치 모두 부적합 판정.

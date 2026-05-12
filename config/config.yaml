@@ -94,6 +94,11 @@ presets:
       strict_reporting_lag: false           # true 시 CAGR -12.18%p (lag_impact_analysis.md)
       eps_flip_filter_enabled: false        # true 시 CAGR -7.08%p (alternative_defense_comparison.md)
       halt_history_filter_enabled: false    # true 시 005620 회피 실패 (효과 없음)
+      # ── Step 1 본업 품질 필터 ──
+      operating_quality_filter_enabled: true   # Step 1 채택 (2026-05-12, POLICY #2(b))
+      require_op_income_positive: true
+      require_revenue_positive: true
+      require_op_cf_positive_if_available: true
     volatility:
       max_percentile: 70.0
     market_regime:
@@ -132,6 +137,11 @@ presets:
       strict_reporting_lag: false           # true 시 CAGR -12.18%p (lag_impact_analysis.md)
       eps_flip_filter_enabled: false        # true 시 CAGR -7.08%p (alternative_defense_comparison.md)
       halt_history_filter_enabled: false    # true 시 005620 회피 실패 (효과 없음)
+      # ── Step 1 본업 품질 필터 ──
+      operating_quality_filter_enabled: true   # Step 1 채택 (2026-05-12, POLICY #2(b))
+      require_op_income_positive: true
+      require_revenue_positive: true
+      require_op_cf_positive_if_available: true
     volatility:
       max_percentile: 50.0
     market_regime:
@@ -170,6 +180,11 @@ presets:
       strict_reporting_lag: false           # true 시 CAGR -12.18%p (lag_impact_analysis.md)
       eps_flip_filter_enabled: false        # true 시 CAGR -7.08%p (alternative_defense_comparison.md)
       halt_history_filter_enabled: false    # true 시 005620 회피 실패 (효과 없음)
+      # ── Step 1 본업 품질 필터 ──
+      operating_quality_filter_enabled: true   # Step 1 채택 (2026-05-12, POLICY #2(b))
+      require_op_income_positive: true
+      require_revenue_positive: true
+      require_op_cf_positive_if_available: true
     volatility:
       max_percentile: 70.0
     market_regime:
