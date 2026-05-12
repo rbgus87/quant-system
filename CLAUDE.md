@@ -173,6 +173,12 @@ SLIPPAGE = 0.001       # 0.10% (금액 프리셋이 상향 가능)
   - 동일 날짜/종목/타입 중복 경고 방지
 - **설정**: `config.yaml` → `monitoring` 섹션 (RiskGuardConfig 중첩 dataclass)
 
+## DB 스키마 변경 시 필독
+
+dev/prod 분리 운용 중 (exe는 빌드 시점 freeze).
+스키마 변경은 **추가만 허용**, 삭제/타입변경 금지.
+상세: `docs/DB_SCHEMA_POLICY.md`
+
 ## 알려진 이슈 / 주의사항
 
 - **KRX API 변경 (2025-12-27)**: pykrx 배치 API 차단됨. multi-tier 폴백 사용 중

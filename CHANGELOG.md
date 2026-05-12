@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### 추가 — DB 스키마 변경 정책 (2026-05-12)
+
+- docs: DB 스키마 변경 정책 (dev/prod 분리 워크플로우)
+  - `docs/DB_SCHEMA_POLICY.md` 신규 — 추가만 허용, 삭제/타입변경 금지
+  - `CLAUDE.md` 에 한 줄 요약 + 링크 추가
+
 ### 추가 — Step 3-B/C 연속 흑자 4분기 필터 + 백테스트 (미채택)
 
 - **feat(quality): consecutive profit filter (Step 3-B)** — 운용 활성화 보류
