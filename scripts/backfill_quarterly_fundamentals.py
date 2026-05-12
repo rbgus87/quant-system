@@ -203,14 +203,14 @@ def main() -> int:
             label = REPRT_LABEL[reprt]
             tag = f"[{processed}/{total_pairs}] {year_s} {label}"
 
-            # idempotent skip
+            # idempotent skip — 임계값 최소 1로 보장 (단일 종목 백필 시 0 = 항상 skip 버그 방지)
             if not args.force:
                 existing = count_existing(storage, year_s, reprt)
-                threshold = int(len(mappable) * SKIP_HIT_RATIO)
+                threshold = max(1, int(len(mappable) * SKIP_HIT_RATIO))
                 if existing >= threshold:
                     logger.info(
                         f"{tag} skip — 기존 {existing}/{len(mappable)} "
-                        f"(>= {SKIP_HIT_RATIO:.0%})"
+                        f"(>= {SKIP_HIT_RATIO:.0%}, 임계 {threshold})"
                     )
                     continue
 
