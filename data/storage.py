@@ -85,6 +85,36 @@ class Fundamental(Base):
     data_source = Column(String(10), default="DART")  # 데이터 출처
 
 
+class FundamentalQuarterly(Base):
+    """분기별 재무 시계열 (Step 3 연속 흑자 필터용).
+
+    동일 ticker에 대해 (bsns_year, reprt_code) 키로 분기 데이터를 누적한다.
+    Fundamental 테이블은 단일 시점 데이터(스크리닝 기준일 1개)인 반면,
+    본 테이블은 분기 시계열을 저장하여 연속 흑자 검증을 가능케 한다.
+
+    EPS, 영업이익, 매출만 저장 (현재 필터 목적상 최소 컬럼).
+    """
+
+    __tablename__ = "fundamental_quarterly"
+    __table_args__ = (
+        UniqueConstraint(
+            "ticker", "bsns_year", "reprt_code",
+            name="uq_fundq_ticker_year_reprt",
+        ),
+        Index("ix_fundq_ticker_period", "ticker", "bsns_year", "reprt_code"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(10), nullable=False, index=True)
+    bsns_year = Column(String(4), nullable=False)      # "2024"
+    reprt_code = Column(String(5), nullable=False)     # 11013/11012/11014/11011
+    eps = Column(Float)
+    operating_income = Column(Float)
+    revenue = Column(Float)
+    fs_div = Column(String(3))                          # CFS / OFS
+    fetched_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class MarketCap(Base):
     """시가총액 데이터"""
 
@@ -1033,3 +1063,213 @@ class DataStorage:
                 columns=["ticker", "name", "delist_date", "reason", "category", "memo"]
             )
         return pd.DataFrame(rows)
+
+    # ───────────────────────────────────────────────
+    # 분기 재무 시계열 (Step 3 연속 흑자 필터용)
+    # ───────────────────────────────────────────────
+
+    # 보고서 코드 → 분기 인덱스 (시간순 정렬용, 1=Q1, 2=Half/Q2, 3=Q3, 4=Annual/Q4)
+    _REPRT_QUARTER_IDX: dict[str, int] = {
+        "11013": 1,  # Q1
+        "11012": 2,  # Half
+        "11014": 3,  # Q3
+        "11011": 4,  # Annual (Q4)
+    }
+
+    # 보고서 코드 → 분기 종료월/일 (period_end 정렬용)
+    _REPRT_PERIOD_END: dict[str, tuple[int, int]] = {
+        "11013": (3, 31),
+        "11012": (6, 30),
+        "11014": (9, 30),
+        "11011": (12, 31),
+    }
+
+    def upsert_fundamentals_quarterly(self, rows: list[dict]) -> tuple[int, int]:
+        """분기별 재무 시계열 upsert.
+
+        Args:
+            rows: [{"ticker", "bsns_year", "reprt_code", "eps",
+                    "operating_income", "revenue", "fs_div"}]
+
+        Returns:
+            (신규 추가 건수, 업데이트 건수)
+        """
+        if not rows:
+            return 0, 0
+
+        # 기존 키 조회 (insert/update 분리 카운팅)
+        keys = [(r["ticker"], r["bsns_year"], r["reprt_code"]) for r in rows]
+        existing_keys: set[tuple[str, str, str]] = set()
+        with self.engine.connect() as conn:
+            chunk_size = 300  # SQLite 변수 제한 대비
+            for i in range(0, len(keys), chunk_size):
+                chunk = keys[i:i + chunk_size]
+                placeholders = ", ".join(
+                    f"(:t{j}, :y{j}, :r{j})" for j in range(len(chunk))
+                )
+                params: dict = {}
+                for j, (t, y, r) in enumerate(chunk):
+                    params[f"t{j}"] = t
+                    params[f"y{j}"] = y
+                    params[f"r{j}"] = r
+                sql = (
+                    f"SELECT ticker, bsns_year, reprt_code FROM fundamental_quarterly "
+                    f"WHERE (ticker, bsns_year, reprt_code) IN ({placeholders})"
+                )
+                result = conn.execute(text(sql), params)
+                for row in result:
+                    existing_keys.add((row[0], row[1], row[2]))
+
+        inserted = sum(
+            1 for k in keys if k not in existing_keys
+        )
+        updated = len(keys) - inserted
+
+        # 정규화된 row만 추출
+        normalized: list[dict] = []
+        for r in rows:
+            normalized.append({
+                "ticker": r["ticker"],
+                "bsns_year": str(r["bsns_year"]),
+                "reprt_code": str(r["reprt_code"]),
+                "eps": r.get("eps"),
+                "operating_income": r.get("operating_income"),
+                "revenue": r.get("revenue"),
+                "fs_div": r.get("fs_div"),
+                "fetched_at": datetime.now(timezone.utc),
+            })
+
+        self._upsert(
+            FundamentalQuarterly, normalized,
+            conflict_cols=["ticker", "bsns_year", "reprt_code"],
+            update_cols=["eps", "operating_income", "revenue", "fs_div", "fetched_at"],
+        )
+        logger.debug(
+            f"분기 재무 upsert: {len(rows)}건 "
+            f"(신규 {inserted}, 갱신 {updated})"
+        )
+        return inserted, updated
+
+    @staticmethod
+    def _pit_end_period(as_of_date: date) -> tuple[str, str]:
+        """as_of_date 시점에 공시된 가장 최근 (bsns_year, reprt_code) 결정.
+
+        dart_client._determine_report_period와 동일한 lag 규칙:
+          - 12월 이후: 그해 Q3
+          - 9월 이후:  그해 Half
+          - 6월 이후:  그해 Q1
+          - 4월 이후:  전년 Annual
+          - 1~3월:    전전년 Annual
+
+        Args:
+            as_of_date: 기준 날짜
+
+        Returns:
+            (사업연도 문자열, 보고서코드)
+        """
+        year = as_of_date.year
+        month = as_of_date.month
+
+        if month >= 12:
+            return str(year), "11014"
+        elif month >= 9:
+            return str(year), "11012"
+        elif month >= 6:
+            return str(year), "11013"
+        elif month >= 4:
+            return str(year - 1), "11011"
+        else:
+            return str(year - 2), "11011"
+
+    @classmethod
+    def _walk_back_quarters(
+        cls, end_year: str, end_reprt: str, n: int,
+    ) -> list[tuple[str, str]]:
+        """(end_year, end_reprt)부터 과거 n개 분기 키 리스트 반환 (시간 역순).
+
+        역행 순서: 11011 → 11014 → 11012 → 11013 → (전년) 11011 → ...
+
+        Args:
+            end_year: 시작 사업연도
+            end_reprt: 시작 보고서코드
+            n: 가져올 분기 개수
+
+        Returns:
+            [(bsns_year, reprt_code), ...] 최신 → 과거 순
+        """
+        order = ["11011", "11014", "11012", "11013"]
+        try:
+            idx = order.index(end_reprt)
+        except ValueError:
+            raise ValueError(f"알 수 없는 reprt_code: {end_reprt}")
+
+        year = int(end_year)
+        result: list[tuple[str, str]] = []
+        for _ in range(n):
+            result.append((str(year), order[idx]))
+            idx += 1
+            if idx >= len(order):
+                idx = 0
+                year -= 1
+        return result
+
+    def load_fundamentals_quarterly(
+        self,
+        ticker: str,
+        as_of_date: date,
+        n_quarters: int = 4,
+    ) -> pd.DataFrame:
+        """ticker의 최근 n_quarters 분기 데이터를 PIT 안전하게 반환.
+
+        as_of_date 시점에 공시된 분기(_pit_end_period 기준)부터 과거 n_quarters만큼
+        역행 조회. 동일 (bsns_year, reprt_code) 분기는 1행만 반환.
+
+        Args:
+            ticker: 종목코드
+            as_of_date: PIT 기준일 — 이 날짜 시점에 공시된 분기만 반환
+            n_quarters: 조회할 분기 개수 (기본 4)
+
+        Returns:
+            DataFrame(columns=[bsns_year, reprt_code, eps, operating_income,
+                              revenue, fs_div, period_end])
+            period_end 내림차순 (최신이 위)
+        """
+        end_year, end_reprt = self._pit_end_period(as_of_date)
+        target_keys = self._walk_back_quarters(end_year, end_reprt, n_quarters)
+
+        if not target_keys:
+            return pd.DataFrame()
+
+        # IN clause로 일괄 조회
+        placeholders = ", ".join(
+            f"(:y{i}, :r{i})" for i in range(len(target_keys))
+        )
+        params: dict = {"ticker": ticker}
+        for i, (y, r) in enumerate(target_keys):
+            params[f"y{i}"] = y
+            params[f"r{i}"] = r
+
+        sql = (
+            "SELECT ticker, bsns_year, reprt_code, eps, operating_income, "
+            "revenue, fs_div "
+            "FROM fundamental_quarterly "
+            "WHERE ticker = :ticker "
+            f"AND (bsns_year, reprt_code) IN ({placeholders})"
+        )
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params=params)
+
+        if df.empty:
+            return df
+
+        # period_end 컬럼 생성 후 정렬
+        def _period_end(row: pd.Series) -> date:
+            y = int(row["bsns_year"])
+            m, d = self._REPRT_PERIOD_END.get(
+                row["reprt_code"], (12, 31)
+            )
+            return date(y, m, d)
+
+        df["period_end"] = df.apply(_period_end, axis=1)
+        df = df.sort_values("period_end", ascending=False).reset_index(drop=True)
+        return df

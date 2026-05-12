@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### 추가 — Step 3-A 분기 재무 시계열 인프라
+
+- **feat(data): quarterly fundamentals storage + DART quarterly series fetcher (Step 3-A)**
+  - `data/storage.py`: `FundamentalQuarterly` 테이블 신규 + `upsert_fundamentals_quarterly` + PIT 안전 `load_fundamentals_quarterly`
+    - `_pit_end_period`: as_of_date → 시점에 공시된 가장 최근 (bsns_year, reprt_code) 결정 (dart_client._determine_report_period와 동일 lag)
+    - `_walk_back_quarters`: 분기 역행 (11011→11014→11012→11013→전년 순환)
+  - `data/dart_client.py`: `fetch_quarterly_series()` 신규 — 시작점부터 과거 n분기 일괄 수집 (기존 _fetch_multi_account_batch + _extract_financial_items 재사용)
+  - `scripts/backfill_quarterly_fundamentals.py`: 신규 백필 스크립트 (idempotent, --start-year/--end-year/--market)
+  - `tests/test_storage.py`: TestFundamentalQuarterly 5 케이스 (upsert/PIT 안전/연도 경계 역행/_pit_end_period 로직)
+  - `tests/test_dart_client.py`: TestWalkBackQuarters 3 케이스 + TestFetchQuarterlySeries 2 케이스
+  - 이 커밋은 Step 3 인프라만 제공. 필터 함수(3-B) / 백테스트(3-C)는 별도 커밋
+
 ### 추가 — 폐지 임박 자동 매도 (opt-in)
 
 - **feat(risk_guard): delisting auto-sell option (default OFF, dry-run first)**

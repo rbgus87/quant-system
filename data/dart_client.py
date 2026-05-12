@@ -543,6 +543,135 @@ class DartClient:
         return df
 
     # ───────────────────────────────────────────────
+    # 분기 시계열 (Step 3 연속 흑자 필터용)
+    # ───────────────────────────────────────────────
+
+    # 보고서 코드 역행 순서 (최신 → 과거)
+    _QUARTER_WALK_ORDER: list[str] = ["11011", "11014", "11012", "11013"]
+
+    @classmethod
+    def _walk_back_quarters(
+        cls, end_year: int, end_reprt: str, n: int,
+    ) -> list[tuple[str, str]]:
+        """(end_year, end_reprt)부터 과거 n개 분기 키 리스트.
+
+        역행 순서: 11011 → 11014 → 11012 → 11013 → (전년) 11011 → ...
+        (storage._walk_back_quarters와 동일 로직, 입력 타입만 다름)
+
+        Args:
+            end_year: 시작 사업연도 (int)
+            end_reprt: 시작 보고서코드
+            n: 가져올 분기 개수
+
+        Returns:
+            [(bsns_year, reprt_code), ...] 최신 → 과거 순
+        """
+        if end_reprt not in cls._QUARTER_WALK_ORDER:
+            raise ValueError(f"알 수 없는 reprt_code: {end_reprt}")
+        idx = cls._QUARTER_WALK_ORDER.index(end_reprt)
+        year = end_year
+        result: list[tuple[str, str]] = []
+        for _ in range(n):
+            result.append((str(year), cls._QUARTER_WALK_ORDER[idx]))
+            idx += 1
+            if idx >= len(cls._QUARTER_WALK_ORDER):
+                idx = 0
+                year -= 1
+        return result
+
+    def fetch_quarterly_series(
+        self,
+        tickers: list[str],
+        end_year: int,
+        end_reprt: str,
+        n_quarters: int = 4,
+    ) -> list[dict]:
+        """tickers에 대해 (end_year, end_reprt)부터 과거 n_quarters 분기 데이터 수집.
+
+        각 분기마다 `_fetch_multi_account_batch`로 전체 ticker 일괄 조회 →
+        `_extract_financial_items`로 EPS/영업이익/매출 추출.
+
+        PIT 안전:
+          end_year, end_reprt 결정은 외부에서 _determine_report_period(as_of_date)로
+          정해야 한다. 본 메서드는 받은 시작점부터 과거 역행만 수행.
+
+        Args:
+            tickers: 종목코드 리스트
+            end_year: 시작 사업연도 (int, 예: 2024)
+            end_reprt: 시작 보고서코드 ("11011"/"11014"/"11012"/"11013")
+            n_quarters: 가져올 분기 개수 (기본 4)
+
+        Returns:
+            [{"ticker", "bsns_year", "reprt_code", "eps", "operating_income",
+              "revenue", "fs_div"}] — storage.upsert_fundamentals_quarterly 직접 입력 가능
+        """
+        if not tickers:
+            return []
+
+        quarter_keys = self._walk_back_quarters(end_year, end_reprt, n_quarters)
+        rows: list[dict] = []
+
+        for bsns_year, reprt_code in quarter_keys:
+            logger.info(
+                f"DART 분기 시계열 수집: {bsns_year}/{reprt_code} "
+                f"({len(tickers)}종목)"
+            )
+            try:
+                items = self._fetch_multi_account_batch(
+                    tickers, bsns_year, reprt_code,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"DART 분기 시계열 실패 ({bsns_year}/{reprt_code}): {e}"
+                )
+                continue
+
+            if not items:
+                logger.debug(
+                    f"DART 분기 시계열: {bsns_year}/{reprt_code} 응답 비어 있음"
+                )
+                continue
+
+            # 분기 데이터: ticker별 EPS / 영업이익 / 매출 추출
+            # _extract_financial_items의 7-tuple 활용
+            (
+                eps_map, _net_income, _equity, _op_cf,
+                revenue_map, operating_income_map, _total_assets,
+            ) = self._extract_financial_items(items)
+
+            # fs_div는 별도로 picked (CFS 우선)
+            fs_div_map: dict[str, str] = {}
+            for item in items:
+                stock_code = (item.get("stock_code") or "").strip()
+                if not stock_code:
+                    continue
+                t = stock_code.zfill(6)
+                fs = (item.get("fs_div") or "").strip()
+                # CFS가 있으면 항상 CFS, 아니면 OFS
+                if t not in fs_div_map or fs == "CFS":
+                    fs_div_map[t] = fs
+
+            # 모든 ticker 통합 (어느 한 metric이라도 있으면 row 생성)
+            all_tickers = (
+                set(eps_map) | set(operating_income_map) | set(revenue_map)
+            )
+            for t in all_tickers:
+                rows.append({
+                    "ticker": t,
+                    "bsns_year": bsns_year,
+                    "reprt_code": reprt_code,
+                    "eps": eps_map.get(t),
+                    "operating_income": operating_income_map.get(t),
+                    "revenue": revenue_map.get(t),
+                    "fs_div": fs_div_map.get(t),
+                })
+
+        logger.info(
+            f"DART 분기 시계열 완료: {n_quarters}분기 × {len(tickers)}종목 → {len(rows)}행"
+        )
+        return rows
+
+    # ───────────────────────────────────────────────
     # 보고서 기간 결정
     # ───────────────────────────────────────────────
 

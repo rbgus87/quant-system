@@ -232,3 +232,132 @@ class TestTrade:
     def test_load_empty(self, storage: DataStorage) -> None:
         trades = storage.load_trades()
         assert trades.empty
+
+
+# ───────────────────────────────────────────────
+# FundamentalQuarterly 테스트 (Step 3 분기 시계열)
+# ───────────────────────────────────────────────
+
+
+class TestFundamentalQuarterly:
+    """분기별 재무 시계열 upsert + PIT 조회"""
+
+    def test_upsert_insert_and_update(self, storage: DataStorage) -> None:
+        """동일 키 두 번 upsert: 첫번째는 insert, 두번째는 update"""
+        rows1 = [
+            {"ticker": "005930", "bsns_year": "2024", "reprt_code": "11013",
+             "eps": 1000.0, "operating_income": 5e12, "revenue": 50e12,
+             "fs_div": "CFS"},
+        ]
+        ins1, upd1 = storage.upsert_fundamentals_quarterly(rows1)
+        assert ins1 == 1
+        assert upd1 == 0
+
+        rows2 = [
+            {"ticker": "005930", "bsns_year": "2024", "reprt_code": "11013",
+             "eps": 1500.0, "operating_income": 6e12, "revenue": 55e12,
+             "fs_div": "CFS"},
+        ]
+        ins2, upd2 = storage.upsert_fundamentals_quarterly(rows2)
+        assert ins2 == 0
+        assert upd2 == 1
+
+        # 갱신된 값이 반영되었는지 확인
+        # 2025-04-15 PIT → _pit_end_period = (2024, Annual), 4분기 역행 = 2024 전 분기 커버
+        df = storage.load_fundamentals_quarterly(
+            "005930", as_of_date=date(2025, 4, 15), n_quarters=4,
+        )
+        q1_rows = df[
+            (df["bsns_year"] == "2024") & (df["reprt_code"] == "11013")
+        ]
+        assert len(q1_rows) == 1
+        assert q1_rows.iloc[0]["eps"] == 1500.0
+
+    def test_pit_excludes_future_quarter(self, storage: DataStorage) -> None:
+        """as_of_date에서 아직 공시 안 된 분기는 반환 안 됨.
+
+        as_of_date=2017-06-30 → _pit_end_period가 2017-Q1을 한계로 결정.
+        2017-Q2(11012=Half)는 8월 중순 공시되므로 미포함이어야 함.
+        """
+        rows = [
+            # 2017 Q1 (11013) — 6월 PIT에 포함되어야 함
+            {"ticker": "005620", "bsns_year": "2017", "reprt_code": "11013",
+             "eps": -62729, "operating_income": -5e9, "revenue": 1e10,
+             "fs_div": "CFS"},
+            # 2017 Half (11012) — 6월 PIT에 미포함 (공시 전)
+            {"ticker": "005620", "bsns_year": "2017", "reprt_code": "11012",
+             "eps": 111049, "operating_income": 5e9, "revenue": 1.5e10,
+             "fs_div": "CFS"},
+            # 2016 Annual — 항상 포함
+            {"ticker": "005620", "bsns_year": "2016", "reprt_code": "11011",
+             "eps": -50000, "operating_income": -3e9, "revenue": 8e9,
+             "fs_div": "CFS"},
+        ]
+        storage.upsert_fundamentals_quarterly(rows)
+
+        df = storage.load_fundamentals_quarterly(
+            "005620", as_of_date=date(2017, 6, 30), n_quarters=4,
+        )
+        # 2017 Half는 미포함
+        assert not (
+            (df["bsns_year"] == "2017") & (df["reprt_code"] == "11012")
+        ).any()
+        # 2017 Q1은 포함
+        assert (
+            (df["bsns_year"] == "2017") & (df["reprt_code"] == "11013")
+        ).any()
+        # 2016 Annual도 포함
+        assert (
+            (df["bsns_year"] == "2016") & (df["reprt_code"] == "11011")
+        ).any()
+
+    def test_load_returns_descending(self, storage: DataStorage) -> None:
+        """period_end 내림차순 (최신이 맨 위)"""
+        rows = [
+            {"ticker": "A", "bsns_year": "2024", "reprt_code": "11011",
+             "eps": 4.0, "operating_income": None, "revenue": None,
+             "fs_div": "CFS"},
+            {"ticker": "A", "bsns_year": "2024", "reprt_code": "11013",
+             "eps": 1.0, "operating_income": None, "revenue": None,
+             "fs_div": "CFS"},
+            {"ticker": "A", "bsns_year": "2024", "reprt_code": "11012",
+             "eps": 2.0, "operating_income": None, "revenue": None,
+             "fs_div": "CFS"},
+            {"ticker": "A", "bsns_year": "2024", "reprt_code": "11014",
+             "eps": 3.0, "operating_income": None, "revenue": None,
+             "fs_div": "CFS"},
+        ]
+        storage.upsert_fundamentals_quarterly(rows)
+        # 2025-04-01 PIT → 2024 Annual (Q4)까지 모두 접근
+        df = storage.load_fundamentals_quarterly(
+            "A", as_of_date=date(2025, 4, 1), n_quarters=4,
+        )
+        eps_seq = df["eps"].tolist()
+        # 최신(Annual=4.0)이 맨 위, Q3=3.0, Half=2.0, Q1=1.0 순
+        assert eps_seq == [4.0, 3.0, 2.0, 1.0]
+
+    def test_pit_end_period_logic(self) -> None:
+        """_pit_end_period: dart_client lag 규칙과 동일성 검증"""
+        # 1월 → 전전년 Annual
+        assert DataStorage._pit_end_period(date(2025, 1, 15)) == ("2023", "11011")
+        # 3월 → 전전년 Annual
+        assert DataStorage._pit_end_period(date(2025, 3, 31)) == ("2023", "11011")
+        # 4월 → 전년 Annual
+        assert DataStorage._pit_end_period(date(2025, 4, 1)) == ("2024", "11011")
+        # 6월 → 그해 Q1
+        assert DataStorage._pit_end_period(date(2025, 6, 30)) == ("2025", "11013")
+        # 9월 → 그해 Half
+        assert DataStorage._pit_end_period(date(2025, 9, 30)) == ("2025", "11012")
+        # 12월 → 그해 Q3
+        assert DataStorage._pit_end_period(date(2025, 12, 15)) == ("2025", "11014")
+
+    def test_walk_back_crosses_year_boundary(self) -> None:
+        """분기 역행이 연도 경계를 올바르게 처리"""
+        # 2024 Q1부터 4분기 역행 → Q1, (2023) Annual, Q3, Half
+        keys = DataStorage._walk_back_quarters("2024", "11013", 4)
+        assert keys == [
+            ("2024", "11013"),
+            ("2023", "11011"),
+            ("2023", "11014"),
+            ("2023", "11012"),
+        ]

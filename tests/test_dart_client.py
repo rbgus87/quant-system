@@ -462,3 +462,91 @@ class TestCorpCodeCache:
 
         assert "005930" in mapping
         assert mapping["005930"] == "00126380"
+
+
+# ───────────────────────────────────────────────
+# 분기 시계열 (Step 3) 테스트
+# ───────────────────────────────────────────────
+
+
+class TestWalkBackQuarters:
+    """_walk_back_quarters 분기 역행 로직"""
+
+    def test_from_annual_walks_back_four(self):
+        """Annual부터 4분기 역행 → 같은 연도 Annual→Q3→Half→Q1"""
+        keys = DartClient._walk_back_quarters(2024, "11011", 4)
+        assert keys == [
+            ("2024", "11011"),
+            ("2024", "11014"),
+            ("2024", "11012"),
+            ("2024", "11013"),
+        ]
+
+    def test_crosses_year_boundary(self):
+        """Q1부터 역행 시 전년도로 넘어감"""
+        keys = DartClient._walk_back_quarters(2024, "11013", 4)
+        assert keys == [
+            ("2024", "11013"),
+            ("2023", "11011"),
+            ("2023", "11014"),
+            ("2023", "11012"),
+        ]
+
+    def test_invalid_reprt_raises(self):
+        """알 수 없는 reprt_code → ValueError"""
+        with pytest.raises(ValueError):
+            DartClient._walk_back_quarters(2024, "99999", 4)
+
+
+class TestFetchQuarterlySeries:
+    """fetch_quarterly_series — 분기 시계열 수집 통합"""
+
+    def test_returns_rows_per_quarter(self, dart_client):
+        """각 분기마다 _fetch_multi_account_batch 호출 + 결과 합산"""
+        # 분기별로 다른 EPS를 반환하는 mock
+        def _mock_batch(tickers, bsns_year, reprt_code):
+            return [{
+                "stock_code": "005930",
+                "corp_code": "00126380",
+                "account_nm": "기본주당이익(손실)",
+                "fs_div": "CFS",
+                "thstrm_amount": f"{int(bsns_year) % 1000}",
+                "bsns_year": bsns_year,
+                "reprt_code": reprt_code,
+            }, {
+                "stock_code": "005930",
+                "corp_code": "00126380",
+                "account_nm": "영업이익",
+                "fs_div": "CFS",
+                "thstrm_amount": "1000000",
+                "bsns_year": bsns_year,
+                "reprt_code": reprt_code,
+            }]
+
+        with patch.object(dart_client, "_fetch_multi_account_batch",
+                          side_effect=_mock_batch):
+            rows = dart_client.fetch_quarterly_series(
+                ["005930"], end_year=2024, end_reprt="11011", n_quarters=4,
+            )
+
+        # 005930 × 4분기 = 4행
+        assert len(rows) == 4
+        # 모두 ticker가 005930
+        assert all(r["ticker"] == "005930" for r in rows)
+        # 4개 분기 키가 모두 다름
+        keys = {(r["bsns_year"], r["reprt_code"]) for r in rows}
+        assert keys == {
+            ("2024", "11011"),
+            ("2024", "11014"),
+            ("2024", "11012"),
+            ("2024", "11013"),
+        }
+        # 영업이익 추출 확인
+        assert all(r["operating_income"] == 1000000.0 for r in rows)
+
+    def test_empty_tickers_returns_empty(self, dart_client):
+        """tickers=[] → []"""
+        rows = dart_client.fetch_quarterly_series(
+            [], end_year=2024, end_reprt="11011", n_quarters=4,
+        )
+        assert rows == []
