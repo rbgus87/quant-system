@@ -6,6 +6,26 @@
 
 ## [Unreleased]
 
+### 추가 — Phase 1 마무리: 호가단위 + Sanity Report + Runbook (2026-05-13)
+
+- **feat(trading): KRX 호가단위 처리 (E1)**
+  - `trading/tick_size.py` 신규 — `tick_size()` / `round_to_tick(direction)`
+    가격대 7단계 호가단위 (1·5·10·50·100·500·1000원) 반영
+  - `backtest/engine.py` `_execute_trades` — 매수 시 올림, 매도 시 내림으로 보수적 체결가 시뮬레이션 (시장충격 적용 후 호가단위 정렬)
+  - 슬리피지 0.1% 유지 (호가단위 외 체결 불확실성 흡수)
+  - 단위 테스트 19 케이스 (`tests/test_tick_size.py`)
+- **feat(screener): 리밸런싱 Sanity Report (E3)**
+  - `strategy/screener.py` `generate_sanity_report()` 신규 — 선정 종목별 PBR/PER/영업이익/부채비율/섹터/Composite 마크다운 요약
+  - 자동 플래그: 부채비율 > 300%(또는 표본 ≥10 시 상위 10%), 영업이익 결측·음수, 섹터=기타, PBR>3, composite 하위 20%(표본 ≥10 시)
+  - `backtest/engine.py` `_emit_sanity_report()` — 리밸런싱 시 자동 호출, `docs/reports/sanity_{date}.md` 저장
+  - `_calc_portfolio_with_buffer` 반환 시그니처 변경: `list[str]` → `tuple[list[str], pd.DataFrame]` (호출자 1곳만, 영향 격리)
+  - `config/settings.py` `SanityReportConfig` 추가 (enabled / save_to_file / telegram, 모두 기본 True)
+  - `config/config.yaml` `monitoring.sanity_report` 섹션 추가
+  - 단위 테스트 3 케이스 (`TestSanityReport`)
+- **docs: 운용 Runbook 작성 (E5)**
+  - `docs/RUNBOOK.md` 신규 — 일간/주간/월간/분기 운용 루틴, 비정기 이벤트 대응 (관리종목·급락·장애), 절대 금지 사항 8개
+- 검증: 전체 테스트 529개 통과 (38분), 백테스트 회귀 없음
+
 ### 변경 — S4 채택 (2026-05-13)
 
 - config: sector_diversification_enabled 3개 프리셋 활성화 (S4 채택, max_sector_count=4)

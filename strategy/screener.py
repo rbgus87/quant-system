@@ -401,6 +401,233 @@ class MultiFactorScreener:
             logger.error(f"[{date}] 스크리닝 실패: {e}", exc_info=True)
             return pd.DataFrame()
 
+    def generate_sanity_report(
+        self,
+        portfolio_df: pd.DataFrame,
+        date: str,
+        fundamentals: Optional[pd.DataFrame] = None,
+        sector_df: Optional[pd.DataFrame] = None,
+    ) -> str:
+        """선정 종목별 펀더멘털 요약 마크다운 생성
+
+        리밸런싱 시 운용자가 "왜 이 종목들이 선정됐는지" 판단할 수 있도록
+        포트폴리오 요약 + 종목별 상세 + 자동 플래그를 마크다운으로 작성합니다.
+
+        자동 플래그 기준:
+            - DEBT_RATIO > 300% 또는 상위 10%
+            - OPERATING_INCOME 결측 또는 음수
+            - sector_name 결측 또는 "기타"
+            - PBR > 3 (Value 팩터 관점 이례)
+            - composite_score 하위 20% (겨우 통과)
+
+        Args:
+            portfolio_df: select_top 결과 (index=ticker, columns=composite_score, weight 등)
+            date: 기준일 (YYYYMMDD)
+            fundamentals: 펀더멘털 DataFrame (None이면 storage에서 자동 조회)
+            sector_df: 섹터 매핑 DataFrame (None이면 storage에서 자동 조회)
+
+        Returns:
+            마크다운 문자열 (텔레그램/파일 저장용)
+        """
+        if portfolio_df is None or portfolio_df.empty:
+            return f"## Sanity Report — {date}\n\n선정 종목 없음."
+
+        # 펀더멘털 자동 조회 (KOSPI+KOSDAQ 통합)
+        if fundamentals is None:
+            from data.collector import _parse_date
+
+            dt = _parse_date(date)
+            f_list: list[pd.DataFrame] = []
+            for m in ("KOSPI", "KOSDAQ"):
+                try:
+                    f = self.collector.storage.load_fundamentals(dt, market=m)
+                    if not f.empty:
+                        f_list.append(f)
+                except Exception as e:
+                    logger.debug(f"펀더멘털 조회 실패 ({m}): {e}")
+            fundamentals = (
+                pd.concat(f_list) if f_list else pd.DataFrame()
+            )
+            if not fundamentals.empty:
+                fundamentals = fundamentals[
+                    ~fundamentals.index.duplicated(keep="first")
+                ]
+
+        # 섹터 매핑 자동 조회
+        if sector_df is None:
+            try:
+                sector_df = self.collector.storage.load_stock_sectors(date)
+            except Exception as e:
+                logger.debug(f"섹터 조회 실패: {e}")
+                sector_df = pd.DataFrame()
+
+        sector_map: dict[str, str] = (
+            sector_df["sector_name"].to_dict()
+            if not sector_df.empty and "sector_name" in sector_df.columns
+            else {}
+        )
+
+        # 종목별 상세 데이터 빌드
+        tickers = portfolio_df.index.tolist()
+        rows: list[dict] = []
+        debt_ratios: list[float] = []
+        composite_scores: list[float] = []
+
+        for ticker in tickers:
+            fund_row = (
+                fundamentals.loc[ticker]
+                if (not fundamentals.empty and ticker in fundamentals.index)
+                else None
+            )
+            pbr = float(fund_row["PBR"]) if fund_row is not None and pd.notna(fund_row.get("PBR")) else None
+            per = float(fund_row["PER"]) if fund_row is not None and pd.notna(fund_row.get("PER")) else None
+            op_income = (
+                float(fund_row["OPERATING_INCOME"])
+                if fund_row is not None and pd.notna(fund_row.get("OPERATING_INCOME"))
+                else None
+            )
+            debt_ratio = (
+                float(fund_row["DEBT_RATIO"])
+                if fund_row is not None and pd.notna(fund_row.get("DEBT_RATIO"))
+                else None
+            )
+            sector = sector_map.get(ticker) or "기타"
+            cscore = (
+                float(portfolio_df.loc[ticker, "composite_score"])
+                if "composite_score" in portfolio_df.columns
+                else None
+            )
+
+            if debt_ratio is not None:
+                debt_ratios.append(debt_ratio)
+            if cscore is not None:
+                composite_scores.append(cscore)
+
+            rows.append({
+                "ticker": ticker,
+                "name": self.collector.get_ticker_name(ticker),
+                "sector": sector,
+                "PBR": pbr,
+                "PER": per,
+                "operating_income": op_income,
+                "debt_ratio": debt_ratio,
+                "composite_score": cscore,
+            })
+
+        # 자동 플래그 임계값 계산 (표본 ≥ 10일 때만 percentile 사용)
+        # 표본이 작을 때 percentile은 무의미하므로 절대값 임계만 적용.
+        debt_threshold_top10 = (
+            float(pd.Series(debt_ratios).quantile(0.90))
+            if len(debt_ratios) >= 10
+            else None
+        )
+        cscore_threshold_bottom20 = (
+            float(pd.Series(composite_scores).quantile(0.20))
+            if len(composite_scores) >= 10
+            else None
+        )
+
+        # 플래그 부착
+        for r in rows:
+            flags: list[str] = []
+            dr = r["debt_ratio"]
+            if dr is not None and (
+                dr > 300.0 or (debt_threshold_top10 is not None and dr >= debt_threshold_top10)
+            ):
+                flags.append(f"debt {dr:.0f}%")
+            op = r["operating_income"]
+            if op is None or (op is not None and op < 0):
+                flags.append("op_income 결측/음수")
+            if r["sector"] == "기타":
+                flags.append("sector=기타")
+            if r["PBR"] is not None and r["PBR"] > 3.0:
+                flags.append(f"PBR {r['PBR']:.1f}")
+            if (
+                r["composite_score"] is not None
+                and cscore_threshold_bottom20 is not None
+                and r["composite_score"] <= cscore_threshold_bottom20
+            ):
+                flags.append("composite 하위 20%")
+            r["flags"] = flags
+
+        # ── 마크다운 작성 ──
+        n = len(rows)
+        avg_pbr = (
+            float(pd.Series([r["PBR"] for r in rows if r["PBR"] is not None]).mean())
+            if any(r["PBR"] is not None for r in rows)
+            else None
+        )
+        avg_debt = (
+            float(pd.Series(debt_ratios).mean()) if debt_ratios else None
+        )
+        sector_counts: dict[str, int] = {}
+        for r in rows:
+            sector_counts[r["sector"]] = sector_counts.get(r["sector"], 0) + 1
+        n_sectors = len(sector_counts)
+        # HHI = sum(share^2) × 10000, 단일 섹터 100%=10000
+        shares = [c / n for c in sector_counts.values()]
+        hhi = int(sum(s * s for s in shares) * 10000) if n > 0 else 0
+
+        lines: list[str] = []
+        lines.append(f"## 리밸런싱 Sanity Report — {date}")
+        lines.append("")
+        lines.append("### 포트폴리오 요약")
+        lines.append("| 지표 | 값 |")
+        lines.append("|------|---|")
+        lines.append(f"| 종목 수 | {n} |")
+        lines.append(
+            f"| 평균 PBR | {avg_pbr:.2f} |" if avg_pbr is not None else "| 평균 PBR | N/A |"
+        )
+        lines.append(
+            f"| 평균 부채비율 | {avg_debt:.0f}% |"
+            if avg_debt is not None
+            else "| 평균 부채비율 | N/A |"
+        )
+        lines.append(f"| 섹터 수 | {n_sectors} |")
+        lines.append(f"| HHI | {hhi:,} |")
+        lines.append("")
+
+        lines.append("### 종목별 상세")
+        lines.append(
+            "| # | 종목 | 섹터 | PBR | PER | 영업이익(억) | 부채비율 | Composite |"
+        )
+        lines.append(
+            "|---|------|------|-----|-----|------------|---------|-----------|"
+        )
+        for i, r in enumerate(rows, start=1):
+            pbr_s = f"{r['PBR']:.2f}" if r["PBR"] is not None else "-"
+            per_s = f"{r['PER']:.1f}" if r["PER"] is not None else "-"
+            op_s = (
+                f"{r['operating_income'] / 1e8:,.0f}"
+                if r["operating_income"] is not None
+                else "-"
+            )
+            dr_s = f"{r['debt_ratio']:.0f}%" if r["debt_ratio"] is not None else "-"
+            cs_s = (
+                f"{r['composite_score']:.1f}"
+                if r["composite_score"] is not None
+                else "-"
+            )
+            lines.append(
+                f"| {i} | {r['ticker']} {r['name']} | {r['sector']} | "
+                f"{pbr_s} | {per_s} | {op_s} | {dr_s} | {cs_s} |"
+            )
+        lines.append("")
+
+        # 주의 종목
+        flagged = [r for r in rows if r["flags"]]
+        if flagged:
+            lines.append("### 주의 종목 (자동 플래그)")
+            for r in flagged:
+                lines.append(
+                    f"- ⚠️ {r['ticker']} {r['name']}: {', '.join(r['flags'])}"
+                )
+        else:
+            lines.append("### 주의 종목")
+            lines.append("- 자동 플래그 해당 종목 없음")
+
+        return "\n".join(lines)
+
     def _select_with_sector_diversification(
         self,
         composite_df: pd.DataFrame,

@@ -172,12 +172,25 @@ class RiskGuardConfig:
 
 
 @dataclass
+class SanityReportConfig:
+    """리밸런싱 Sanity Report 설정 (E3).
+
+    선정 종목별 펀더멘털 요약을 운용자에게 제공. alpha 영향 없음(정보 제공용).
+    """
+
+    enabled: bool = True            # Sanity Report 생성 활성화
+    save_to_file: bool = True       # docs/reports/sanity_{date}.md 저장
+    telegram: bool = True           # 텔레그램 발송 (실거래 리밸런싱 시)
+
+
+@dataclass
 class MonitoringConfig:
     """모니터링 설정"""
 
     snapshot_enabled: bool = True  # 일간 스냅샷 DB 저장
     benchmark_enabled: bool = True  # KOSPI 벤치마크 비교
     risk_guard: RiskGuardConfig = field(default_factory=RiskGuardConfig)
+    sanity_report: SanityReportConfig = field(default_factory=SanityReportConfig)
 
 
 # ──────────────────────────────────────────────

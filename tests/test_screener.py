@@ -308,3 +308,94 @@ class TestSectorDiversification:
         )
         assert len(result) == 2
         assert list(result.index) == ["T0", "T1"]
+
+
+class TestSanityReport:
+    """generate_sanity_report — E3 선정 종목 펀더멘털 요약"""
+
+    def setup_method(self) -> None:
+        MultiFactorScreener._factor_cache.clear()
+
+    @staticmethod
+    def _make_screener(
+        fundamentals: pd.DataFrame, sector_map: dict[str, str],
+    ) -> MultiFactorScreener:
+        screener = MultiFactorScreener.__new__(MultiFactorScreener)
+        screener.collector = MagicMock()
+        # storage.load_fundamentals: KOSPI/KOSDAQ 호출 모두 같은 df 반환
+        screener.collector.storage.load_fundamentals = (
+            lambda dt, market="KOSPI": fundamentals if market == "KOSPI" else pd.DataFrame()
+        )
+        sector_df = pd.DataFrame(
+            {"sector_name": list(sector_map.values())},
+            index=list(sector_map.keys()),
+        )
+        screener.collector.storage.load_stock_sectors = (
+            lambda date, market="KOSPI": sector_df
+        )
+        screener.collector.get_ticker_name = lambda t: f"{t}_NAME"
+        return screener
+
+    def test_returns_markdown_with_summary(self) -> None:
+        tickers = ["T0", "T1", "T2"]
+        portfolio_df = pd.DataFrame(
+            {
+                "composite_score": [90.0, 80.0, 70.0],
+                "weight": [1 / 3, 1 / 3, 1 / 3],
+            },
+            index=tickers,
+        )
+        fundamentals = pd.DataFrame(
+            {
+                "PBR": [0.5, 1.2, 2.0],
+                "PER": [5.0, 10.0, 15.0],
+                "OPERATING_INCOME": [1e10, 2e10, 3e10],
+                "DEBT_RATIO": [80.0, 120.0, 150.0],
+            },
+            index=tickers,
+        )
+        sector_map = {"T0": "전자IT", "T1": "화학", "T2": "유통"}
+        screener = self._make_screener(fundamentals, sector_map)
+
+        report = screener.generate_sanity_report(portfolio_df, "20240630")
+
+        assert "Sanity Report" in report
+        assert "20240630" in report
+        assert "포트폴리오 요약" in report
+        assert "종목 수 | 3" in report
+        assert "T0" in report and "T1" in report and "T2" in report
+        # 정상 종목 → 자동 플래그 해당 없음
+        assert "자동 플래그 해당 종목 없음" in report
+
+    def test_flags_high_debt_and_negative_op_income(self) -> None:
+        tickers = ["T0", "T1", "T2"]
+        portfolio_df = pd.DataFrame(
+            {"composite_score": [90.0, 80.0, 70.0]},
+            index=tickers,
+        )
+        fundamentals = pd.DataFrame(
+            {
+                "PBR": [0.5, 1.0, 5.0],            # T2 PBR>3
+                "PER": [5.0, 10.0, 15.0],
+                "OPERATING_INCOME": [1e10, -5e9, 3e10],  # T1 음수
+                "DEBT_RATIO": [50.0, 100.0, 400.0],      # T2 부채 400% > 300%
+            },
+            index=tickers,
+        )
+        sector_map = {"T0": "전자IT", "T1": "화학", "T2": "기타"}  # T2 sector=기타
+        screener = self._make_screener(fundamentals, sector_map)
+
+        report = screener.generate_sanity_report(portfolio_df, "20240630")
+
+        # T1: op_income 음수 플래그
+        assert "T1" in report
+        assert "op_income 결측/음수" in report
+        # T2: PBR>3 + 부채>300% + sector=기타
+        assert "PBR 5.0" in report or "PBR 5" in report
+        assert "debt 400%" in report
+        assert "sector=기타" in report
+
+    def test_empty_portfolio_returns_placeholder(self) -> None:
+        screener = self._make_screener(pd.DataFrame(), {})
+        report = screener.generate_sanity_report(pd.DataFrame(), "20240630")
+        assert "선정 종목 없음" in report

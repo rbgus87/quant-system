@@ -17,6 +17,7 @@ from config.settings import settings
 from strategy.market_regime import MarketRegimeFilter
 from strategy.rebalancer import Rebalancer
 from strategy.screener import MultiFactorScreener
+from trading.tick_size import round_to_tick
 
 logger = logging.getLogger(__name__)
 
@@ -127,12 +128,15 @@ class MultiFactorBacktest:
                     # 재진입 허용됨 → 아래로 진행하여 포트폴리오 계산
 
                 # T일 팩터 계산 → 목표 포트폴리오 (홀딩 버퍼 적용)
-                new_tickers = self._calc_portfolio_with_buffer(
+                new_tickers, portfolio_df = self._calc_portfolio_with_buffer(
                     date_str, market, holdings
                 )
                 if not new_tickers:
                     logger.warning(f"{date_str}: 포트폴리오 계산 실패, 스킵")
                     continue
+
+                # ── Sanity Report (E3): 선정 종목 펀더멘털 요약 ──
+                self._emit_sanity_report(portfolio_df, date_str)
 
                 # T+1일 전체 OHLCV 프리페치 (개별 조회 대신 배치)
                 self.krx.prefetch_daily_trade(trade_date_str, market)
@@ -742,7 +746,8 @@ class MultiFactorBacktest:
             impact = self.rebalancer.estimate_market_impact(
                 sell_shares, avg_volumes.get(ticker, 0)
             )
-            adjusted_price = price * (1 - impact)  # 매도 시 불리한 가격
+            # 호가단위 적용 (매도: 내림 = 불리한 방향)
+            adjusted_price = round_to_tick(price * (1 - impact), "sell")
             cost_rate = self.rebalancer.cfg.commission_rate + self.rebalancer.cfg.tax_rate
             proceed = adjusted_price * sell_shares * (1 - cost_rate)
             cash += proceed
@@ -784,7 +789,8 @@ class MultiFactorBacktest:
             impact = self.rebalancer.estimate_market_impact(
                 delta, avg_volumes.get(ticker, 0)
             )
-            adjusted_price = price * (1 + impact)
+            # 호가단위 적용 (매수: 올림 = 불리한 방향)
+            adjusted_price = round_to_tick(price * (1 + impact), "buy")
             buy_cost_rate = self.rebalancer.cfg.commission_rate
             cost = adjusted_price * delta * (1 + buy_cost_rate)
             if cash >= cost:
@@ -1085,7 +1091,7 @@ class MultiFactorBacktest:
 
     def _calc_portfolio_with_buffer(
         self, date_str: str, market: str, current_holdings: dict[str, int],
-    ) -> list[str]:
+    ) -> tuple[list[str], pd.DataFrame]:
         """홀딩 버퍼 적용 포트폴리오 계산 — 불필요한 종목 교체 억제
 
         1. n_stocks × buffer_ratio 만큼의 넓은 후보를 screener에서 가져옴
@@ -1098,7 +1104,8 @@ class MultiFactorBacktest:
             current_holdings: 현재 보유 종목 {ticker: shares}
 
         Returns:
-            최종 목표 종목 리스트
+            (최종 목표 종목 리스트, 해당 종목의 wide_df 슬라이스).
+            wide_df 슬라이스는 sanity report 용도이며 composite_score/weight 컬럼을 보존한다.
         """
         n_stocks = settings.portfolio.n_stocks
         buffer_ratio = settings.portfolio.holding_buffer_ratio
@@ -1107,14 +1114,14 @@ class MultiFactorBacktest:
         # 넓은 후보 가져오기 (버퍼 크기만큼)
         wide_df = self.screener.screen(date_str, market=market, n_stocks=buffer_n)
         if wide_df.empty:
-            return []
+            return [], pd.DataFrame()
 
         wide_candidates = wide_df.index.tolist()
         top_n = wide_candidates[:n_stocks]  # 순수 상위 n개
 
         if not current_holdings:
             # 첫 리밸런싱: 상위 n개 그대로
-            return top_n
+            return top_n, wide_df.loc[top_n].copy()
 
         # 버퍼 로직: 기존 보유 중 버퍼 안에 있는 종목은 유지
         buffer_set = set(wide_candidates[:buffer_n])
@@ -1137,7 +1144,39 @@ class MultiFactorBacktest:
             f"매도 {len(held_outside)}, 신규 {len(new_portfolio) - len(keep)}"
         )
 
-        return new_portfolio[:n_stocks]
+        final = new_portfolio[:n_stocks]
+        return final, wide_df.loc[final].copy()
+
+    def _emit_sanity_report(
+        self, portfolio_df: pd.DataFrame, date_str: str,
+    ) -> None:
+        """Sanity Report 생성 + 로그/파일 출력 (E3).
+
+        설정(monitoring.sanity_report)에 따라 활성/비활성. alpha 무관, 정보 제공용.
+        실패 시 백테스트 진행에 영향 없도록 예외를 흡수한다.
+
+        Args:
+            portfolio_df: select_top 결과 (composite_score, weight 등 포함)
+            date_str: 리밸런싱 기준일 (YYYYMMDD)
+        """
+        sr_cfg = settings.monitoring.sanity_report
+        if not sr_cfg.enabled:
+            return
+        if portfolio_df is None or portfolio_df.empty:
+            return
+        try:
+            report = self.screener.generate_sanity_report(portfolio_df, date_str)
+            logger.info(f"[{date_str}] Sanity Report:\n{report}")
+            if sr_cfg.save_to_file:
+                from pathlib import Path
+
+                out_dir = Path("docs/reports")
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_path = out_dir / f"sanity_{date_str}.md"
+                out_path.write_text(report, encoding="utf-8")
+                logger.debug(f"[{date_str}] Sanity Report 저장: {out_path}")
+        except Exception as e:
+            logger.warning(f"[{date_str}] Sanity Report 생성 실패 (무시): {e}")
 
     def _get_ticker_name(self, ticker: str) -> str:
         """종목코드로 종목명 조회 (collector 캐시 활용)"""
