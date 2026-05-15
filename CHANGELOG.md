@@ -6,6 +6,83 @@
 
 ## [Unreleased]
 
+### 추가 — S7 Low-Volatility 팩터 탐색 (2026-05-15)
+
+- **feat(s7): Low-Volatility 팩터 도입 탐색 + 채택 결정**
+  - `factors/volatility.py` 신규: `VolatilityFactor.calc_volatility_score()` (rolling std → 역순위 → 0~100 점수)
+  - `factors/composite.py` 수정: `low_vol_score: Optional[pd.Series] = None` backward-compatible 추가
+  - `config/settings.py` 수정: `FactorWeights.low_vol: float = 0.00` 추가
+  - `config/config.yaml` 수정: 프리셋 A/B/C `factor_weights`에 `low_vol: 0.00` 추가
+  - `strategy/screener.py` 수정: VolatilityFactor 통합, `cache_key` 확장
+  - `tests/test_volatility.py` + `tests/test_composite_lowvol.py` 신규 (9 케이스)
+
+- **Part 1 — IC/IR 분석** (`scripts/analyze_lowvol_ic.py`)
+  - 31분기 × 3 lookback(60/90/120일) 단일 패스
+  - 60d: Mean IC=0.092, **IR=3.89**, Hit Rate=80% → **PROCEED 판정**
+
+- **Part 2 — 가중치 백테스트** (`scripts/backtest_lowvol_weights_s7.py`)
+  - 5가지 조합(A_baseline/B_V70L30/C_V60L40/D_V50M20L30/E_V100) 전기간 백테스트
+  - 결과: Low-vol 추가 시 모든 조합에서 Sharpe·CAGR·DSR 저하
+  - A_baseline: CAGR=6.30%, Sharpe=0.272, DSR=0.729
+  - 최고후보 E_V100(Sharpe=0.229): POLICY 2/5 통과
+  - **결론: 현행 Preset A (V70M30) 유지 — Low-vol 팩터 채택 불가**
+
+- `docs/reports/lowvol_ic_s7_analysis.md` 신규 (IC/IR 보고서)
+- `docs/reports/lowvol_factor_s7_analysis.md` 신규 (백테스트 + POLICY 평가 보고서)
+
+---
+
+### 추가 — 팩터 IC/IR/Quintile Decay 분석 V3 (2026-05-15)
+
+- **analysis(factor-ic): 팩터 예측력 정량 분석 스크립트 신규**
+  - `scripts/analyze_factor_ic_v3.py` 신규
+  - Value/Momentum/Quality 하위 지표 포함 11개 팩터 IC/IR/Hit Rate 측정 (31분기)
+  - 유니버스: F-Score≥4, Step1/3·S4 비활성 (팩터 순수 예측력 측정)
+  - Reporting Lag 적용 (재무 기준일: 전년/전전년 12/31)
+  - Quintile Decay (Q1~Q5 평균 분기 수익률 + Spread + Monotonic 검증)
+  - 연도별 IC 시계열 (2017-2024)
+  - 핵심 발견: Value가 Alpha 주요 원천 (IR=+0.572, Hit Rate=81%), Momentum/Quality IR 음수
+- `tests/test_factor_analysis.py` 신규 (7 케이스: IC 완벽상관·랜덤·분포 + Quintile 방향성·NaN)
+- `docs/reports/factor_ic_v3_analysis.md` 신규 (스크립트 실행 시 자동 생성)
+
+### 추가 — DSR + 통계적 유의성 검정 V2 (2026-05-15)
+
+- **analysis(dsr): Deflated Sharpe Ratio 분석 스크립트 신규**
+  - `scripts/analyze_deflated_sharpe_v2.py` 신규
+  - PSR (Probabilistic Sharpe Ratio, Bailey & López de Prado 2014) — 비정규 보정
+  - DSR (Deflated Sharpe Ratio) — N_trials=20 다중 시행 선택 편향 보정
+  - t-statistic (Opdyke 2007 비정규 보정식), MinTRL (vs SR*=0, vs KOSPI)
+  - 핵심 결과: DSR=0.729(⚠️), PSR=0.770, t=0.744(p=0.228), MinTRL≈37.5년
+  - 종합 판정: **유의하지 않지만 양의 신호** (DSR 0.50~0.95) — 8년 데이터는 구조적 부족
+  - V3 연계 해석: Momentum IR=-0.057(✗) → Sharpe 하방 압력; Value 단독 시나리오 검토 권장
+  - `universe_guard()` 없이 Preset A 직접 실행 — engine.py·config.yaml 변경 없음
+- `docs/reports/deflated_sharpe_v2_analysis.md` 신규 (스크립트 실행 시 자동 생성)
+
+### 추가 — 랜덤 벤치마크 100회 시뮬 V5 (2026-05-14)
+
+- **analysis(random): 랜덤 벤치마크 스크립트 신규**
+  - `scripts/analyze_random_benchmark_v5.py` 신규
+  - 동일 유니버스(Step1+Step3v2+F-Score≥4)에서 무작위 동일가중 20종목 100회 시뮬
+  - 전략 CAGR(6.46%) → 랜덤 분포 84%ile, Sharpe(0.245) → 82%ile
+  - 판정: **alpha 존재 가능** (75~95%ile) — 팩터 기여 +3.51%p CAGR, +0.151 Sharpe
+  - `universe_guard()` context manager로 S4 비활성 + n_stocks=9999 임시 적용 — engine.py 변경 없음
+  - 분기별 종가 close-to-close 수익률, 왕복비용 0.38% 고정 차감 (100% 턴오버 가정)
+  - 95%CI: CAGR [-1.54%, 9.23%], Sharpe [-0.125, 0.326]
+- `docs/reports/random_benchmark_v5_analysis.md` 신규 (스크립트 실행 시 자동 생성)
+
+### 추가 — 거래비용 Sensitivity 분석 V4 (2026-05-14)
+
+- **analysis(cost): 거래비용 민감도 분석 스크립트 신규**
+  - `scripts/analyze_cost_sensitivity_v4.py` 신규
+  - 슬리피지(시장충격)를 5단계 (~5/15/20/30/50bp)로 변화시키며 CAGR·Sharpe·MDD·Sortino 측정
+  - `Rebalancer.estimate_market_impact`를 외부 패치(monkeypatch)로 고정값으로 대체 — `engine.py` 변경 없음
+  - Step1 + Step3v2 + S4 모두 ON (Preset A), KOSPI 2017-2024, seed=42
+  - 무너지는 지점(Sharpe<0, CAGR<0%) 선형 보간 + 자동 판정("실거래 가능" / "위험")
+  - 분기 턴오버·연간비용 부담·보유기간 추가 출력
+  - KOSPI Buy-and-Hold 벤치마크 비교 (FinanceDataReader 1차 / kospi_index.py 폴백)
+  - ASCII 차트 포함
+- `docs/reports/cost_sensitivity_v4_analysis.md` 신규 (스크립트 실행 시 자동 생성)
+
 ### 추가 — Phase 1 마무리: 호가단위 + Sanity Report + Runbook (2026-05-13)
 
 - **feat(trading): KRX 호가단위 처리 (E1)**
