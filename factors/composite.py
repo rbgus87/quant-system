@@ -172,7 +172,8 @@ class MultiFactorComposite:
     def __init__(self) -> None:
         self.w = settings.factor_weights
         logger.info(
-            f"팩터 가중치 — 밸류:{self.w.value}, 모멘텀:{self.w.momentum}, 퀄리티:{self.w.quality}"
+            "팩터 가중치 — 밸류:%.2f, 모멘텀:%.2f, 퀄리티:%.2f, 저변동성:%.2f",
+            self.w.value, self.w.momentum, self.w.quality, self.w.low_vol,
         )
 
     def calculate(
@@ -180,61 +181,65 @@ class MultiFactorComposite:
         value_score: pd.Series,
         momentum_score: pd.Series,
         quality_score: pd.Series,
+        low_vol_score: Optional[pd.Series] = None,
         min_factor_count: int = 2,
     ) -> pd.DataFrame:
-        """3개 팩터 가중 합산
+        """3~4개 팩터 가중 합산.
 
-        2/3 이상 팩터가 있는 종목은 가용 가중치 정규화로 포함.
-        결측 팩터가 있는 종목은 나머지 팩터 가중치를 재분배합니다.
+        2개 이상 팩터가 있는 종목은 가용 가중치 정규화로 포함.
+        low_vol_score: None 또는 self.w.low_vol == 0이면 무시 (하위 호환).
 
         Args:
             value_score: 밸류 스코어 (0~100)
             momentum_score: 모멘텀 스코어 (0~100)
             quality_score: 퀄리티 스코어 (0~100)
+            low_vol_score: 저변동성 스코어 (0~100), None이면 비활성
             min_factor_count: 최소 필요 팩터 수 (기본 2)
 
         Returns:
-            DataFrame(index=ticker, columns=[value_score, momentum_score, quality_score, composite_score])
-            composite_score 내림차순 정렬
+            DataFrame(index=ticker, columns=[value_score, momentum_score,
+            quality_score, low_vol_score, composite_score]) composite_score 내림차순
         """
-        # 유니온 기반 — 1개 이상 팩터가 있는 모든 종목
+        _use_low_vol = low_vol_score is not None and self.w.low_vol > 0
+
+        _low_vol_idx = set(low_vol_score.index) if _use_low_vol else set()
         all_tickers = sorted(
             set(value_score.index)
             | set(momentum_score.index)
             | set(quality_score.index)
+            | _low_vol_idx
         )
 
+        _empty_cols = ["value_score", "momentum_score", "quality_score", "low_vol_score", "composite_score"]
         if not all_tickers:
             logger.warning("유효 종목 없음 — 빈 결과 반환")
-            return pd.DataFrame(
-                columns=[
-                    "value_score",
-                    "momentum_score",
-                    "quality_score",
-                    "composite_score",
-                ]
-            )
+            return pd.DataFrame(columns=_empty_cols)
 
-        df = pd.DataFrame(
-            {
-                "value_score": value_score.reindex(all_tickers),
-                "momentum_score": momentum_score.reindex(all_tickers),
-                "quality_score": quality_score.reindex(all_tickers),
-            }
-        )
+        data: dict[str, pd.Series] = {
+            "value_score":    value_score.reindex(all_tickers),
+            "momentum_score": momentum_score.reindex(all_tickers),
+            "quality_score":  quality_score.reindex(all_tickers),
+            "low_vol_score":  (
+                low_vol_score.reindex(all_tickers)
+                if _use_low_vol
+                else pd.Series(float("nan"), index=all_tickers)
+            ),
+        }
+        df = pd.DataFrame(data)
 
-        # 최소 팩터 수 필터
-        factor_cols = ["value_score", "momentum_score", "quality_score"]
-        factor_count = df[factor_cols].notna().sum(axis=1)
+        # 최소 팩터 수 계산에는 활성 팩터만 포함
+        active_factor_cols = ["value_score", "momentum_score", "quality_score"]
+        if _use_low_vol:
+            active_factor_cols.append("low_vol_score")
+
+        factor_count = df[active_factor_cols].notna().sum(axis=1)
         df = df[factor_count >= min_factor_count].copy()
 
         if df.empty:
             logger.warning(f"최소 {min_factor_count}개 팩터 충족 종목 없음")
-            return pd.DataFrame(
-                columns=factor_cols + ["composite_score"]
-            )
+            return pd.DataFrame(columns=_empty_cols)
 
-        n_full = (factor_count.reindex(df.index) == 3).sum()
+        n_full = (factor_count.reindex(df.index) == len(active_factor_cols)).sum()
         n_partial = len(df) - n_full
         logger.info(
             f"팩터 종목: {len(df)}개 (완전 {n_full}개, 부분 {n_partial}개)"
@@ -242,10 +247,13 @@ class MultiFactorComposite:
 
         # 가중 합산 (NaN 팩터 가중치 재분배)
         score_parts: dict[str, tuple[pd.Series, float]] = {
-            "value": (df["value_score"], self.w.value),
+            "value":    (df["value_score"],    self.w.value),
             "momentum": (df["momentum_score"], self.w.momentum),
-            "quality": (df["quality_score"], self.w.quality),
+            "quality":  (df["quality_score"],  self.w.quality),
         }
+        if _use_low_vol:
+            score_parts["low_vol"] = (df["low_vol_score"], self.w.low_vol)
+
         df["composite_score"] = weighted_average_nan_safe(score_parts)
         df = df.dropna(subset=["composite_score"])
         return df.sort_values("composite_score", ascending=False)
