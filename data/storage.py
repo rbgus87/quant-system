@@ -258,6 +258,9 @@ class DataStorage:
         self._migrate_delisted_stock_table()
         self._migrate_compound_indexes()
         self.SessionLocal = sessionmaker(bind=self.engine)
+        # Opt 3: 분기 재무 프리로드 캐시 (rebalancing 시작 전 벌크 로드)
+        self._fq_preload: dict[str, pd.DataFrame] = {}
+        self._fq_preload_date: Optional[date] = None
         logger.info(f"DB 연결: {path}")
 
     def _migrate_fundamental_market_column(self) -> None:
@@ -1384,6 +1387,8 @@ class DataStorage:
     ) -> pd.DataFrame:
         """ticker의 최근 n_quarters 분기 데이터를 PIT 안전하게 반환.
 
+        preload_fundamentals_quarterly()로 프리로드된 캐시가 있으면 DB 쿼리 없이 반환.
+
         as_of_date 시점에 공시된 분기(_pit_end_period 기준)부터 과거 n_quarters만큼
         역행 조회. 동일 (bsns_year, reprt_code) 분기는 1행만 반환.
 
@@ -1397,6 +1402,11 @@ class DataStorage:
                               revenue, fs_div, period_end])
             period_end 내림차순 (최신이 위)
         """
+        # 프리로드 캐시 히트 (Opt 3: N+1 쿼리 → O(1) dict lookup)
+        if self._fq_preload_date == as_of_date and self._fq_preload:
+            cached = self._fq_preload.get(ticker)
+            return cached if cached is not None else pd.DataFrame()
+
         end_year, end_reprt = self._pit_end_period(as_of_date)
         target_keys = self._walk_back_quarters(end_year, end_reprt, n_quarters)
 
@@ -1436,3 +1446,134 @@ class DataStorage:
         df["period_end"] = df.apply(_period_end, axis=1)
         df = df.sort_values("period_end", ascending=False).reset_index(drop=True)
         return df
+
+    # ───────────────────────────────────────────────
+    # 일별 가격 (종가 행렬)
+    # ───────────────────────────────────────────────
+
+    def load_close_matrix(
+        self,
+        tickers: list[str],
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> pd.DataFrame:
+        """종가 pivot matrix 반환 (index=date, columns=ticker, values=close).
+
+        변동성 계산 등 시계열 행렬이 필요한 경우 load_daily_prices_bulk + pivot보다
+        이 메서드 한 번 호출이 명시적임.
+
+        Args:
+            tickers: 종목코드 리스트
+            start_date: 시작 날짜
+            end_date: 종료 날짜
+
+        Returns:
+            DataFrame(index=date, columns=ticker, values=close).
+            데이터 없는 날짜/종목은 NaN.
+        """
+        bulk = self.load_daily_prices_bulk(tickers, start_date, end_date)
+        if bulk.empty:
+            return pd.DataFrame()
+
+        bulk["date"] = pd.to_datetime(bulk["date"])
+        matrix = bulk.pivot_table(index="date", columns="ticker", values="close")
+        matrix.columns.name = None
+        return matrix
+
+    # ───────────────────────────────────────────────
+    # 분기 재무 벌크 조회 + 프리로드 (Opt 3)
+    # ───────────────────────────────────────────────
+
+    def load_fundamentals_quarterly_bulk(
+        self,
+        as_of_date: date,
+        n_quarters: int = 4,
+    ) -> dict[str, pd.DataFrame]:
+        """전종목의 분기 재무 시계열을 한 번의 SQL로 조회.
+
+        load_fundamentals_quarterly()와 동일한 PIT 필터를 적용하지만
+        전종목을 단일 쿼리로 처리.
+
+        Args:
+            as_of_date: PIT 기준일
+            n_quarters: 각 ticker당 최대 조회 분기 수 (기본 4)
+
+        Returns:
+            {ticker: DataFrame(columns=[bsns_year, reprt_code, eps,
+                operating_income, revenue, fs_div, period_end])}
+            period_end 내림차순 정렬.
+        """
+        end_year, end_reprt = self._pit_end_period(as_of_date)
+        target_keys = self._walk_back_quarters(end_year, end_reprt, n_quarters)
+
+        if not target_keys:
+            return {}
+
+        min_year = min(y for y, _ in target_keys)
+
+        # 단일 SQL로 전체 조회 (min_year 이후 전체)
+        sql = (
+            "SELECT ticker, bsns_year, reprt_code, eps, operating_income, "
+            "revenue, fs_div "
+            "FROM fundamental_quarterly "
+            "WHERE bsns_year >= :min_year "
+            "ORDER BY ticker, bsns_year, reprt_code"
+        )
+        with self.engine.connect() as conn:
+            df = pd.read_sql(text(sql), conn, params={"min_year": min_year})
+
+        if df.empty:
+            return {}
+
+        # target_keys 필터 (merge가 apply보다 빠름)
+        target_df = pd.DataFrame(target_keys, columns=["bsns_year", "reprt_code"])
+        df = df.merge(target_df, on=["bsns_year", "reprt_code"])
+
+        if df.empty:
+            return {}
+
+        def _period_end(row: pd.Series) -> date:
+            y = int(row["bsns_year"])
+            m, d = self._REPRT_PERIOD_END.get(row["reprt_code"], (12, 31))
+            return date(y, m, d)
+
+        df = df.copy()
+        df["period_end"] = df.apply(_period_end, axis=1)
+
+        result: dict[str, pd.DataFrame] = {}
+        for ticker, group in df.groupby("ticker"):
+            result[str(ticker)] = group.sort_values(
+                "period_end", ascending=False
+            ).reset_index(drop=True)
+
+        logger.debug(
+            f"분기 재무 벌크 조회: {len(result)}개 ticker ({as_of_date})"
+        )
+        return result
+
+    def preload_fundamentals_quarterly(
+        self, as_of_date: date, n_quarters: int = 4,
+    ) -> int:
+        """전종목 분기 재무를 메모리에 프리로드.
+
+        이후 load_fundamentals_quarterly() 호출 시 DB 대신 캐시에서 반환.
+        리밸런싱 루프 시작 전 1회 호출하여 N+1 쿼리를 1쿼리로 단축.
+
+        Args:
+            as_of_date: PIT 기준일
+            n_quarters: 조회할 분기 수
+
+        Returns:
+            프리로드된 ticker 수
+        """
+        self._fq_preload = self.load_fundamentals_quarterly_bulk(as_of_date, n_quarters)
+        self._fq_preload_date = as_of_date
+        logger.debug(
+            f"분기 재무 프리로드 완료: {len(self._fq_preload)}개 ticker ({as_of_date})"
+        )
+        return len(self._fq_preload)
+
+    def clear_fq_preload(self) -> None:
+        """분기 재무 프리로드 캐시 해제."""
+        self._fq_preload = {}
+        self._fq_preload_date = None

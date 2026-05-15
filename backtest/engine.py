@@ -127,10 +127,16 @@ class MultiFactorBacktest:
                         continue
                     # 재진입 허용됨 → 아래로 진행하여 포트폴리오 계산
 
+                # 분기 재무 프리로드 (Opt 3: load_fundamentals_quarterly N+1 → 1 쿼리)
+                self._preload_quarter_data(rebal_dt)
+
                 # T일 팩터 계산 → 목표 포트폴리오 (홀딩 버퍼 적용)
                 new_tickers, portfolio_df = self._calc_portfolio_with_buffer(
                     date_str, market, holdings
                 )
+
+                # 프리로드 캐시 해제
+                self.krx.storage.clear_fq_preload()
                 if not new_tickers:
                     logger.warning(f"{date_str}: 포트폴리오 계산 실패, 스킵")
                     continue
@@ -699,6 +705,26 @@ class MultiFactorBacktest:
             orders = self.rebalancer.compute_value_weighted_rebalance(
                 holdings, new_tickers, prices, rebal_value, market_caps
             )
+        elif settings.portfolio.weighting_method == "inverse_vol":
+            # Inverse-Volatility 가중: 저변동성 종목에 더 많은 비중
+            from factors.volatility import VolatilityFactor
+            vf = VolatilityFactor()
+            volatilities = vf.get_raw_volatilities(
+                date_str, new_tickers, self.krx.storage,
+                lookback_days=settings.portfolio.vol_lookback_days,
+            )
+            target_list = self.rebalancer.compute_inverse_vol_rebalance(
+                new_tickers, volatilities, rebal_value, prices,
+                max_position_pct=settings.portfolio.max_position_pct,
+                min_position_pct=settings.portfolio.min_position_pct,
+            )
+            target_shares = {item["ticker"]: item["target_shares"] for item in target_list}
+            new_set_inv = set(new_tickers)
+            orders = {t: -s for t, s in holdings.items() if t not in new_set_inv and s > 0}
+            for ticker, t_shares in target_shares.items():
+                delta = t_shares - holdings.get(ticker, 0)
+                if delta != 0:
+                    orders[ticker] = delta
         else:
             orders = self.rebalancer.compute_weight_rebalance(
                 holdings, new_tickers, prices, rebal_value
@@ -1233,6 +1259,25 @@ class MultiFactorBacktest:
             settings.trading.vol_target,
             settings.trading.vol_lookback_days,
         )
+
+    def _preload_quarter_data(self, rebal_dt: pd.Timestamp) -> None:
+        """리밸런싱 시작 전 분기 재무 데이터를 메모리에 프리로드.
+
+        screener가 각 ticker마다 load_fundamentals_quarterly()를 개별 호출하는
+        N+1 쿼리 패턴을 1회 벌크 쿼리 + O(1) dict lookup으로 단축.
+
+        Args:
+            rebal_dt: 리밸런싱 기준일 (pd.Timestamp)
+        """
+        import time as _time
+        as_of = rebal_dt.date() if hasattr(rebal_dt, "date") else rebal_dt
+        t0 = _time.monotonic()
+        n = self.krx.storage.preload_fundamentals_quarterly(as_of)
+        elapsed = _time.monotonic() - t0
+        if elapsed > 0.05:
+            logger.debug(
+                f"[{as_of}] 분기 재무 프리로드: {n}개 ticker, {elapsed:.3f}초"
+            )
 
     def _get_open_price(self, ticker: str, date_str: str) -> Optional[float]:
         """특정 날짜 시가 조회 (개별 폴백용)

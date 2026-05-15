@@ -157,6 +157,7 @@ class MultiFactorScreener:
                 bool(settings.quality.exclude_capital_impairment),
                 bool(settings.universe.sector_diversification_enabled),
                 int(settings.universe.max_sector_count),
+                str(settings.portfolio.weighting_method),
             )
             if cache_key in MultiFactorScreener._factor_cache:
                 composite_df = MultiFactorScreener._factor_cache[cache_key]
@@ -412,6 +413,10 @@ class MultiFactorScreener:
             portfolio = self._select_with_sector_diversification(
                 composite_df, date, n_stocks,
             )
+
+            # inverse_vol: weight 컬럼을 정보 제공용으로 업데이트 (Sanity Report 용)
+            if settings.portfolio.weighting_method == "inverse_vol" and not portfolio.empty:
+                portfolio = self._update_inverse_vol_weights(portfolio, date)
 
             logger.info(f"[{date}] 스크리닝 완료: {len(portfolio)}개 종목 선정")
             return portfolio
@@ -739,6 +744,66 @@ class MultiFactorScreener:
             f"top sector counts={dict(sorted(final_dist.items(), key=lambda x: -x[1])[:5])})"
         )
         return portfolio
+
+    def _update_inverse_vol_weights(
+        self, portfolio: pd.DataFrame, date: str
+    ) -> pd.DataFrame:
+        """inverse_vol 비중을 weight 컬럼에 반영 (Sanity Report 정보 제공용).
+
+        실제 주수 배분은 engine._execute_trades에서 수행. 여기서는 정규화된
+        비중(0~1)만 업데이트하여 스크리닝 결과에 inverse_vol 가중치를 표시한다.
+
+        Args:
+            portfolio: select_top 결과 (weight=1/N)
+            date: 기준일 (YYYYMMDD)
+
+        Returns:
+            weight 컬럼이 inverse_vol 비중으로 업데이트된 DataFrame
+        """
+        import math as _math
+        import numpy as _np
+
+        tickers = portfolio.index.tolist()
+        vols = self.volatility_factor.get_raw_volatilities(
+            date, tickers, self.collector.storage,
+            lookback_days=settings.portfolio.vol_lookback_days,
+        )
+
+        valid_vols = [v for v in vols.values() if not _math.isnan(v) and v > 0]
+        median_vol = float(_np.median(valid_vols)) if valid_vols else 0.2
+
+        filled = {
+            t: (median_vol if (t not in vols or _math.isnan(vols[t]) or vols[t] <= 0)
+                else vols[t])
+            for t in tickers
+        }
+        raw = {t: 1.0 / filled[t] for t in tickers}
+        total_raw = sum(raw.values())
+        weights = {t: w / total_raw for t, w in raw.items()}
+
+        max_pct = settings.portfolio.max_position_pct
+        for _ in range(10):
+            excess = sum(max(0.0, w - max_pct) for w in weights.values())
+            if excess < 1e-9:
+                break
+            capped = {t for t, w in weights.items() if w > max_pct}
+            uncapped = [t for t in tickers if t not in capped]
+            for t in capped:
+                weights[t] = max_pct
+            if not uncapped:
+                break
+            unc_sum = sum(weights[t] for t in uncapped)
+            if unc_sum > 0:
+                for t in uncapped:
+                    weights[t] += excess * (weights[t] / unc_sum)
+
+        w_sum = sum(weights.values())
+        if w_sum > 0:
+            weights = {t: w / w_sum for t, w in weights.items()}
+
+        result = portfolio.copy()
+        result["weight"] = [weights.get(t, 1.0 / len(tickers)) for t in tickers]
+        return result
 
     def _apply_volatility_filter(
         self, tickers: list[str], date: str

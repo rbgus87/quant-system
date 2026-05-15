@@ -133,6 +133,10 @@ class MarketRegimeConfig:
 class PortfolioConfig:
     n_stocks: int = 30
     weight_method: str = "equal"  # equal / value_weighted
+    weighting_method: str = "equal"  # equal / inverse_vol (포지션 사이징)
+    vol_lookback_days: int = 60   # inverse_vol 변동성 계산 기간 (거래일)
+    max_position_pct: float = 0.15  # inverse_vol 단일 종목 최대 비중
+    min_position_pct: float = 0.02  # inverse_vol 단일 종목 최소 비중
     initial_cash: int = 10_000_000  # 백테스트 초기 자금 (기본 1000만원)
     max_investment_amount: int = 0  # 최대 투자 금액 (0=전액 투자, 양수=고정 금액)
     rebalance_frequency: str = "quarterly"  # monthly / quarterly
@@ -556,6 +560,18 @@ def validate_settings(s: "Settings") -> None:
         errors.append(f"지원하지 않는 market: {s.universe.market}")
     if s.portfolio.weight_method not in ("equal", "value_weighted"):
         errors.append(f"지원하지 않는 weight_method: {s.portfolio.weight_method}")
+    if s.portfolio.weighting_method not in ("equal", "inverse_vol"):
+        errors.append(f"지원하지 않는 weighting_method: {s.portfolio.weighting_method}")
+    if not (0.0 < s.portfolio.max_position_pct <= 1.0):
+        errors.append(
+            f"portfolio.max_position_pct는 0 초과 1 이하여야 합니다: "
+            f"{s.portfolio.max_position_pct}"
+        )
+    if not (0.0 <= s.portfolio.min_position_pct < s.portfolio.max_position_pct):
+        errors.append(
+            f"portfolio.min_position_pct는 0 이상이고 max_position_pct({s.portfolio.max_position_pct}) "
+            f"미만이어야 합니다: {s.portfolio.min_position_pct}"
+        )
     if s.portfolio.rebalance_frequency not in ("monthly", "quarterly"):
         errors.append(f"지원하지 않는 rebalance_frequency: {s.portfolio.rebalance_frequency}")
     try:

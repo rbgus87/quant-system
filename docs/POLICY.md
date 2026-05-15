@@ -167,6 +167,22 @@ Step 3 본실험(겹침 70.7%, 위양성 +18.15%)과 달리 분산 목적의 건
 
 상세: `docs/reports/sector_diversification_s4_analysis.md`
 
+### S5: Inverse-Volatility Weighting (2026-05-15 채택)
+
+종목별 변동성 역가중 비중 배분 (max_position_pct=10%).
+
+| 지표 | Δ |
+|------|---|
+| CAGR | 0 (동일, 6.4%) |
+| Sharpe | +0.019 (0.247 → 0.266) |
+| Vol | -2.8%p (17.4% → 14.6%) |
+| MDD | -0.1%p (미미) |
+
+채택 근거: POLICY 5조건 전부 통과. 동일 CAGR에서 변동성 16% 감소.
+S7 VolatilityFactor 인프라(`factors/volatility.py`) 재활용. 종목 선정 변경 없음 (V70M30 유지).
+
+상세: `docs/reports/weighting_s5_analysis.md`
+
 ---
 
 ## 변경 이력
@@ -183,6 +199,8 @@ Step 3 본실험(겹침 70.7%, 위양성 +18.15%)과 달리 분산 목적의 건
 | 2026-05-13 | POLICY #4 각주: 섹터 분산 예외 조항 추가 | S4 분석 결과 |
 | 2026-05-13 | S4 채택 (금융주 제외 + 섹터 분산 max=4) | CAGR+0.44%p, Sharpe+0.019, HHI 41% 감소. POLICY #4 예외 적용 |
 | 2026-04-15 | 폐지 방어 정책 확정 (Baseline 유지) | 005620 분석 시리즈 종결 |
+| 2026-05-15 | S5 채택 (inverse-vol, max_position_pct=10%) | POLICY 5조건 전부 통과. Sharpe+0.019, Vol -2.8%p. 동일 CAGR |
+| 2026-05-15 | 백테스트 속도 최적화 (daily_price + parallel + preload) | 30~60분 → 3분 단축 |
 
 ---
 

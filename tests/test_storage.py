@@ -259,6 +259,109 @@ class TestTrade:
 
 
 # ───────────────────────────────────────────────
+# load_close_matrix 테스트
+# ───────────────────────────────────────────────
+
+
+class TestLoadCloseMatrix:
+    def _save_prices(self, storage: DataStorage) -> None:
+        for ticker, closes in [("A", [100.0, 110.0, 120.0]), ("B", [200.0, 210.0, None])]:
+            rows = []
+            for i, (d, c) in enumerate(
+                zip(["2024-01-02", "2024-01-03", "2024-01-04"], closes)
+            ):
+                if c is None:
+                    continue
+                rows.append({"open": c, "high": c, "low": c, "close": c, "volume": 1000})
+            df = pd.DataFrame(
+                rows,
+                index=pd.to_datetime(
+                    ["2024-01-02", "2024-01-03"]
+                    if ticker == "B"
+                    else ["2024-01-02", "2024-01-03", "2024-01-04"]
+                ),
+            )
+            df.index.name = "date"
+            storage.save_daily_prices(ticker, df)
+
+    def test_returns_pivot_matrix(self, storage: DataStorage) -> None:
+        self._save_prices(storage)
+        matrix = storage.load_close_matrix(["A", "B"])
+        assert set(matrix.columns) == {"A", "B"}
+        assert matrix.loc[matrix.index[0], "A"] == 100.0
+
+    def test_missing_ticker_is_nan(self, storage: DataStorage) -> None:
+        self._save_prices(storage)
+        matrix = storage.load_close_matrix(["A", "B"])
+        # B has no data for 2024-01-04 → NaN
+        last_row = matrix.iloc[-1]
+        assert pd.isna(last_row["B"])
+
+    def test_empty_when_no_data(self, storage: DataStorage) -> None:
+        matrix = storage.load_close_matrix(["999999"])
+        assert matrix.empty
+
+
+# ───────────────────────────────────────────────
+# load_fundamentals_quarterly_bulk + preload 테스트
+# ───────────────────────────────────────────────
+
+
+class TestFundamentalsQuarterlyBulkAndPreload:
+    def _insert_quarterly(self, storage: DataStorage) -> None:
+        rows = [
+            {"ticker": "005930", "bsns_year": "2023", "reprt_code": "11011",
+             "eps": 4000.0, "operating_income": 1e12, "revenue": 2e13, "fs_div": "CFS"},
+            {"ticker": "005930", "bsns_year": "2023", "reprt_code": "11014",
+             "eps": 900.0, "operating_income": 2e11, "revenue": 5e12, "fs_div": "CFS"},
+            {"ticker": "000660", "bsns_year": "2023", "reprt_code": "11011",
+             "eps": 8000.0, "operating_income": 3e12, "revenue": 1e13, "fs_div": "CFS"},
+        ]
+        storage.upsert_fundamentals_quarterly(rows)
+
+    def test_bulk_returns_all_tickers(self, storage: DataStorage) -> None:
+        self._insert_quarterly(storage)
+        result = storage.load_fundamentals_quarterly_bulk(date(2024, 6, 30))
+        assert "005930" in result
+        assert "000660" in result
+
+    def test_bulk_matches_single(self, storage: DataStorage) -> None:
+        self._insert_quarterly(storage)
+        as_of = date(2024, 6, 30)
+        bulk = storage.load_fundamentals_quarterly_bulk(as_of)
+        single = storage.load_fundamentals_quarterly("005930", as_of)
+        if not single.empty and "005930" in bulk:
+            assert len(bulk["005930"]) == len(single)
+
+    def test_preload_cache_hit(self, storage: DataStorage) -> None:
+        self._insert_quarterly(storage)
+        as_of = date(2024, 6, 30)
+
+        n = storage.preload_fundamentals_quarterly(as_of)
+        assert n > 0
+        assert storage._fq_preload_date == as_of
+
+        # 캐시에서 반환 (DB 쿼리 없이)
+        cached = storage.load_fundamentals_quarterly("005930", as_of)
+        assert not cached.empty
+
+    def test_preload_clear(self, storage: DataStorage) -> None:
+        self._insert_quarterly(storage)
+        storage.preload_fundamentals_quarterly(date(2024, 6, 30))
+        storage.clear_fq_preload()
+        assert storage._fq_preload == {}
+        assert storage._fq_preload_date is None
+
+    def test_preload_miss_returns_empty(self, storage: DataStorage) -> None:
+        """프리로드에 없는 ticker → 빈 DataFrame 반환."""
+        self._insert_quarterly(storage)
+        as_of = date(2024, 6, 30)
+        storage.preload_fundamentals_quarterly(as_of)
+        result = storage.load_fundamentals_quarterly("999999", as_of)
+        assert result.empty
+
+
+# ───────────────────────────────────────────────
 # FundamentalQuarterly 테스트 (Step 3 분기 시계열)
 # ───────────────────────────────────────────────
 

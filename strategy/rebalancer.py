@@ -1,5 +1,9 @@
 # strategy/rebalancer.py
 import logging
+import math
+
+import numpy as np
+
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -218,6 +222,98 @@ class Rebalancer:
                 orders[ticker] = delta
 
         return orders
+
+    def compute_inverse_vol_rebalance(
+        self,
+        selected_tickers: list[str],
+        volatilities: dict[str, float],
+        total_value: float,
+        current_prices: dict[str, float],
+        max_position_pct: float = 0.15,
+        min_position_pct: float = 0.02,
+    ) -> list[dict]:
+        """Inverse-Volatility 비중 배분.
+
+        Args:
+            selected_tickers: 선정 종목 리스트
+            volatilities: 종목별 연율화 변동성 {ticker: σ}. NaN/0이면 median σ로 대체.
+            total_value: 투자 총액
+            current_prices: 종목별 현재가 {ticker: price} (주수 계산용)
+            max_position_pct: 단일 종목 최대 비중 (기본 15%)
+            min_position_pct: 단일 종목 최소 비중 (기본 2%). 0이면 비활성화.
+
+        Returns:
+            [{"ticker", "target_weight", "target_shares", "target_value", "volatility"}]
+        """
+        if not selected_tickers:
+            return []
+
+        priced = [t for t in selected_tickers if current_prices.get(t, 0) > 0]
+        if not priced:
+            return []
+
+        # NaN/0 σ → median σ 대체
+        valid_vols = [
+            volatilities.get(t, float("nan"))
+            for t in priced
+            if not math.isnan(volatilities.get(t, float("nan")))
+            and volatilities.get(t, 0.0) > 0
+        ]
+        median_vol = float(np.median(valid_vols)) if valid_vols else 0.2
+
+        filled: dict[str, float] = {}
+        for t in priced:
+            v = volatilities.get(t, float("nan"))
+            filled[t] = median_vol if (math.isnan(v) or v <= 0) else v
+
+        # raw weight = 1/σ, 정규화
+        raw = {t: 1.0 / filled[t] for t in priced}
+        total_raw = sum(raw.values())
+        weights = {t: w / total_raw for t, w in raw.items()}
+
+        # max_position_pct 초과 cap + 초과분 재분배 (최대 10회 반복)
+        for _ in range(10):
+            excess = sum(max(0.0, w - max_position_pct) for w in weights.values())
+            if excess < 1e-9:
+                break
+            capped = {t for t, w in weights.items() if w > max_position_pct}
+            uncapped = [t for t in priced if t not in capped]
+            for t in capped:
+                weights[t] = max_position_pct
+            if not uncapped:
+                break
+            uncapped_total = sum(weights[t] for t in uncapped)
+            if uncapped_total > 0:
+                for t in uncapped:
+                    weights[t] += excess * (weights[t] / uncapped_total)
+
+        # 재정규화 (degenerate case 보정)
+        w_sum = sum(weights.values())
+        if w_sum > 0:
+            weights = {t: w / w_sum for t, w in weights.items()}
+
+        # min_position_pct 미달 종목 제거 → 재정규화
+        if min_position_pct > 0:
+            valid = [t for t in priced if weights.get(t, 0) >= min_position_pct]
+            if valid and len(valid) < len(priced):
+                keep_sum = sum(weights[t] for t in valid)
+                weights = {t: weights[t] / keep_sum for t in valid}
+                priced = valid
+
+        result = []
+        for t in priced:
+            weight = weights[t]
+            target_value = total_value * weight
+            price = current_prices[t]
+            target_shares = self.calc_buy_shares(target_value, price)
+            result.append({
+                "ticker": t,
+                "target_weight": weight,
+                "target_shares": target_shares,
+                "target_value": target_value,
+                "volatility": filled[t],
+            })
+        return result
 
     def calc_sell_proceed(self, price: float, shares: int) -> float:
         """매도 수익금 계산 (수수료 + 세금 + 슬리피지 차감)

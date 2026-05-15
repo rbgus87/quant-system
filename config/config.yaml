@@ -19,10 +19,14 @@ preset: "A"
 # 금액: 소액 / 중액 / 대액 / 거액
 sizing: "중액"
 
-# === 리밸런싱 스케줄 ===
+# === 리밸런싱 스케줄 + 포지션 사이징 ===
 portfolio:
   rebalance_frequency: "quarterly"     # monthly / quarterly
   rebalance_time: "08:50"             # 리밸런싱 체크 시각 (HH:MM, 장 시작 전 권장)
+  weighting_method: "inverse_vol"     # S5 채택 (2026-05-15): equal → inverse_vol
+  vol_lookback_days: 60               # inverse_vol 변동성 계산 기간 (거래일)
+  max_position_pct: 0.10              # C_invvol_10: 단일 종목 최대 비중 10%
+  min_position_pct: 0.02              # inverse_vol 단일 종목 최소 비중 (2%)
 
 # === 개별 덮어쓰기 (선택) ===
 # factor_weights:

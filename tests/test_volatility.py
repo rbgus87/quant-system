@@ -85,6 +85,7 @@ class TestVolatilityFactor:
 
     # TC-5: 점수 범위 0~100 확인
     def test_scores_in_range(self):
+
         """모든 유효 점수는 0 이상 100 이하여야 한다."""
         rng = np.random.RandomState(7)
         tickers_closes = {
@@ -101,3 +102,44 @@ class TestVolatilityFactor:
         assert (valid >= 0).all() and (valid <= 100).all(), (
             f"Scores out of range: {valid.describe()}"
         )
+
+
+class TestGetRawVolatilities:
+
+    # TC-6: get_raw_volatilities는 0~100 점수가 아닌 연율화 σ 원본값을 반환
+    def test_returns_raw_annualized_vol_higher_for_high_vol(self):
+        """고변동성 종목이 저변동성 종목보다 큰 연율화 σ를 반환해야 한다."""
+        import numpy as np
+        rng = np.random.RandomState(42)
+        low_closes = [max(100.0 + rng.randn() * 0.5, 1.0) for _ in range(80)]
+        high_closes = [max(100.0 + rng.randn() * 5.0, 1.0) for _ in range(80)]
+        storage = _make_storage_mock({"LOW_V": low_closes, "HIGH_V": high_closes})
+
+        from factors.volatility import VolatilityFactor
+        vf = VolatilityFactor()
+        vols = vf.get_raw_volatilities(
+            "20240301", ["LOW_V", "HIGH_V"], storage, lookback_days=60
+        )
+
+        assert isinstance(vols, dict), "결과는 dict여야 한다"
+        assert "LOW_V" in vols and "HIGH_V" in vols, "두 종목 모두 결과에 포함"
+        assert vols["LOW_V"] > 0 and vols["HIGH_V"] > 0, "σ 값은 양수여야 한다"
+        assert vols["HIGH_V"] > vols["LOW_V"], (
+            f"고변동성 σ ({vols['HIGH_V']:.3f}) > 저변동성 σ ({vols['LOW_V']:.3f}) 기대"
+        )
+
+    def test_insufficient_data_ticker_excluded(self):
+        """데이터 부족 종목은 결과 dict에 포함되지 않는다 (NaN 대신 제외)."""
+        storage = _make_storage_mock({
+            "ENOUGH": [100.0 + i * 0.1 for i in range(80)],
+            "SHORT":  [100.0 + i * 0.1 for i in range(10)],
+        })
+
+        from factors.volatility import VolatilityFactor
+        vf = VolatilityFactor()
+        vols = vf.get_raw_volatilities(
+            "20240301", ["ENOUGH", "SHORT"], storage, lookback_days=60
+        )
+
+        assert "ENOUGH" in vols, "충분한 데이터 종목은 결과에 포함"
+        assert "SHORT" not in vols, "데이터 부족 종목은 결과에서 제외"

@@ -571,6 +571,61 @@ class KRXDataCollector:
 
         return pd.Series(result, dtype=float)
 
+    def get_daily_prices_cached(
+        self,
+        tickers: list[str],
+        start_date: str,
+        end_date: str,
+    ) -> pd.DataFrame:
+        """멀티 티커 일별 가격 조회 (DB 캐시 우선, 갭만 pykrx 보충).
+
+        1. DB에서 벌크 조회
+        2. 누락 ticker는 get_ohlcv(pykrx → DB 저장)로 개별 보충
+        3. 전체 결과 반환
+
+        Args:
+            tickers: 종목코드 리스트
+            start_date: 시작일 (YYYYMMDD)
+            end_date: 종료일 (YYYYMMDD)
+
+        Returns:
+            DataFrame(columns=[ticker, date, open, high, low, close, volume])
+        """
+        sd = _parse_date(start_date)
+        ed = _parse_date(end_date)
+
+        # 1. DB 벌크 조회
+        bulk = self.storage.load_daily_prices_bulk(tickers, sd, ed)
+
+        # 2. 데이터가 전혀 없는 ticker 개별 폴백 (pykrx → DB 캐시)
+        if bulk.empty:
+            covered: set[str] = set()
+        else:
+            covered = set(bulk["ticker"].unique())
+
+        missing = [t for t in tickers if t not in covered]
+        if missing:
+            frames = [bulk] if not bulk.empty else []
+            for ticker in missing:
+                try:
+                    df = self.get_ohlcv(ticker, start_date, end_date)
+                    if not df.empty:
+                        tmp = df.reset_index()
+                        tmp = tmp.rename(columns={tmp.columns[0]: "date"})
+                        tmp["ticker"] = ticker
+                        tmp["date"] = pd.to_datetime(tmp["date"]).dt.date
+                        frames.append(
+                            tmp[["ticker", "date", "open", "high", "low", "close", "volume"]]
+                        )
+                except Exception as e:
+                    logger.debug(f"[{ticker}] 개별 폴백 실패: {e}")
+            if frames:
+                bulk = pd.concat(frames, ignore_index=True)
+            else:
+                return pd.DataFrame()
+
+        return bulk
+
     def get_suspended_tickers(
         self,
         tickers: list[str],

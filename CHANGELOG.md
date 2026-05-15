@@ -6,6 +6,50 @@
 
 ## [Unreleased]
 
+### 변경 — S5 Inverse-Volatility 가중치 채택 (2026-05-15)
+
+- **config**: `portfolio.weighting_method` `"equal"` → `"inverse_vol"` (S5 채택)
+- **config**: `portfolio.max_position_pct` `0.15` → `0.10` (C_invvol_10 확정)
+- **POLICY.md**: S5 채택 이력 추가 (Sharpe+0.019, Vol -2.8%p, 5조건 전부 통과)
+- 종목 선정 로직 변경 없음 — V70M30 + Vol70 유지, 비중 배분만 변경
+
+### 추가 — 백테스트 속도 최적화 3종 (2026-05-15)
+
+- **Opt 1: 일별 가격 백필 스크립트** (`scripts/backfill_daily_prices.py` 신규)
+  - KRX Open API로 과거 전종목 OHLCV를 1거래일 = 1 API 호출로 수집
+  - 이미 저장된 날짜 자동 스킵 (idempotent), `--start-date`/`--end-date`/`--market` 옵션
+  - 백필 후 재실행 시 pykrx API 호출 제거 → 30~60분 → 3~5분 목표
+
+- **Opt 2: 비교 백테스트 병렬 실행** (`backtest/parallel.py` 신규)
+  - `run_parallel_backtests(tasks, max_workers=4)`: ProcessPoolExecutor 기반
+  - `_backtest_worker`: 모듈 레벨 함수로 picklable, 프로세스별 독립 settings
+  - `scripts/backtest_weighting_s5.py` 수정: 기본 병렬 실행, `--sequential` 옵션으로 순차 전환
+  - 병렬 실패 시 순차 폴백 자동 적용
+
+- **Opt 3: 분기 재무 프리로드** (`data/storage.py`, `backtest/engine.py` 수정)
+  - `storage.load_fundamentals_quarterly_bulk()`: 전종목 분기 데이터를 단일 SQL로 조회
+  - `storage.preload_fundamentals_quarterly()` / `clear_fq_preload()`: 리밸런싱별 캐시 수명 관리
+  - `load_fundamentals_quarterly()`: 프리로드 캐시 히트 시 DB 쿼리 없이 O(1) 반환
+  - `engine._preload_quarter_data()`: 각 리밸런싱 시작 전 프리로드 호출
+  - `storage.load_close_matrix()`: 종가 pivot matrix 편의 메서드 추가
+
+- **collector.py**: `get_daily_prices_cached()` 추가 — 멀티 티커 벌크 조회 + 갭 pykrx 보충
+- **tests**: `test_storage.py`에 `TestLoadCloseMatrix`, `TestFundamentalsQuarterlyBulkAndPreload` 추가, `tests/test_parallel.py` 신규
+
+### 추가 — S5 포지션 사이징 고도화 (2026-05-15)
+
+- **feat(s5): Equal-Weight → Inverse-Volatility 비중 배분 인프라 구축**
+  - `factors/volatility.py` 수정: `get_raw_volatilities()` 신규 (연율화 σ 원본값 반환), `_compute_ann_vol()` 내부 공통 메서드 추출로 코드 중복 제거
+  - `strategy/rebalancer.py` 수정: `compute_inverse_vol_rebalance()` 신규 (1/σ 정규화 → cap/재분배 → 주수 계산)
+  - `config/settings.py` 수정: `PortfolioConfig` 4필드 추가 (`weighting_method`, `vol_lookback_days`, `max_position_pct`, `min_position_pct`) + validate 확장
+  - `config/config.yaml` 수정: `portfolio` 섹션에 4필드 추가 (기본값 `equal`, 60일, 15%, 2%)
+  - `backtest/engine.py` 수정: `_execute_trades`에 `inverse_vol` 분기 추가 (`VolatilityFactor.get_raw_volatilities` → `compute_inverse_vol_rebalance`)
+  - `strategy/screener.py` 수정: `cache_key`에 `weighting_method` 추가, `_update_inverse_vol_weights()` 신규 (Sanity Report용 weight 업데이트)
+  - `tests/test_rebalancer.py` 신규 (4 케이스: 동일σ/2배σ/cap재분배/NaN대체)
+  - `tests/test_volatility.py` 수정: `TestGetRawVolatilities` 추가 (2 케이스)
+  - `scripts/backtest_weighting_s5.py` 신규 (A_equal/B_invvol/C_invvol_10/D_invvol_20 비교)
+  - `docs/reports/weighting_s5_analysis.md` 신규 (스크립트 실행 시 자동 생성)
+
 ### 추가 — S7 Low-Volatility 팩터 탐색 (2026-05-15)
 
 - **feat(s7): Low-Volatility 팩터 도입 탐색 + 채택 결정**
