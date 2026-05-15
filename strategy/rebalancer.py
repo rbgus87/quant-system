@@ -1,6 +1,7 @@
 # strategy/rebalancer.py
 import logging
 import math
+from typing import Optional
 
 import numpy as np
 
@@ -345,30 +346,35 @@ class Rebalancer:
 
     def estimate_market_impact(
         self,
-        order_qty: int,
+        price: float,
+        shares: int,
         avg_daily_volume: float,
+        daily_volatility: Optional[float] = None,
         participation_rate: float = 0.1,
+        max_impact: float = 0.05,
     ) -> float:
         """시장 충격 추정 (Square-Root Model)
 
-        Impact ≈ sigma * sqrt(order_qty / (avg_volume * participation_rate))
-        간소화: sigma를 1%로 가정
+        Impact ≈ σ_daily × √(shares / (avg_volume × participation_rate))
 
         Args:
-            order_qty: 주문 수량
+            price: 체결 가격 (시가)
+            shares: 주문 수량
             avg_daily_volume: 20일 평균 거래량
+            daily_volatility: 종목 일일 변동성(σ). None이면 0.01 기본값 (하위 호환).
             participation_rate: 참여율 (기본 10%)
+            max_impact: 충격 상한 (기본 5%, 변경 금지)
 
         Returns:
             추정 시장 충격 비율 (예: 0.005 = 0.5%)
         """
-        if avg_daily_volume <= 0 or order_qty <= 0:
+        if avg_daily_volume <= 0 or shares <= 0:
             return 0.0
 
-        sigma = 0.01  # 일일 변동성 1% 가정
-        volume_fraction = order_qty / (avg_daily_volume * participation_rate)
+        sigma = daily_volatility if daily_volatility is not None else 0.01
+        volume_fraction = shares / (avg_daily_volume * participation_rate)
         impact = sigma * (volume_fraction ** 0.5)
-        return min(float(impact), 0.05)  # 최대 5% 캡
+        return min(float(impact), max_impact)
 
     def calc_buy_shares(self, target_amount: float, price: float) -> int:
         """목표 금액으로 매수 가능한 주식 수 계산

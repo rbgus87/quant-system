@@ -5,6 +5,10 @@ TC-1: 동일 변동성 → equal-weight와 동일 결과
 TC-2: 변동성 2배 차이 → 저변동성 종목 비중 2배
 TC-3: max_position_pct 초과 → cap + 재분배
 TC-4: σ=NaN 종목 → median σ 대체
+
+estimate_market_impact 2 케이스 (E2):
+TC-5: daily_volatility=None → 기본 sigma=0.01 사용 (하위 호환)
+TC-6: daily_volatility=0.03 → sigma 3배, impact 3배
 """
 
 import math
@@ -112,3 +116,29 @@ class TestInverseVolRebalance:
         # 모든 비중 양수
         for t in result_tickers:
             assert weights[t] > 0, f"{t} weight should be positive"
+
+
+class TestEstimateMarketImpact:
+    """E2: estimate_market_impact 종목별 σ 파라미터 테스트."""
+
+    def test_backward_compat_none_uses_default_sigma(self):
+        """TC-5: daily_volatility=None → sigma=0.01, 기존 동작과 동일."""
+        rb = _make_rebalancer()
+        adv = 100_000   # 거래량
+        shares = 10_000
+        price = 50_000.0
+        # volume_fraction = 10000 / (100000 * 0.1) = 1.0 → impact = 0.01 * 1.0 = 0.01
+        impact = rb.estimate_market_impact(price, shares, adv, daily_volatility=None)
+        assert abs(impact - 0.01) < 1e-9, f"expected 0.01, got {impact}"
+
+    def test_custom_sigma_scales_impact_proportionally(self):
+        """TC-6: daily_volatility=0.03 → sigma 3배 → impact 3배."""
+        rb = _make_rebalancer()
+        adv = 100_000
+        shares = 10_000
+        price = 50_000.0
+        impact_default = rb.estimate_market_impact(price, shares, adv, daily_volatility=None)
+        impact_custom  = rb.estimate_market_impact(price, shares, adv, daily_volatility=0.03)
+        assert impact_custom > impact_default, "high sigma should produce higher impact"
+        ratio = impact_custom / impact_default
+        assert abs(ratio - 3.0) < 1e-6, f"expected 3× ratio, got {ratio:.6f}"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date as date_type
 from typing import Optional
 
@@ -36,11 +37,12 @@ class MultiFactorBacktest:
       → T+1 영업일 시가(open)로 매매 체결 (선견 편향 방지)
     """
 
-    def __init__(self, initial_cash: float = 0) -> None:
+    def __init__(self, initial_cash: float = 0, use_ticker_sigma: bool = True) -> None:
         if initial_cash <= 0:
             # config.yaml의 initial_cash 사용 (기본 1000만원)
             initial_cash = settings.portfolio.initial_cash
         self.initial_cash = initial_cash
+        self._use_ticker_sigma = use_ticker_sigma  # E2: 종목별 σ 시장충격 모델
         self.screener = MultiFactorScreener()
         self.krx = self.screener.collector  # OHLCV 조회용 collector 공유
         self.rebalancer = Rebalancer()
@@ -662,6 +664,34 @@ class MultiFactorBacktest:
         avg_vols = bulk_df.groupby("ticker")["volume"].mean()
         return {str(k): float(v) for k, v in avg_vols.items() if pd.notna(v) and v > 0}
 
+    def _get_ticker_daily_volatilities(
+        self,
+        tickers: list[str],
+        date_str: str,
+        lookback_days: int = 60,
+    ) -> dict[str, float]:
+        """종목별 일일 변동성 (σ_daily = σ_annual / √252) 조회 (E2: 시장 충격용).
+
+        Args:
+            tickers: 종목코드 리스트
+            date_str: 기준 날짜 (YYYYMMDD)
+            lookback_days: 변동성 계산 기간 (거래일, 기본 60일)
+
+        Returns:
+            {ticker: sigma_daily}. 조회 실패 종목은 키 없음 → estimate_market_impact 내부에서 0.01 폴백.
+        """
+        if not tickers:
+            return {}
+        try:
+            from factors.volatility import VolatilityFactor
+            raw_annual = VolatilityFactor().get_raw_volatilities(
+                date_str, tickers, self.krx.storage, lookback_days=lookback_days,
+            )
+            return {t: v / math.sqrt(252) for t, v in raw_annual.items() if v > 0}
+        except Exception as exc:
+            logger.warning(f"[{date_str}] 시장 충격 σ 조회 실패 (0.01 폴백): {exc}")
+            return {}
+
     def _execute_trades(
         self,
         holdings: dict[str, int],
@@ -753,6 +783,12 @@ class MultiFactorBacktest:
         order_tickers = [t for t in orders if orders[t] != 0 and t in prices]
         avg_volumes = self._get_avg_daily_volumes(order_tickers, date_str)
 
+        # E2: 종목별 일일 변동성 (σ_annual / √252), 조회 실패 시 {} → estimate_market_impact에서 0.01 폴백
+        raw_daily_vols: dict[str, float] = (
+            self._get_ticker_daily_volatilities(order_tickers, date_str)
+            if self._use_ticker_sigma else {}
+        )
+
         # 자금 흐름 추적: 매매 전 현금
         cash_before_trade = cash
 
@@ -767,10 +803,10 @@ class MultiFactorBacktest:
             price = prices.get(ticker)
             if price is None:
                 continue
-            # 시장 충격 반영: 주문 수량 대비 거래량 비율로 가격 조정
-            # 시장 충격은 슬리피지를 대체하므로, 충격 적용 시 슬리피지 제외
+            # 시장 충격 반영: 종목별 σ 적용 (E2). σ 없으면 0.01 폴백.
             impact = self.rebalancer.estimate_market_impact(
-                sell_shares, avg_volumes.get(ticker, 0)
+                price, sell_shares, avg_volumes.get(ticker, 0),
+                daily_volatility=raw_daily_vols.get(ticker),
             )
             # 호가단위 적용 (매도: 내림 = 불리한 방향)
             adjusted_price = round_to_tick(price * (1 - impact), "sell")
@@ -810,10 +846,10 @@ class MultiFactorBacktest:
             price = prices.get(ticker)
             if price is None:
                 continue
-            # 시장 충격 반영: 매수 시 불리한 가격
-            # 시장 충격은 슬리피지를 대체하므로, 충격 적용 시 슬리피지 제외
+            # 시장 충격 반영: 종목별 σ 적용 (E2). σ 없으면 0.01 폴백.
             impact = self.rebalancer.estimate_market_impact(
-                delta, avg_volumes.get(ticker, 0)
+                price, delta, avg_volumes.get(ticker, 0),
+                daily_volatility=raw_daily_vols.get(ticker),
             )
             # 호가단위 적용 (매수: 올림 = 불리한 방향)
             adjusted_price = round_to_tick(price * (1 + impact), "buy")

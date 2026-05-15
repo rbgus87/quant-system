@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+### 변경 — E2: 종목별 변동성 기반 시장충격 모델 (2026-05-15)
+
+- **strategy/rebalancer.py**: `estimate_market_impact`에 `daily_volatility: Optional[float] = None` 추가
+  - `daily_volatility=None`이면 기존 σ=0.01 동작 유지 (하위 호환)
+  - 신규: 종목별 σ 전달 시 실제 변동성으로 Square-Root Model 계산
+  - `price: float`, `shares: int` 파라미터로 시그니처 명시화
+- **backtest/engine.py**: `_execute_trades`에서 리밸런싱마다 종목별 σ 1회 벌크 조회 후 전달
+  - `_get_ticker_daily_volatilities()` 신규 (σ_annual/√252 변환)
+  - `MultiFactorBacktest(use_ticker_sigma=False)` 플래그로 구버전 동작 재현 가능
+  - 조회 실패 시 0.01 폴백 (graceful)
+- **scripts/verify_sigma_impact_e2.py**: A(σ=0.01)/B(종목별 σ) 백테스트 비교
+- **tests/test_rebalancer.py**: TC-5(하위 호환), TC-6(σ 3배 → impact 3배) 추가
+
 ### 변경 — S5 Inverse-Volatility 가중치 채택 (2026-05-15)
 
 - **config**: `portfolio.weighting_method` `"equal"` → `"inverse_vol"` (S5 채택)
