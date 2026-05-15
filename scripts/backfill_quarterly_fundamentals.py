@@ -35,7 +35,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import text
@@ -44,7 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.logging_config import setup_logging  # noqa: E402
-from data.dart_client import DartClient, REPRT_CODES  # noqa: E402
+from data.dart_client import DartClient  # noqa: E402
 from data.storage import DataStorage  # noqa: E402
 
 logger = logging.getLogger(__name__)

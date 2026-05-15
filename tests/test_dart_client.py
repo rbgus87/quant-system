@@ -1,13 +1,12 @@
 # tests/test_dart_client.py
 """DART OpenAPI 클라이언트 테스트"""
 
-import json
-import pytest
+from unittest.mock import MagicMock, patch
+
 import pandas as pd
-from unittest.mock import patch, MagicMock
+import pytest
 
-from data.dart_client import DartClient, REPRT_CODES
-
+from data.dart_client import REPRT_CODES, DartClient
 
 # ───────────────────────────────────────────────
 # Fixtures

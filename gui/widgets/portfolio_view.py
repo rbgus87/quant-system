@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -102,9 +102,8 @@ class _TelegramReportWorker(QThread):
 
     def run(self) -> None:
         try:
-            from notify.telegram import TelegramNotifier
-
             from gui.services import get_api
+            from notify.telegram import TelegramNotifier
 
             balance = get_api().get_balance()
             notifier = TelegramNotifier()

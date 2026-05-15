@@ -23,16 +23,16 @@ import logging
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from sqlalchemy import text  # noqa: E402
 
 from config.calendar import get_krx_sessions, is_krx_business_day  # noqa: E402
 from config.logging_config import setup_logging  # noqa: E402
 from data.collector import KRXDataCollector  # noqa: E402
 from data.storage import DataStorage  # noqa: E402
-from sqlalchemy import text  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

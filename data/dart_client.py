@@ -14,8 +14,8 @@ import io
 import json
 import logging
 import time
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -271,8 +271,8 @@ class DartClient:
         )
 
         # alotMatter API 병렬 호출 (ThreadPoolExecutor)
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         import threading
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         fetched = 0
         total = len(missing)

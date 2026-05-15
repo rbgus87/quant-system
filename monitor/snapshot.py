@@ -10,7 +10,6 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from config.settings import settings
 from monitor.benchmark import get_kospi_daily_return

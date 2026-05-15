@@ -1,7 +1,8 @@
 # tests/test_screener.py
-import pandas as pd
+from unittest.mock import MagicMock, patch
+
 import numpy as np
-from unittest.mock import patch, MagicMock
+import pandas as pd
 
 from strategy.screener import MultiFactorScreener
 

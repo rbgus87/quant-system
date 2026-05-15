@@ -1,22 +1,22 @@
 # data/storage.py
-import pandas as pd
 import logging
 from datetime import date, datetime, timezone
 from typing import Optional
 
+import pandas as pd
 from sqlalchemy import (
-    create_engine,
+    BigInteger,
+    Boolean,
     Column,
-    String,
-    Float,
-    Integer,
     Date,
     DateTime,
-    Boolean,
-    BigInteger,
+    Float,
     Index,
+    Integer,
+    String,
     Text,
     UniqueConstraint,
+    create_engine,
     event,
     text,
 )
@@ -1188,7 +1188,8 @@ class DataStorage:
         Returns:
             DataFrame(index=ticker, columns=[sector_name, sector_code, is_financial, date])
         """
-        from datetime import datetime as _dt, timedelta as _td
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
 
         try:
             target_dt = _dt.strptime(str(date), "%Y%m%d")

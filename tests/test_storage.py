@@ -1,7 +1,8 @@
 # tests/test_storage.py
+from datetime import date
+
 import pandas as pd
 import pytest
-from datetime import date
 
 from data.storage import (
     DataStorage,

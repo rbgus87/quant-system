@@ -33,7 +33,7 @@ import subprocess
 import sys
 import time
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -247,6 +247,7 @@ _NETWORK_TIMEOUT = 8.0
 
 def step_dart_ping() -> tuple[str, str]:
     import requests
+
     from config.settings import settings
     if not settings.dart_api_key:
         return Status.FAIL, "DART_API_KEY 비어있음"
@@ -281,8 +282,8 @@ def step_kiwoom_token() -> tuple[str, str]:
 
 
 def step_telegram_notify(notify: bool) -> tuple[str, str]:
-    from notify.telegram import TelegramNotifier
     from config.settings import settings
+    from notify.telegram import TelegramNotifier
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         return Status.FAIL, "TELEGRAM_* 비어있음"
     t = TelegramNotifier()

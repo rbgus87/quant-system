@@ -284,7 +284,7 @@ def compute_false_positive_returns(
 
 def run_mode(name: str, enabled: bool, max_debt: float) -> ModeResult:
     label = (
-        f"S2 OFF (baseline)" if not enabled
+        "S2 OFF (baseline)" if not enabled
         else f"S2 ON, max_debt_ratio={max_debt:.0f}%"
     )
     res = ModeResult(

@@ -13,11 +13,11 @@ KOSPI 종합지수(코드 1001)를 직접 사용한다.
 (DB 캐시 → Naver Finance 페이지네이션 → KRX Open API 폴백).
 monitor.benchmark 와 동일 소스로 통일되어 있다.
 """
-import pandas as pd
-import numpy as np
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+
+import numpy as np
+import pandas as pd
 
 from config.settings import settings
 

@@ -1,7 +1,8 @@
 # tests/test_telegram.py
+from unittest.mock import patch
+
 import pytest
 import requests_mock
-from unittest.mock import patch
 
 from notify.telegram import TelegramNotifier
 

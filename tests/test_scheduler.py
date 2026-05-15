@@ -1,7 +1,8 @@
 # tests/test_scheduler.py
-import pandas as pd
-from unittest.mock import patch, MagicMock
 from datetime import date
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
 
 from config.calendar import is_krx_business_day, is_last_krx_business_day_of_month
 
@@ -156,8 +157,8 @@ class TestRunScheduledRebalancing:
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_rebalancing_error_sends_telegram(self, mock_bday, mock_last) -> None:
         """리밸런싱 실패 시 텔레그램 에러 알림"""
-        from scheduler.main import run_scheduled_rebalancing
         from config.settings import settings
+        from scheduler.main import run_scheduled_rebalancing
 
         mock_notifier_instance = MagicMock()
 

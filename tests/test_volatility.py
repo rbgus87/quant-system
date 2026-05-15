@@ -1,10 +1,10 @@
 """VolatilityFactor 단위 테스트."""
 
 import datetime
+from unittest.mock import MagicMock
+
 import numpy as np
 import pandas as pd
-import pytest
-from unittest.mock import MagicMock
 
 
 def _make_storage_mock(tickers_closes: dict[str, list[float]]) -> MagicMock:

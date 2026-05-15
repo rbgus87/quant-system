@@ -21,8 +21,6 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-import pandas as pd
-
 logger = logging.getLogger(__name__)
 
 
@@ -43,9 +41,9 @@ def _backtest_worker(task: dict) -> dict:
     Returns:
         {"name": str, "df": pd.DataFrame}
     """
+    from backtest.engine import MultiFactorBacktest
     from config.settings import settings
     from strategy.screener import MultiFactorScreener
-    from backtest.engine import MultiFactorBacktest
 
     cfg = task["cfg"]
     # 프로세스 독립 settings 수정 (다른 프로세스와 격리)

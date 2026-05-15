@@ -1,8 +1,9 @@
 # tests/test_kiwoom_api.py
+from datetime import datetime, timedelta
+from unittest.mock import patch
+
 import pytest
 import requests_mock
-from unittest.mock import patch
-from datetime import datetime, timedelta
 
 from trading.kiwoom_api import KiwoomRestClient
 
@@ -124,8 +125,9 @@ class TestCurrentPrice:
 
     def test_get_current_price_success(self, client, token_response) -> None:
         """모의투자: pykrx 폴백으로 현재가 조회"""
-        import pandas as pd
         from unittest.mock import patch
+
+        import pandas as pd
 
         mock_df = pd.DataFrame(
             {"종가": [70000]},
@@ -141,8 +143,9 @@ class TestCurrentPrice:
 
     def test_get_current_price_failure(self, client, token_response) -> None:
         """모의투자: pykrx 폴백 실패 시 빈 dict 반환"""
-        import pandas as pd
         from unittest.mock import patch
+
+        import pandas as pd
 
         with requests_mock.Mocker() as m:
             m.post("https://mockapi.kiwoom.com/oauth2/token", json=token_response)
@@ -327,8 +330,9 @@ class TestRetry:
 
     def test_get_current_price_pykrx_fallback(self, client, token_response) -> None:
         """모의투자: pykrx 폴백으로 종가 조회 성공"""
-        import pandas as pd
         from unittest.mock import patch
+
+        import pandas as pd
 
         mock_df = pd.DataFrame(
             {"종가": [68000, 69000, 70000]},

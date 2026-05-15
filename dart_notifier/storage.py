@@ -10,7 +10,7 @@ import os
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Column, Index, String, create_engine, event, text
+from sqlalchemy import Column, String, create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger(__name__)

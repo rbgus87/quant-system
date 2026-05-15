@@ -5,9 +5,9 @@
 import 경로, sys.path, 의존성 누락 등의 문제를 잡아냅니다.
 """
 
+import importlib
 import subprocess
 import sys
-import importlib
 
 
 class TestEntrypointImports:

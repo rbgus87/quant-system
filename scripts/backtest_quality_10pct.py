@@ -535,7 +535,7 @@ def main() -> int:
         logger.warning("두 기간 모두 실행되지 않아 권고 보고서 생성 건너뜀")
 
     # 콘솔 요약
-    print(f"\n=== Quality 10% 분석 요약 ===")
+    print("\n=== Quality 10% 분석 요약 ===")
     for pk in period_keys:
         start, end = PERIODS[pk]
         print(f"\n[{pk} {start} ~ {end}]")

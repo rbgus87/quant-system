@@ -1,6 +1,6 @@
 # tests/test_processor.py
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from data.processor import DataProcessor
 

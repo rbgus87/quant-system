@@ -1,7 +1,8 @@
 # factors/momentum.py
-import pandas as pd
 import logging
 from typing import Optional
+
+import pandas as pd
 
 from config.settings import settings
 from factors.utils import weighted_average_nan_safe

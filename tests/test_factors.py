@@ -1,13 +1,13 @@
 # tests/test_factors.py
-import pandas as pd
 import numpy as np
+import pandas as pd
 import pytest
 
 from config.settings import settings
-from factors.value import ValueFactor
+from factors.composite import MultiFactorComposite
 from factors.momentum import MomentumFactor
 from factors.quality import QualityFactor
-from factors.composite import MultiFactorComposite
+from factors.value import ValueFactor
 
 # ───────────────────────────────────────────────
 # ValueFactor 테스트
@@ -872,6 +872,7 @@ class TestVolatilityFilter:
 
     def setup_method(self) -> None:
         from unittest.mock import MagicMock
+
         from strategy.screener import MultiFactorScreener
 
         self.screener = MultiFactorScreener.__new__(MultiFactorScreener)

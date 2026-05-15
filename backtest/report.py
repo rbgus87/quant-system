@@ -3,10 +3,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import pandas as pd
-import os
 import logging
+import os
 from typing import Optional
+
+import pandas as pd
 import quantstats as qs
 import quantstats.reports as _qs_reports
 
@@ -134,6 +135,7 @@ class ReportGenerator:
         """
         import matplotlib.pyplot as plt
         import numpy as np
+
         from backtest.metrics import PerformanceAnalyzer
 
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)

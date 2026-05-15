@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QStatusBar, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 logger = logging.getLogger(__name__)
 

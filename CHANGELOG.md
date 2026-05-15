@@ -6,6 +6,20 @@
 
 ## [Unreleased]
 
+### 추가 — E6: GitHub Actions CI/CD (2026-05-16)
+
+- **.github/workflows/ci.yml**: push/PR마다 자동으로 ruff + pytest 실행
+  - Python 3.12, ubuntu-latest, `pip cache` 적용
+  - 더미 API 키 env로 실거래 API 호출 차단 (`IS_PAPER_TRADING=true`)
+  - `branches: [main, feature/**]` push 및 `main` PR 트리거
+- **ruff.toml**: 린트 설정 추가 (`line-length=200`, E/F/W/I 룰)
+  - `gui/**`: E402 제외 (PyQt 설정 후 import)
+  - `scripts/**`, `tests/**`: F841/E731 제외 (분석 스크립트 미사용 변수 허용)
+- **코드 정리** (ruff auto-fix): 미사용 import 61건, f-string 64건 정리
+- **버그 수정**: `test_backtest.py` 4케이스 — `order_qty` → `price, shares` (E2 시그니처 반영)
+- **버그 수정**: `scheduler/main.py` — `"pd.DataFrame"` 어노테이션 → `Any` (F821 제거)
+- **버그 수정**: `backtest/metrics.py` — `monthly_first` 미사용 변수 제거 (F841)
+
 ### 변경 — E2: 종목별 변동성 기반 시장충격 모델 (2026-05-15)
 
 - **strategy/rebalancer.py**: `estimate_market_impact`에 `daily_volatility: Optional[float] = None` 추가

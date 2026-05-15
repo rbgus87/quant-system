@@ -1,6 +1,8 @@
 # factors/value.py
-import pandas as pd
 import logging
+
+import pandas as pd
+
 from config.settings import settings
 from factors.utils import weighted_average_nan_safe
 

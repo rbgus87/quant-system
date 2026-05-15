@@ -19,15 +19,13 @@ POLICY 5조건:
 from __future__ import annotations
 
 import argparse
-import sys
-import os
 import logging
-import json
+import os
+import sys
 from dataclasses import dataclass
-from typing import Optional
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -283,7 +281,7 @@ def save_report(
 
     buf.write("# S5: 포지션 사이징 분석 (Equal-Weight vs Inverse-Volatility)\n\n")
     buf.write(f"**기간**: {start_date} ~ {end_date} | **시장**: KOSPI | **시드**: 42  \n")
-    buf.write(f"**전략**: Preset A (V70M30, Vol70, F-Score≥4, S4 섹터분산)  \n\n")
+    buf.write("**전략**: Preset A (V70M30, Vol70, F-Score≥4, S4 섹터분산)  \n\n")
 
     buf.write("## 1. 4가지 비중 방식 비교\n\n")
     buf.write(

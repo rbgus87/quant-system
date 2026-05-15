@@ -1,6 +1,5 @@
 # tests/test_parallel.py
 """backtest.parallel 유틸리티 테스트."""
-import pytest
 
 from backtest.parallel import run_parallel_backtests
 

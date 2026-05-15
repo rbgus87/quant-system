@@ -2,7 +2,6 @@
 """비상 전량 매도 버튼 + .env 관리"""
 
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +33,6 @@ class _EmergencySellWorker(QThread):
             from datetime import date
 
             from config.settings import settings
-
             from gui.services import get_api, get_storage
 
             api = get_api()

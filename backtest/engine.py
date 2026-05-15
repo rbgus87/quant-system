@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import date as date_type
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 from config.calendar import (
@@ -341,6 +339,7 @@ class MultiFactorBacktest:
             market: 대상 시장
         """
         import time as _time
+
         from data.collector import _parse_date
 
         markets = ["KOSPI", "KOSDAQ"] if market == "ALL" else [market]
@@ -1036,7 +1035,9 @@ class MultiFactorBacktest:
             각 윈도우별 결과 리스트
         """
         from datetime import datetime
+
         from dateutil.relativedelta import relativedelta
+
         from backtest.metrics import PerformanceAnalyzer
 
         market = market or settings.universe.market

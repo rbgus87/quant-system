@@ -4,10 +4,11 @@
 결과: dist/KoreanQuant.exe
 """
 
-import PyInstaller.__main__
 import os
 import shutil
 import sys
+
+import PyInstaller.__main__
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 

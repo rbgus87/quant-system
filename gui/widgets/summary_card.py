@@ -56,9 +56,8 @@ class _RegimeWorker(QThread):
 
     def run(self) -> None:
         try:
-            from strategy.market_regime import MarketRegimeFilter
-
             from gui.services import get_collector
+            from strategy.market_regime import MarketRegimeFilter
 
             mrf = MarketRegimeFilter(get_collector())
             today = datetime.now().strftime("%Y%m%d")

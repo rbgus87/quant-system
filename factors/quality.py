@@ -1,8 +1,9 @@
 # factors/quality.py
-import pandas as pd
-import numpy as np
 import logging
 from typing import Optional
+
+import numpy as np
+import pandas as pd
 
 from config.settings import settings
 from factors.utils import weighted_average_nan_safe
@@ -477,7 +478,8 @@ class QualityFactor:
         Returns:
             필터링된 fundamentals. 제거된 종목 수 + 사유별 분해 logger.info.
         """
-        from datetime import date as _date, datetime as _dt
+        from datetime import date as _date
+        from datetime import datetime as _dt
 
         if fundamentals.empty:
             return fundamentals

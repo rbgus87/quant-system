@@ -33,7 +33,7 @@ def main() -> None:
     window = MainWindow()
 
     # GUI 프로세스 내부 로그를 탭별 로그 뷰어로 라우팅
-    from config.logging_config import _LOG_FORMAT, _LOG_DATEFMT
+    from config.logging_config import _LOG_DATEFMT, _LOG_FORMAT
     from gui.widgets.log_handler import QtLogHandler
 
     qt_handler = QtLogHandler(window._log_viewer.bridge)

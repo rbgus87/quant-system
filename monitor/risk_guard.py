@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional
-from urllib.request import urlopen, Request
+from urllib.request import Request, urlopen
 
 from config.settings import settings
 

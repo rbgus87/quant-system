@@ -2,12 +2,12 @@
 """리스크 감시 모듈 테스트"""
 
 import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
-from monitor.risk_guard import RiskGuard
 from monitor.alert import send_risk_alerts
-
+from monitor.risk_guard import RiskGuard
 
 # ── 공통 fixture ──
 

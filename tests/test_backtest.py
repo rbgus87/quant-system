@@ -1,8 +1,9 @@
 # tests/test_backtest.py
-import pandas as pd
-import numpy as np
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pandas as pd
 
 from backtest.engine import MultiFactorBacktest
 from backtest.metrics import PerformanceAnalyzer
@@ -100,28 +101,28 @@ class TestRebalancer:
     def test_market_impact_small_order(self) -> None:
         """소량 주문 → 시장 충격 작음"""
         impact = self.rebalancer.estimate_market_impact(
-            order_qty=100, avg_daily_volume=1_000_000
+            price=50_000.0, shares=100, avg_daily_volume=1_000_000
         )
         assert 0 < impact < 0.005  # 0.5% 미만
 
     def test_market_impact_large_order(self) -> None:
         """대량 주문 → 시장 충격 큼"""
         impact = self.rebalancer.estimate_market_impact(
-            order_qty=100_000, avg_daily_volume=100_000
+            price=50_000.0, shares=100_000, avg_daily_volume=100_000
         )
         assert impact > 0.01  # 1% 초과
 
     def test_market_impact_zero_volume(self) -> None:
         """거래량 0 → 충격 0"""
         impact = self.rebalancer.estimate_market_impact(
-            order_qty=100, avg_daily_volume=0
+            price=50_000.0, shares=100, avg_daily_volume=0
         )
         assert impact == 0.0
 
     def test_market_impact_capped(self) -> None:
         """시장 충격 최대 5% 캡"""
         impact = self.rebalancer.estimate_market_impact(
-            order_qty=1_000_000, avg_daily_volume=1_000
+            price=50_000.0, shares=1_000_000, avg_daily_volume=1_000
         )
         assert impact <= 0.05
 
@@ -883,6 +884,7 @@ class TestReport:
             # 날짜 계산 로직만 검증하기 위해 짧은 기간 사용
             # 학습2년 + 검증1년 + 스텝1년으로 2개 윈도우가 생겨야 함
             from datetime import datetime
+
             from dateutil.relativedelta import relativedelta
 
             full_start = datetime(2020, 1, 1)

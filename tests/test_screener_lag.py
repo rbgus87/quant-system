@@ -6,10 +6,7 @@
 - strict_reporting_lag=True일 때 screener가 fund_query_date로 호출하는지 확인
 - 분기보고서 공시 마감일(1/15, 4/15, 7/15, 10/15) 전후 동작
 """
-from unittest.mock import MagicMock, patch
 
-import pandas as pd
-import pytest
 
 from strategy.screener import MultiFactorScreener
 

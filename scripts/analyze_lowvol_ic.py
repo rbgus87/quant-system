@@ -28,7 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from config.logging_config import setup_logging  # noqa: E402
-from config.settings import settings             # noqa: E402
+from config.settings import settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -281,8 +281,8 @@ def build_report(
         "# S7 Low-Volatility 팩터 IC/IR 분석 (Part 1)",
         "",
         f"**분석 기간:** 2017Q1 ~ 2024Q4 ({len(ic_df)}분기)  ",
-        f"**시장:** KOSPI  ",
-        f"**유니버스:** F-Score≥4, Step1/3·S4 비활성, n=9999  ",
+        "**시장:** KOSPI  ",
+        "**유니버스:** F-Score≥4, Step1/3·S4 비활성, n=9999  ",
         f"**Lookback 비교:** {', '.join(str(lb) + 'd' for lb in LOOKBACKS)}  ",
         "",
         "---",

@@ -24,7 +24,6 @@ import logging
 import random
 import sys
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 

@@ -1,0 +1,11 @@
+line-length = 200
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "W", "I"]
+
+[lint.per-file-ignores]
+"gui/**"      = ["E402"]
+"scripts/**"  = ["F841", "E731"]
+"tests/**"    = ["F841"]
+"tests/test_monitor_snapshot.py" = ["E402"]

@@ -3,7 +3,6 @@
 
 import logging
 import re
-from typing import Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 

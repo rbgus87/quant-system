@@ -1,16 +1,17 @@
 # strategy/screener.py
-import pandas as pd
 import logging
 from typing import Optional
 
-from config.settings import settings
+import pandas as pd
+
 from config.calendar import previous_krx_business_day
+from config.settings import settings
 from data.collector import KRXDataCollector, ReturnCalculator
 from data.processor import DataProcessor
-from factors.value import ValueFactor
+from factors.composite import MultiFactorComposite
 from factors.momentum import MomentumFactor
 from factors.quality import QualityFactor
-from factors.composite import MultiFactorComposite
+from factors.value import ValueFactor
 from factors.volatility import VolatilityFactor
 
 logger = logging.getLogger(__name__)
@@ -761,6 +762,7 @@ class MultiFactorScreener:
             weight 컬럼이 inverse_vol 비중으로 업데이트된 DataFrame
         """
         import math as _math
+
         import numpy as _np
 
         tickers = portfolio.index.tolist()
@@ -821,8 +823,9 @@ class MultiFactorScreener:
         Returns:
             변동성 필터 통과 종목 리스트
         """
-        import numpy as np
         from datetime import datetime, timedelta
+
+        import numpy as np
 
         vol_cfg = settings.volatility
         lookback = vol_cfg.lookback_days

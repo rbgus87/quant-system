@@ -16,7 +16,6 @@ import logging
 import os
 import sys
 from datetime import date, timedelta
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -47,11 +46,11 @@ def detect_and_backfill(
     Returns:
         (missing_found, recovered, still_missing)
     """
-    from scripts.backfill_data import (  # type: ignore
-        find_missing_dates,
-        backfill_one_date,
-    )
     from data.collector import KRXDataCollector
+    from scripts.backfill_data import (  # type: ignore
+        backfill_one_date,
+        find_missing_dates,
+    )
 
     business_days = recent_business_days(lookback)
     if not business_days:
@@ -103,7 +102,7 @@ def notify_result(
             return
 
         lines = [
-            f"📥 자동 백필 결과",
+            "📥 자동 백필 결과",
             f"- 탐지된 누락: {len(missing)}일",
             f"- 복구 완료: {len(recovered)}일",
             f"- 여전히 누락: {len(still_missing)}일",

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "feature/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    env:
+      # 더미 API 키 — CI에서 실거래 API 호출 방지
+      KIWOOM_APP_KEY: "dummy-ci-key"
+      KIWOOM_APP_SECRET: "dummy-ci-secret"
+      TELEGRAM_BOT_TOKEN: "0000000000:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      TELEGRAM_CHAT_ID: "0"
+      IS_PAPER_TRADING: "true"
+      LOG_LEVEL: "WARNING"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lint (ruff)
+        run: python -m ruff check .
+
+      - name: Test (pytest)
+        run: python -m pytest tests/ -x -q --tb=short

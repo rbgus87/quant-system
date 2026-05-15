@@ -23,7 +23,8 @@ import argparse
 import logging
 import sys
 from collections import Counter
-from datetime import date as _date, datetime
+from datetime import date as _date
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 

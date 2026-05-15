@@ -23,7 +23,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date as _date, datetime, timedelta
+from datetime import date as _date
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import text
@@ -293,7 +294,7 @@ def main() -> int:
             continue
 
         if not data:
-            logger.warning(f"  응답 비어 있음 — 0건")
+            logger.warning("  응답 비어 있음 — 0건")
             continue
 
         try:

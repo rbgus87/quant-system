@@ -2,6 +2,7 @@
 import logging
 import logging.handlers
 import os
+
 from config.settings import settings
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

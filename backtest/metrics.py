@@ -1,7 +1,8 @@
 # backtest/metrics.py
-import pandas as pd
-import numpy as np
 import logging
+
+import numpy as np
+import pandas as pd
 
 from config.settings import settings
 
@@ -434,7 +435,6 @@ class PerformanceAnalyzer:
             return pd.DataFrame()
 
         monthly_last = portfolio_values.resample("ME").last()
-        monthly_first = portfolio_values.resample("MS").first()
 
         records: list[dict] = []
         for i in range(len(monthly_last)):

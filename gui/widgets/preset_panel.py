@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,

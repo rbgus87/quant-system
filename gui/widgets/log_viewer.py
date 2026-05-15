@@ -4,7 +4,6 @@
 import logging
 from typing import Optional
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor
 from PyQt6.QtWidgets import (
     QComboBox,

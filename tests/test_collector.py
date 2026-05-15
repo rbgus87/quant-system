@@ -1,8 +1,9 @@
 # tests/test_collector.py
-import pandas as pd
+from unittest.mock import MagicMock, patch
+
 import numpy as np
+import pandas as pd
 import pytest
-from unittest.mock import patch, MagicMock
 
 from data.collector import (
     KRXDataCollector,

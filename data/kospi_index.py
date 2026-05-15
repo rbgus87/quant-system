@@ -19,7 +19,6 @@ import logging
 import re
 import urllib.request
 from datetime import date, datetime, timedelta
-from typing import Optional
 
 import pandas as pd
 

@@ -2,16 +2,15 @@
 """일간 스냅샷 모니터링 테스트"""
 
 import json
+from datetime import date
+from unittest.mock import MagicMock, patch
+
 import pytest
 import requests_mock
-from datetime import date, datetime
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
-from monitor.storage import MonitorStorage
-from monitor.snapshot import take_daily_snapshot
 from monitor.benchmark import get_kospi_daily_return
-
+from monitor.snapshot import take_daily_snapshot
+from monitor.storage import MonitorStorage
 
 # ── 공통 fixture ──
 

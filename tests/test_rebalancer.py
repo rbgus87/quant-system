@@ -11,8 +11,6 @@ TC-5: daily_volatility=None → 기본 sigma=0.01 사용 (하위 호환)
 TC-6: daily_volatility=0.03 → sigma 3배, impact 3배
 """
 
-import math
-import pytest
 
 
 def _make_rebalancer():

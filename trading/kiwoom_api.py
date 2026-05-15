@@ -1,11 +1,13 @@
 # trading/kiwoom_api.py
-import requests
 import logging
 import time
 from datetime import datetime, timedelta
 from typing import Optional
-from config.settings import settings
+
+import requests
 from pykrx import stock as pykrx_stock
+
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 

@@ -257,7 +257,7 @@ def compute_false_positive_returns(
         # ds → next_ds 1분기 수익률
         try:
             # 보유 기간 수익률 (시작 ~ 다음 리밸런싱)
-            from datetime import datetime as _dt, timedelta as _td
+            from datetime import datetime as _dt
 
             start_dt = _dt.strptime(ds, "%Y%m%d").date()
             end_dt = _dt.strptime(next_ds, "%Y%m%d").date()

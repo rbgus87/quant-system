@@ -1,10 +1,11 @@
 # tests/test_order.py
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from trading.order import (
-    OrderExecutor,
     BalanceValidationError,
+    OrderExecutor,
     TurnoverLimitExceeded,
 )
 

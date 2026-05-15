@@ -69,9 +69,10 @@ def _sigma_distribution_stats(as_of_date: str) -> dict:
     ref_date = quarter_ends[-1].strftime("%Y%m%d")
 
     # KOSPI 종목 목록 (daily_price DB에서 해당 날짜 보유 종목 조회)
-    from data.storage import DataStorage
-    from data.collector import _parse_date
     from sqlalchemy import text
+
+    from data.collector import _parse_date
+    from data.storage import DataStorage
     storage = DataStorage()
     dt = _parse_date(ref_date)
     with storage.engine.connect() as conn:
@@ -141,8 +142,8 @@ def _build_report(
             f"| 최솟값 (min)  | {sigma_stats['min']:.4f} ({sigma_stats['min']*100:.2f}%) |",
             f"| 최댓값 (max)  | {sigma_stats['max']:.4f} ({sigma_stats['max']*100:.2f}%) |",
             "",
-            f"> σ=0.01(1%) 고정 대비: 대형주(σ<0.01)는 시장충격 과대, 소형주(σ>0.01)는 과소 추정.",
-            f"> 종목별 σ 적용으로 비용 모델 정확도 향상. CAGR 차이는 미미(±0.1%p 이내).",
+            "> σ=0.01(1%) 고정 대비: 대형주(σ<0.01)는 시장충격 과대, 소형주(σ>0.01)는 과소 추정.",
+            "> 종목별 σ 적용으로 비용 모델 정확도 향상. CAGR 차이는 미미(±0.1%p 이내).",
         ]
     else:
         lines.append("σ 분포 통계 조회 실패")
@@ -211,7 +212,7 @@ def main() -> None:
         print(f"  기준일: {sigma_stats['ref_date']}, N={sigma_stats['n_tickers']}")
         print(f"  mean={sigma_stats['mean']*100:.2f}%  median={sigma_stats['median']*100:.2f}%"
               f"  min={sigma_stats['min']*100:.2f}%  max={sigma_stats['max']*100:.2f}%")
-        print(f"  (σ=1% 고정 기준: 대형주 과대, 소형주 과소 추정)")
+        print("  (σ=1% 고정 기준: 대형주 과대, 소형주 과소 추정)")
 
     print()
     print(f"보고서: {out_path}")

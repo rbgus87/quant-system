@@ -4,13 +4,8 @@ import yaml
 
 from config.settings import (
     Settings,
-    FactorWeights,
-    ValueWeights,
-    UniverseConfig,
-    PortfolioConfig,
-    TradingConfig,
-    _load_yaml,
     _apply_yaml,
+    _load_yaml,
     validate_settings,
 )
 

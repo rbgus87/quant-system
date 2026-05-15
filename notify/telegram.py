@@ -6,6 +6,7 @@ python-telegram-bot v21은 완전 async 기반이지만
 """
 
 import json
+import logging
 import os
 import time
 from datetime import datetime
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-import logging
+
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -221,9 +222,10 @@ class TelegramNotifier:
             거래 내역 리스트 [{ticker, side, quantity, price, amount, name}, ...]
         """
         try:
-            from data.storage import DataStorage
-            from data.collector import KRXDataCollector
             from datetime import date as date_type
+
+            from data.collector import KRXDataCollector
+            from data.storage import DataStorage
 
             storage = DataStorage()
             collector = KRXDataCollector()

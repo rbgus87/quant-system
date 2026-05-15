@@ -2,14 +2,11 @@
 """리밸런싱 이력 탭 - 거래 로그 기반 리밸런싱 요약 + 상세"""
 
 import logging
-from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,

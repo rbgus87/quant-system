@@ -6,7 +6,7 @@
 
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from config.settings import settings

@@ -1,9 +1,10 @@
 # tests/test_market_regime.py
 """MarketRegimeFilter 단위 테스트"""
-import pandas as pd
-import numpy as np
-import pytest
 from unittest.mock import MagicMock
+
+import numpy as np
+import pandas as pd
+import pytest
 
 from strategy.market_regime import MarketRegimeFilter, calc_vol_target_scale
 

@@ -2,13 +2,13 @@
 """가중치 드리프트 모니터링 테스트"""
 
 import json
-import pytest
 from datetime import date
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from data.storage import DataStorage, Portfolio
+import pytest
+
+from data.storage import DataStorage
 from monitor.drift import calculate_drift
-
 
 # ── 공통 fixture ──
 

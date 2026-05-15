@@ -18,18 +18,18 @@ import sys
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # 프로젝트 루트를 sys.path에 추가
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config.settings import settings
-from config.logging_config import setup_logging
 from config.calendar import is_krx_business_day, is_last_krx_business_day_of_month
+from config.logging_config import setup_logging
+from config.settings import settings
 from data.storage import DataStorage
+from notify.telegram import TelegramNotifier
 from trading.kiwoom_api import KiwoomRestClient
 from trading.order import OrderExecutor
-from notify.telegram import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -168,8 +168,8 @@ def _calc_vol_target_scale(api: KiwoomRestClient) -> float:
     Returns:
         투자 비중 배율 (0.2 ~ 1.0)
     """
-    from strategy.market_regime import calc_vol_target_scale
     from data.kospi_index import get_or_load_kospi_index
+    from strategy.market_regime import calc_vol_target_scale
 
     vol_target = settings.trading.vol_target
     lookback = settings.trading.vol_lookback_days
@@ -307,8 +307,8 @@ def _execute_rebalancing_core(
     # ── 서킷브레이커 재진입 확인 ──
     if not executor.check_circuit_breaker_reentry(total_value):
         notifier.send(
-            f"서킷브레이커 유지 중 — 현금 대피 상태 "
-            f"(DD 회복 시 자동 재진입). 리밸런싱 건너뜀."
+            "서킷브레이커 유지 중 — 현금 대피 상태 "
+            "(DD 회복 시 자동 재진입). 리밸런싱 건너뜀."
         )
         return
 
@@ -1002,7 +1002,6 @@ def run_daily_data_collection(
     # ── 멱등성 체크: 이미 충분한 데이터가 있으면 스킵 ──
     try:
         storage = get_storage()
-        from datetime import date as _date
         dt = datetime.strptime(target_str, "%Y%m%d").date()
         existing = storage.load_daily_prices_for_date(dt, market=markets[0])
         if existing >= 900:
@@ -1162,7 +1161,7 @@ def _force_rebalancing() -> None:
         notifier.send_error(str(e))
 
 
-def _save_screening_results(date_str: str, portfolio_df: "pd.DataFrame") -> None:
+def _save_screening_results(date_str: str, portfolio_df: Any) -> None:
     """스크리닝 결과를 DB에 저장 (팩터 스코어 + 포트폴리오)
 
     Args:
@@ -1171,8 +1170,6 @@ def _save_screening_results(date_str: str, portfolio_df: "pd.DataFrame") -> None
             (index=ticker, columns=[value_score, momentum_score,
             quality_score, composite_score, weight])
     """
-    import pandas as pd
-
     if portfolio_df.empty:
         return
 

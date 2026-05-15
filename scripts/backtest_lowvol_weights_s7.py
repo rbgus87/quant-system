@@ -18,13 +18,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm, skew as scipy_skew, kurtosis as scipy_kurt
+from scipy.stats import kurtosis as scipy_kurt
+from scipy.stats import norm
+from scipy.stats import skew as scipy_skew
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from config.logging_config import setup_logging   # noqa: E402
-from config.settings import settings              # noqa: E402
+from config.logging_config import setup_logging  # noqa: E402
+from config.settings import settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +267,7 @@ def build_full_report(
         elif pass_count >= 3:
             lines.append(f"- **⚠️ {best['name']} 조건부 채택** — 추가 검증 필요")
         else:
-            lines.append(f"- **❌ 현행 Preset A 유지** — Low-vol 조합 이득 불충분")
+            lines.append("- **❌ 현행 Preset A 유지** — Low-vol 조합 이득 불충분")
 
     return "\n".join(lines) + "\n"
 

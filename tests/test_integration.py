@@ -5,9 +5,10 @@
 스케줄러 → 텔레그램 알림 흐름 검증
 """
 
-import pandas as pd
+from unittest.mock import MagicMock, patch
+
 import numpy as np
-from unittest.mock import patch, MagicMock
+import pandas as pd
 
 
 class TestE2EPipeline:
@@ -43,10 +44,10 @@ class TestE2EPipeline:
 
     def test_full_pipeline_screening(self) -> None:
         """데이터 → 팩터 계산 → 종목 선정 파이프라인"""
-        from factors.value import ValueFactor
+        from factors.composite import MultiFactorComposite
         from factors.momentum import MomentumFactor
         from factors.quality import QualityFactor
-        from factors.composite import MultiFactorComposite
+        from factors.value import ValueFactor
 
         tickers = [f"00{i:04d}" for i in range(50)]
         fundamentals = self._make_fundamentals(tickers)
@@ -154,10 +155,10 @@ class TestE2EPipeline:
             screener.quality_f = MagicMock()
             screener.composite = MagicMock()
 
-            from factors.value import ValueFactor
+            from factors.composite import MultiFactorComposite
             from factors.momentum import MomentumFactor
             from factors.quality import QualityFactor
-            from factors.composite import MultiFactorComposite
+            from factors.value import ValueFactor
 
             # 실제 팩터 엔진 사용
             value_scores = ValueFactor().calculate(fundamentals)
@@ -183,8 +184,8 @@ class TestSchedulerTelegramFlow:
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_rebalancing_success_sends_report(self, mock_bday, mock_last) -> None:
         """리밸런싱 성공 → 텔레그램 리밸런싱 리포트 발송"""
-        from scheduler.main import run_scheduled_rebalancing
         from config.settings import settings
+        from scheduler.main import run_scheduled_rebalancing
 
         mock_notifier = MagicMock()
         mock_api = MagicMock()
@@ -225,8 +226,8 @@ class TestSchedulerTelegramFlow:
     @patch("scheduler.main.is_business_day", return_value=True)
     def test_rebalancing_failure_sends_error(self, mock_bday, mock_last) -> None:
         """리밸런싱 실패 → 텔레그램 에러 알림"""
-        from scheduler.main import run_scheduled_rebalancing
         from config.settings import settings
+        from scheduler.main import run_scheduled_rebalancing
 
         mock_notifier = MagicMock()
         mock_screener = MagicMock()

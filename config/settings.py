@@ -1,7 +1,7 @@
 # config/settings.py
-from dataclasses import dataclass, field, fields
 import logging
 import os
+from dataclasses import dataclass, field
 
 try:
     import yaml  # type: ignore[import-untyped]
