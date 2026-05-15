@@ -31,6 +31,7 @@ class FactorWeights:
     value: float = 0.40
     momentum: float = 0.40
     quality: float = 0.20
+    low_vol: float = 0.00   # Low-vol 팩터 가중치 (기본 0 = 비활성)
 
 
 @dataclass
