@@ -11,6 +11,7 @@ from factors.value import ValueFactor
 from factors.momentum import MomentumFactor
 from factors.quality import QualityFactor
 from factors.composite import MultiFactorComposite
+from factors.volatility import VolatilityFactor
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ class MultiFactorScreener:
         self.value_factor = ValueFactor()
         self.momentum_factor = MomentumFactor()
         self.quality_factor = QualityFactor()
+        self.volatility_factor = VolatilityFactor()
         self.composite = MultiFactorComposite()
 
     def screen(
@@ -101,7 +103,7 @@ class MultiFactorScreener:
 
         Returns:
             DataFrame(index=ticker, columns=[value_score, momentum_score,
-            quality_score, composite_score, weight])
+            quality_score, low_vol_score, composite_score, weight])
             빈 DataFrame 반환 시 에러 발생한 것
         """
         market = market or settings.universe.market
@@ -136,6 +138,7 @@ class MultiFactorScreener:
                 fw.value,
                 fw.momentum,
                 fw.quality,
+                float(fw.low_vol),          # ← low_vol 가중치
                 bool(settings.quality.strict_reporting_lag),
                 bool(settings.quality.eps_flip_filter_enabled),
                 bool(settings.quality.halt_history_filter_enabled),
@@ -364,10 +367,26 @@ class MultiFactorScreener:
             else:
                 logger.info(f"[{date}] 모멘텀 가중치 0 → 데이터 조회 스킵")
 
+            # Low-vol 팩터 계산 (가중치 > 0일 때만)
+            low_vol_score: Optional[pd.Series] = None
+            if settings.factor_weights.low_vol > 0:
+                low_vol_score = self.volatility_factor.calc_volatility_score(
+                    date=data_date,
+                    tickers=tickers,
+                    storage=self.collector.storage,
+                )
+                logger.info(
+                    f"[{date}] low_vol 계산 완료: "
+                    f"{int(low_vol_score.notna().sum())}개 유효"
+                )
+            else:
+                logger.debug(f"[{date}] low_vol 가중치 0 → 스킵")
+
             # 4. 복합 스코어 + 상위 N개
             min_factors = 2 if has_fundamentals else 1
             composite_df = self.composite.calculate(
                 value_score, momentum_score, quality_score,
+                low_vol_score=low_vol_score,
                 min_factor_count=min_factors,
             )
 

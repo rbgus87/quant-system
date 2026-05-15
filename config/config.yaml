@@ -78,6 +78,7 @@ presets:
       value: 0.70
       momentum: 0.30
       quality: 0.00
+      low_vol: 0.00
     value_weights:
       pbr: 0.50
       pcr: 0.30
@@ -135,6 +136,7 @@ presets:
       value: 0.70
       momentum: 0.30
       quality: 0.00
+      low_vol: 0.00
     value_weights:
       pbr: 0.50
       pcr: 0.30
@@ -192,6 +194,7 @@ presets:
       value: 1.00
       momentum: 0.00
       quality: 0.00
+      low_vol: 0.00
     value_weights:
       pbr: 0.50
       pcr: 0.30
