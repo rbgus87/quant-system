@@ -7,6 +7,7 @@
 import os
 import shutil
 import sys
+import time
 
 import PyInstaller.__main__
 
@@ -102,7 +103,10 @@ def build() -> None:
     print("Korean Quant System - exe 빌드 시작")
     print("=" * 50)
 
+    start = time.time()
     PyInstaller.__main__.run(args)
+    elapsed = time.time() - start
+    minutes, seconds = divmod(int(elapsed), 60)
 
     exe_path = os.path.join(PROJECT_ROOT, "dist", "KoreanQuant.exe")
     if os.path.exists(exe_path):
@@ -115,6 +119,8 @@ def build() -> None:
         print(f"루트 폴더로 복사 완료: {dest_path}")
     else:
         print("\n빌드 실패!")
+    print(f"빌드 시간: {minutes}분 {seconds}초")
+    if not os.path.exists(exe_path):
         sys.exit(1)
 
 
