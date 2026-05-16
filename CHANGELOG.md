@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### 수정 — fix: matplotlib 한글 폰트 캐시 불일치 (2026-05-16)
+
+- **config/font.py** `setup_matplotlib_korean_font()`:
+  - `fm._load_fontmanager(try_read_cache=False)` 추가 — exe 환경에서 NanumBarunGothic 캐시 참조 방지
+  - 폴백 분기 추가 — 한글 폰트 감지 실패 시 Malgun Gothic 강제 설정
+
 ### 성능 — perf: exclude unused modules from exe build (2026-05-16)
 
 - **build_exe.py**: 운용 exe에 불필요한 대형 패키지 빌드 제외

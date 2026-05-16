@@ -45,6 +45,7 @@ def setup_matplotlib_korean_font() -> None:
     """matplotlib rcParams에 한글 폰트를 설정한다."""
     try:
         import matplotlib
+        import matplotlib.font_manager as fm
     except ImportError:
         logger.debug("matplotlib 미설치, 폰트 설정 건너뜀")
         return
@@ -53,4 +54,11 @@ def setup_matplotlib_korean_font() -> None:
     if font_name:
         matplotlib.rcParams["font.family"] = font_name
         matplotlib.rcParams["axes.unicode_minus"] = False
+        # PyInstaller exe 환경에서 폰트 캐시 불일치 방지
+        fm._load_fontmanager(try_read_cache=False)
         logger.info("matplotlib 한글 폰트 설정: %s", font_name)
+    else:
+        # 폴백: Windows 기본 한글 폰트 강제 시도
+        matplotlib.rcParams["font.family"] = "Malgun Gothic"
+        matplotlib.rcParams["axes.unicode_minus"] = False
+        logger.warning("한글 폰트 자동 감지 실패, Malgun Gothic 강제 설정")
