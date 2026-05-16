@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+### 성능 — perf: exclude unused modules from exe build (2026-05-16)
+
+- **build_exe.py**: 운용 exe에 불필요한 대형 패키지 빌드 제외
+  - `--hidden-import=backtest.engine/metrics/report` 3줄 삭제
+  - `--exclude-module=backtest/quantstats/seaborn/scipy` 4줄 추가
+  - 빌드 시간 단축 및 exe 크기 감소 목적
+
 ### 추가 — E6: GitHub Actions CI/CD (2026-05-16)
 
 - **.github/workflows/ci.yml**: push/PR마다 자동으로 ruff + pytest 실행

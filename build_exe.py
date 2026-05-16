@@ -45,10 +45,6 @@ def build() -> None:
         "--hidden-import=strategy.screener",
         "--hidden-import=strategy.market_regime",
         "--hidden-import=strategy.rebalancer",
-        # backtest (리포트/분석용)
-        "--hidden-import=backtest.engine",
-        "--hidden-import=backtest.metrics",
-        "--hidden-import=backtest.report",
         # trading
         "--hidden-import=trading.kiwoom_api",
         "--hidden-import=trading.order",
@@ -88,10 +84,14 @@ def build() -> None:
         "--hidden-import=gui.widgets.summary_card",
         # 외부 런타임 동적 import (PyInstaller 자동 감지 불가)
         "--hidden-import=yaml",
-        "--hidden-import=quantstats",
         "--hidden-import=apscheduler",
         "--hidden-import=finance_datareader",
         "--hidden-import=pykrx_openapi",
+        # ── 운용 exe 미사용 대형 패키지 제외 (빌드 속도 최적화) ──
+        "--exclude-module=backtest",
+        "--exclude-module=quantstats",
+        "--exclude-module=seaborn",
+        "--exclude-module=scipy",
         # 빌드 디렉토리
         f"--distpath={os.path.join(PROJECT_ROOT, 'dist')}",
         f"--workpath={os.path.join(PROJECT_ROOT, 'build')}",
