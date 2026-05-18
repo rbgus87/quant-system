@@ -561,7 +561,10 @@ class KiwoomRestClient:
                 "purchase_amount": purchase_amount,
             }
         except Exception as e:
-            logger.error(f"잔고 조회 실패: {e}")
+            # 예외로 인한 zeros 반환 — 호출자(run_daily_report)의 _is_balance_empty 가드가
+            # 이 케이스와 "API가 정상 응답하되 0원 반환"을 동일하게 처리한다.
+            # 장 마감 후 결제 처리 중 빈 응답은 예외가 아니라 여기를 거치지 않는다.
+            logger.error("잔고 조회 예외 (API 미응답 또는 파싱 실패): %s", e, exc_info=True)
             return {
                 "holdings": [],
                 "cash": 0,

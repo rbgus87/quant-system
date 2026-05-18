@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+### 제거 — chore: GitHub Actions CI/CD 제거 (2026-05-18)
+
+- **.github/workflows/ci.yml** 삭제, **.github/** 폴더 삭제
+  - 로컬 `ruff check .` + `pytest` 수동 실행으로 대체
+  - **ruff.toml은 유지** — 로컬 린트 기준 파일로 계속 사용
+
+### 수정 — fix: 일별 리포트 재시도 지연 연장 (2026-05-18)
+
+- **scheduler/main.py** `_DAILY_REPORT_RETRY_DELAYS_SEC` `(30, 60, 120)` → `(60, 120, 300)`
+  - 장 마감 후 키움 모의 API가 결제 처리 중 일시적으로 `prsm_dpst_aset_amt=0` 응답 반환
+  - 구 합계 210초(3.5분)로 API 안정화 시간보다 짧은 날 재시도 3회 모두 실패
+  - 신 합계 480초(~8분)로 연장해 안정화 대기 여유 확보
+  - `run_daily_report` 함수 자체 로직은 변경 없음 (v2.1.0과 코드 동일 확인)
+  - 코드 회귀 없음: ruff auto-fix 변경사항(f-string·import 정리)은 balance API 경로와 무관
+- **trading/kiwoom_api.py** `get_balance()` 예외 경로 로그 개선
+  - `logger.error(..., exc_info=True)` — 예외 발생 시 스택 트레이스 출력
+  - 예외로 인한 zeros 반환 vs API가 0원 응답 반환을 로그로 구분 가능
+
 ### 수정 — fix: matplotlib 한글 폰트 캐시 불일치 (2026-05-16)
 
 - **config/font.py** `setup_matplotlib_korean_font()`:
